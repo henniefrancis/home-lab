@@ -1,0 +1,17 @@
+---
+# Weekly and grouped (one PR per ecosystem) to conserve CI minutes while the repo is private.
+#
+# Ecosystems whose manifests do not exist yet are NOT listed (dependabot errors on a directory with no
+# matching manifest). Add each in the milestone that introduces it, using the same shape as below:
+#   M1: terraform       directories /terraform/bootstrap and /terraform/edge
+#   M3: docker-compose  directories /traefik (then /authentik, /tailscale, /homepage as they arrive)
+#   M3: docker          directory /traefik/ra-helper (the Dockerfile base image)
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

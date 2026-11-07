@@ -1,0 +1,100 @@
+---
+# One lean job (target < 5 minutes) to stay inside the 100 minutes/month cap while the repo is private.
+# No credentials, no HCP token, no cloud access: Terraform checks use `init -backend=false` only.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (full history for gitleaks)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Guard - no tracked tfvars other than examples
+        run: |
+          set -eu
+          bad="$(git ls-files | grep -E '\.(auto\.)?tfvars$' || true)"
+          if [ -n "$bad" ]; then
+            echo "Tracked tfvars files are not allowed (use *.tfvars.example):"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: Guard - banned Terraform resource aws_route53domains_domain
+        run: |
+          set -eu
+          # That resource can register, renew and deregister domains. Use aws_route53domains_registered_domain.
+          # Docs and this workflow are excluded because they name the banned resource in prose.
+          if git grep -n -w 'aws_route53domains_domain' -- . ':!docs' ':!.github/workflows/ci.yml'; then
+            echo "aws_route53domains_domain is banned in this repo."
+            exit 1
+          fi
+
+      - name: gitleaks (full history)
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git /repo --config /repo/.gitleaks.toml --redact --no-banner
+
+      - name: Set up Python (pip cache)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
+
+      - name: yamllint
+        run: |
+          pip install --quiet -r .github/requirements-ci.txt
+          yamllint --strict .
+
+      - name: shellcheck
+        run: |
+          set -eu
+          files="$(git ls-files '*.sh')"
+          if [ -n "$files" ]; then
+            # (the shellcheck binary ships on ubuntu-latest runners)
+            echo "$files" | xargs shellcheck
+          else
+            echo "No shell scripts yet."
+          fi
+
+      - name: docker compose config
+        run: |
+          if [ -f compose.yaml ]; then
+            cp .env.example .env
+            docker compose config -q
+          else
+            echo "No compose.yaml yet (added in M3)."
+          fi
+
+      - name: Terraform checks (added in M1)
+        run: |
+          if git ls-files '*.tf' | grep -q .; then
+            echo "Terraform code is present: add terraform fmt -check -recursive, per-module"
+            echo "'terraform init -backend=false && terraform validate', tflint and 'trivy config' steps (M1)."
+            exit 1
+          fi
+          echo "No Terraform code yet."

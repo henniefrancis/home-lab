@@ -1,0 +1,18 @@
+# Normalise line endings; scripts and config must be LF (they run on a Raspberry Pi / Linux CI).
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.tf text eol=lf
+*.tfvars.example text eol=lf
+*.hcl text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+Dockerfile* text eol=lf
+.env.example text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

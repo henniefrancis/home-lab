@@ -1,0 +1,40 @@
+# Secrets and local environment - never commit
+.env
+.env.*
+!.env.example
+secrets/*
+!secrets/README.md
+!secrets/.gitkeep
+acme*.json
+*.pem
+*.key
+*.csr
+adopt-snapshot/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.auto.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+*.tfplan
+*.tfrc.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# NOTE: .terraform.lock.hcl IS committed.
+
+# Logs and runtime data
+*.log
+homepage/config/logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

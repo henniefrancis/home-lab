@@ -1,0 +1,23 @@
+# gitleaks configuration. Extends the default ruleset (which already covers AWS keys, HCP Terraform
+# tokens, private keys and generic API keys); keep the custom rules and allowlist as small as possible.
+title = "home-lab gitleaks config"
+
+[extend]
+useDefault = true
+
+# The Traefik break-glass user file is an htpasswd bcrypt line. It must never be committed.
+[[rules]]
+id = "htpasswd-bcrypt-hash"
+description = "bcrypt / htpasswd hash committed to the repo"
+regex = '''\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}'''
+keywords = ["$2"]
+
+[[allowlists]]
+description = "Documented placeholders only"
+regexes = [
+  '''you@example\.com''',
+  '''Z0{19}''',
+]
+paths = [
+  '''(^|/)\.gitleaks\.toml$''',
+]
