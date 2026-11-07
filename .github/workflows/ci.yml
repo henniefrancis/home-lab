@@ -47,10 +47,29 @@ jobs:
         run: |
           set -eu
           # That resource can register, renew and deregister domains. Use aws_route53domains_registered_domain.
-          # Docs and this workflow are excluded because they name the banned resource in prose.
-          if git grep -n -w 'aws_route53domains_domain' -- . ':!docs' ':!.github/workflows/ci.yml'; then
+          # Only Terraform files are searched, so docs and the README may name the resource in prose.
+          if git grep -n -w 'aws_route53domains_domain' -- '*.tf' '*.tf.json'; then
             echo "aws_route53domains_domain is banned in this repo."
             exit 1
+          fi
+
+      - name: Guard - SSM write-only secrets and public-safe config
+        run: |
+          set -eu
+          f=terraform/edge/ssm.tf
+          if [ -f "$f" ]; then
+            # value_wo_version must stay 1: bumping it re-sends the placeholder over the real secret.
+            if [ "$(grep -cE '^\s*value_wo_version\s*=' "$f")" -lt 1 ] || grep -E '^\s*value_wo_version\s*=' "$f" | grep -vqE '=\s*1\s*(#.*)?$'; then
+              echo "value_wo_version in $f must be exactly 1 and present."; exit 1
+            fi
+            # A SecureString must never use `value =` (it would land in state in plaintext).
+            if grep -nE '^\s*value\s*=' "$f"; then
+              echo "No aws_ssm_parameter may use value = ; use value_wo for SecureString and insecure_value for String."; exit 1
+            fi
+          fi
+          # config/ is public: no domain assignment, no ARNs, no 12-digit account IDs.
+          if [ -d config ] && grep -rnE '(^|[^A-Z_])DOMAIN=|arn:aws:|(^|[^0-9])[0-9]{12}([^0-9]|$)' config; then
+            echo "config/ must stay free of DOMAIN=, ARNs and account IDs."; exit 1
           fi
 
       - name: gitleaks (full history)
@@ -84,17 +103,30 @@ jobs:
       - name: docker compose config
         run: |
           if [ -f compose.yaml ]; then
-            cp .env.example .env
-            docker compose config -q
+            docker compose --env-file config/lab.env config -q
           else
             echo "No compose.yaml yet (added in M3)."
           fi
 
-      - name: Terraform checks (added in M1)
+      - name: Terraform fmt and validate (no backend, no credentials)
         run: |
-          if git ls-files '*.tf' | grep -q .; then
-            echo "Terraform code is present: add terraform fmt -check -recursive, per-module"
-            echo "'terraform init -backend=false && terraform validate', tflint and 'trivy config' steps (M1)."
-            exit 1
-          fi
-          echo "No Terraform code yet."
+          set -eu
+          tf() { docker run --rm -v "$PWD:/w" -w "/w/$1" hashicorp/terraform:1.17.1 "${@:2}"; }
+          docker run --rm -v "$PWD:/w" -w /w hashicorp/terraform:1.17.1 fmt -check -recursive -diff
+          for d in bootstrap edge; do
+            tf "terraform/$d" init -backend=false -input=false -no-color > /dev/null
+            tf "terraform/$d" validate -no-color
+          done
+
+      - name: tflint
+        run: |
+          docker run --rm -v "$PWD:/data" -w /data --entrypoint sh ghcr.io/terraform-linters/tflint:v0.65.0 -c '
+            tflint --init --config=/data/.tflint.hcl > /dev/null
+            for d in bootstrap edge; do
+              tflint --chdir="terraform/$d" --config=/data/.tflint.hcl
+            done'
+
+      - name: trivy config
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w ghcr.io/aquasecurity/trivy:0.76.2 \
+            config --exit-code 1 --severity HIGH,CRITICAL --skip-dirs '**/.terraform' terraform
