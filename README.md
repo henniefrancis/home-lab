@@ -44,12 +44,14 @@ Later phases (not scheduled): Route 53 DNSSEC signing, more services (`ha.`, `to
 
 ## Configuration and secrets
 
-- All real values (domain, email, zone ID, AWS account, HCP organization, role ARNs) live in gitignored
-  files or HCP workspace variables: copy `.env.example` to `.env` and edit it. `*.tfvars` and
-  `*.auto.tfvars` files are never committed.
-- Runtime secret files go in `secrets/` (also gitignored; see [`secrets/README.md`](secrets/README.md)).
-  The password manager is the source of truth.
-- Placeholders in this repo are `example.com` and `you@example.com`.
+- This repo is public and every committed file is public-safe. Non-secret lab settings live in
+  [`config/lab.env`](config/lab.env). Account-identifying values (domain, zone ID, AWS account, HCP organization,
+  role ARNs, email) are HCP Terraform workspace variables or SSM String parameters, never committed.
+  `*.tfvars` and `*.auto.tfvars` files are never committed.
+- Runtime secrets live in AWS SSM Parameter Store (SecureString). The owner sets them with
+  `scripts/set-secret.sh`; the Pi fetches them at deploy time into `/apps/secrets` (outside the repo).
+  See [`docs/runbooks/secrets-ssm.md`](docs/runbooks/secrets-ssm.md). The password manager is the offline copy.
+- Placeholders in docs and examples are `example.com` and `you@example.com`.
 
 ## Prerequisites (filled in during M1-M2)
 

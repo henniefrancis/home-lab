@@ -20,8 +20,8 @@ published as a reference. Findings that matter most:
 ## Secret handling
 
 - No secrets, real domain names, account IDs or personal email addresses are committed.
-  Real values live in gitignored files (`.env`, `secrets/`, `*.tfvars`) and in HCP Terraform
-  workspace variables.
+  Secrets live in AWS SSM Parameter Store and are fetched at deploy time; other real values live in
+  HCP Terraform workspace variables and SSM String parameters.
 - `gitleaks` runs in CI and as a pre-commit hook. Enable GitHub secret scanning and push protection
   on any fork.
 - If you find a leaked secret in this repository, report it privately as above.
