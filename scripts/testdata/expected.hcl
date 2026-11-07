@@ -1,10 +1,10 @@
-  "wildcard-example-com-a" = {
+  "-example-com-a" = {
     name = "*.example.com"
     type = "A"
     ttl  = 300
     records = ["100.64.0.1"]
   }
-  "dmarc-example-com-txt" = {
+  "-dmarc-example-com-txt" = {
     name = "_dmarc.example.com"
     type = "TXT"
     ttl  = 3600

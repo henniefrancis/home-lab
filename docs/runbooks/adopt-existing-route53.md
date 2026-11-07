@@ -26,6 +26,12 @@ Nothing real is committed. The zone ID, record names and values, and registered 
 
 Follow-up applies after AD7 (separate reviewed plans): planned records, SSM parameters (`create_ssm_parameters=true`, then the verification in [[secrets-ssm]]), the budget (`budget_email`), and in M2 the Roles Anywhere objects (`ca_cert_pem`).
 
+## After adoption: the HCP variable is the source of truth
+
+Once the adoption apply has run, the workspace variable `existing_records` is authoritative. Its map keys are the `for_each` addresses
+in state, and the generator's key scheme (`scripts/inventory.jq`) must never change. Never re-paste a regenerated snapshot over the
+variable unless a plan shows 0 to destroy and 0 to replace. Use the snapshot only to compare against live DNS.
+
 ## TXT values are unquoted
 
 Route 53 returns TXT (and SPF) values wrapped in double quotes, but `aws_route53_record` expects them **without** the surrounding

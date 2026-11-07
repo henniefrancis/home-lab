@@ -336,7 +336,10 @@ oidc="$(aws_ iam list-open-id-connect-providers --query 'OpenIDConnectProviderLi
 if [ "${oidc:-0}" -gt 0 ]; then warn "OIDC provider app.terraform.io already exists (set oidc_provider_mode in bootstrap: existing = manage nothing, import = adopt it)"; else pass "No existing OIDC provider app.terraform.io"; fi
 for role in home-lab-hcp-plan home-lab-hcp-apply home-lab-traefik-dns01 home-lab-pi-host; do
   if aws_ iam get-role --role-name "$role" > /dev/null 2>&1; then
-    warn "IAM role $role already exists (must be imported)"
+    case "$role" in
+      home-lab-hcp-plan | home-lab-hcp-apply) warn "IAM role $role already exists (expected after the bootstrap apply)" ;;
+      *) warn "IAM role $role already exists (must be imported into terraform/edge)" ;;
+    esac
   else
     pass "IAM role $role does not exist yet"
   fi

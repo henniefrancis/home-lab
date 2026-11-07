@@ -7,6 +7,9 @@
 #   surrounding quotes (the provider adds them). Each string loses one layer of quotes. A value made of several
 #   strings (for example a long DKIM key returned as "a" "b") becomes a""b, the provider's documented form for
 #   multi-string TXT. Escapes inside a string are kept as returned.
+# - Map keys are the lowercased name and type with every run of other characters turned into one hyphen. They are the
+#   for_each addresses in Terraform state, so the scheme must NEVER change: no trimming, no renaming (a change plans a
+#   destroy and create of the record).
 # - HCL-significant sequences (dollar-brace and percent-brace) are escaped.
 def nm: (.Name | gsub("\\\\052"; "*") | sub("\\.$"; ""));
 def esc: gsub("\\$\\{"; "$${") | gsub("%\\{"; "%%{");
@@ -20,8 +23,8 @@ def val($t): if ($t == "TXT" or $t == "SPF") then unq else . end;
 | sort_by(.Name, .Type, (.SetIdentifier // ""))
 | .[]
 | .Type as $t
-| ( ((nm | gsub("\\*"; "wildcard")) + "_" + .Type + (if .SetIdentifier then "_" + .SetIdentifier else "" end))
-    | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "") ) as $key
+| ( (nm + "_" + .Type + (if .SetIdentifier then "_" + .SetIdentifier else "" end))
+    | ascii_downcase | gsub("[^a-z0-9]+"; "-") ) as $key
 | "  " + ($key | hcl) + " = {\n"
   + "    name = " + (nm | hcl) + "\n"
   + "    type = " + (.Type | hcl) + "\n"
