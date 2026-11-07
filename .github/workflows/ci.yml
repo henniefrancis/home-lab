@@ -47,8 +47,8 @@ jobs:
         run: |
           set -eu
           # That resource can register, renew and deregister domains. Use aws_route53domains_registered_domain.
-          # Only Terraform files are searched, so docs and the README may name the resource in prose.
-          if git grep -n -w 'aws_route53domains_domain' -- '*.tf' '*.tf.json'; then
+          # Only resource/data declarations in Terraform files match, so comments, docs and the README may name it.
+          if git grep -nE '(resource|data)[[:space:]]+"aws_route53domains_domain"|"aws_route53domains_domain"[[:space:]]*:' -- '*.tf' '*.tf.json'; then
             echo "aws_route53domains_domain is banned in this repo."
             exit 1
           fi
