@@ -51,7 +51,7 @@ Afterwards put the placeholder back with `--unset`, or overwrite the dummy with 
 
 | Date | Provider version | Value in state | Notes |
 |------|------------------|----------------|-------|
-| pending (owner-run after the first edge apply) | | | |
+| 2026-11-07 | hashicorp/aws 6.72.0, Terraform 1.17.1 (HCP remote) | No | Dummy set on `tailscale/auth-key`, refresh-only apply, current state downloaded: dummy 0 hits, placeholder 0 hits, `value`/`insecure_value` empty and `has_value_wo = true` on all 6 SecureStrings. Plan-phase refresh worked without `kms:Decrypt`, so the plan role stays without it. Placeholder restored; next plan "No changes". |
 
 ## Parameters
 
