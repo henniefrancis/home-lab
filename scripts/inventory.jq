@@ -1,0 +1,34 @@
+# Turns `aws route53 list-resource-record-sets` JSON into the HCL entries of the existing_records variable.
+# Usage: jq -r --arg apex "<domain>." -f inventory.jq records.json
+#
+# - Apex NS and SOA are excluded (owned by the zone).
+# - Names: trailing dot dropped, the octal escape for the wildcard label becomes a literal asterisk.
+# - TXT and SPF values: Route 53 returns them wrapped in quotes, but aws_route53_record wants them WITHOUT the
+#   surrounding quotes (the provider adds them). Each string loses one layer of quotes. A value made of several
+#   strings (for example a long DKIM key returned as "a" "b") becomes a""b, the provider's documented form for
+#   multi-string TXT. Escapes inside a string are kept as returned.
+# - HCL-significant sequences (dollar-brace and percent-brace) are escaped.
+def nm: (.Name | gsub("\\\\052"; "*") | sub("\\.$"; ""));
+def esc: gsub("\\$\\{"; "$${") | gsub("%\\{"; "%%{");
+def hcl: tojson | esc;
+def unq:
+  [scan("\"((?:[^\"\\\\]|\\\\.)*)\"") | .[0]] as $parts
+  | if ($parts | length) == 0 then . else ($parts | join("\"\"")) end;
+def val($t): if ($t == "TXT" or $t == "SPF") then unq else . end;
+[ .ResourceRecordSets[]
+  | select(((.Name == $apex) and (.Type == "NS" or .Type == "SOA")) | not) ]
+| sort_by(.Name, .Type, (.SetIdentifier // ""))
+| .[]
+| .Type as $t
+| ( ((nm | gsub("\\*"; "wildcard")) + "_" + .Type + (if .SetIdentifier then "_" + .SetIdentifier else "" end))
+    | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "") ) as $key
+| "  " + ($key | hcl) + " = {\n"
+  + "    name = " + (nm | hcl) + "\n"
+  + "    type = " + (.Type | hcl) + "\n"
+  + (if .TTL != null then "    ttl  = \(.TTL)\n" else "" end)
+  + (if .ResourceRecords then "    records = [" + ([.ResourceRecords[].Value | val($t) | hcl] | join(", ")) + "]\n" else "" end)
+  + (if .AliasTarget then "    alias = {\n      name                   = " + (.AliasTarget.DNSName | sub("\\.$"; "") | hcl)
+      + "\n      zone_id                = " + (.AliasTarget.HostedZoneId | hcl)
+      + "\n      evaluate_target_health = \(.AliasTarget.EvaluateTargetHealth)\n    }\n" else "" end)
+  + (if .SetIdentifier then "    set_identifier = " + (.SetIdentifier | hcl) + "\n" else "" end)
+  + "  }"

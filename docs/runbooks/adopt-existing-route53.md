@@ -26,6 +26,15 @@ Nothing real is committed. The zone ID, record names and values, and registered 
 
 Follow-up applies after AD7 (separate reviewed plans): planned records, SSM parameters (`create_ssm_parameters=true`, then the verification in [[secrets-ssm]]), the budget (`budget_email`), and in M2 the Roles Anywhere objects (`ca_cert_pem`).
 
+## TXT values are unquoted
+
+Route 53 returns TXT (and SPF) values wrapped in double quotes, but `aws_route53_record` expects them **without** the surrounding
+quotes: the provider adds them. If the quotes are kept, the plan shows an in-place change that would double-quote SPF, DMARC and
+DKIM and break mail. The generator (`scripts/inventory.jq`, covered by `scripts/test-inventory.sh` in CI) removes one layer of quotes
+per string. A value made of several strings, such as a long DKIM key returned as `"a" "b"`, is written as `a""b`, the provider's
+documented form for multi-string TXT. If an adoption plan still shows an in-place change on a TXT record, stop and compare the value
+with the live record instead of applying.
+
 ## Collisions with planned records
 
 The planned records are `*` A (needs `pi_tailnet_ipv4`), `www` TXT and apex CAA. If a record already exists at one of those addresses,

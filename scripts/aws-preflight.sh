@@ -15,8 +15,6 @@
 # It prints the domain and account locally, so never paste its output into a public place.
 # Exit status: 0 = no FAIL, 1 = at least one FAIL.
 set -uo pipefail
-# Git Bash on Windows would rewrite arguments such as /home-lab into a Windows path.
-export MSYS_NO_PATHCONV=1
 
 PROFILE="${AWS_PROFILE_NAME:-henniefrancis}"
 DOMAIN="${DOMAIN:-}"
@@ -41,7 +39,17 @@ fail() { printf 'FAIL  %s\n' "$*"; FAILS=$((FAILS + 1)); }
 info() { printf '      %s\n' "$*"; }
 section() { printf '\n== %s ==\n' "$*"; }
 
-aws_() { aws --profile "$PROFILE" --no-cli-pager "$@"; }
+# aws.exe on Git Bash/Windows emits CRLF; strip every CR so values never carry a stray CR (pipefail keeps aws failures visible).
+# jq.exe on Windows can do the same, so it is wrapped too.
+jq() { command jq "$@" | tr -d '\r'; }
+# MSYS_NO_PATHCONV stops Git Bash rewriting arguments such as /home-lab into a Windows path (scoped to aws only).
+aws_() { MSYS_NO_PATHCONV=1 aws --profile "$PROFILE" --no-cli-pager "$@" | tr -d '\r'; }
+# HCL list of duplicate zone IDs; an empty list prints [] (never [""]).
+dup_ids_hcl() {
+  local out="" id
+  for id in ${DUP_IDS[@]+"${DUP_IDS[@]}"}; do out="${out:+$out, }\"$id\""; done
+  printf '[%s]' "$out"
+}
 norm_ns() { tr '[:upper:]' '[:lower:]' | sed 's/\.$//' | sort; }
 
 # Public DNS lookups: dig when present, else DNS-over-HTTPS (curl + jq). Prints one answer per line.
@@ -217,27 +225,7 @@ if [ -n "$DELEGATED_ID" ]; then
 
   # Records to manage = everything except apex NS and SOA. Names are normalised: trailing dot dropped,
   # \052 -> '*'. HCL-significant sequences in values are escaped.
-  inv="$(jq -r --arg apex "$apex" '
-    def nm: (.Name | gsub("\\\\052"; "*") | sub("\\.$"; ""));
-    def esc: gsub("\\$\\{"; "$${") | gsub("%\\{"; "%%{");
-    def hcl: tojson | esc;
-    [ .ResourceRecordSets[]
-      | select(((.Name == $apex) and (.Type == "NS" or .Type == "SOA")) | not) ]
-    | sort_by(.Name, .Type, (.SetIdentifier // ""))
-    | .[]
-    | ( (nm + "_" + .Type + (if .SetIdentifier then "_" + .SetIdentifier else "" end))
-        | ascii_downcase | gsub("[^a-z0-9]+"; "-") ) as $key
-    | "  " + ($key | hcl) + " = {\n"
-      + "    name = " + (nm | hcl) + "\n"
-      + "    type = " + (.Type | hcl) + "\n"
-      + (if .TTL != null then "    ttl  = \(.TTL)\n" else "" end)
-      + (if .ResourceRecords then "    records = [" + ([.ResourceRecords[].Value | hcl] | join(", ")) + "]\n" else "" end)
-      + (if .AliasTarget then "    alias = {\n      name                   = " + (.AliasTarget.DNSName | sub("\\.$"; "") | hcl)
-          + "\n      zone_id                = " + (.AliasTarget.HostedZoneId | hcl)
-          + "\n      evaluate_target_health = \(.AliasTarget.EvaluateTargetHealth)\n    }\n" else "" end)
-      + (if .SetIdentifier then "    set_identifier = " + (.SetIdentifier | hcl) + "\n" else "" end)
-      + "  }"
-  ' <<< "$rrs")"
+  inv="$(jq -r --arg apex "$apex" -f "$(dirname "${BASH_SOURCE[0]}")/inventory.jq" <<< "$rrs")"
   INVENTORY_HCL="existing_records = {
 $inv
 }"
@@ -306,11 +294,7 @@ $inv
     info "  domain_auto_renew       = ${AUTORENEW:-}"
     info "  domain_transfer_lock    = ${TLOCK:-}"
   fi
-  if [ "${#DUP_IDS[@]}" -gt 0 ]; then
-    info "  duplicate_zone_ids      = [$(printf '"%s", ' "${DUP_IDS[@]}" | sed 's/, $//')]"
-  else
-    info "  duplicate_zone_ids      = []"
-  fi
+  info "  duplicate_zone_ids      = $(dup_ids_hcl)"
 
   if [ "$SNAPSHOT" = 1 ]; then
     mkdir -p "$SNAPSHOT_DIR"
@@ -323,7 +307,7 @@ $inv
       echo "registered_name_servers = [$(printf '%s\n' "$REG_NS" | jq -R . | paste -sd, - | sed 's/,/, /g')]"
       echo "domain_auto_renew       = $(printf '%s' "${AUTORENEW:-}")"
       echo "domain_transfer_lock    = $(printf '%s' "${TLOCK:-}")"
-      echo "duplicate_zone_ids      = [$(printf '"%s", ' "${DUP_IDS[@]}" | sed 's/, $//')]"
+      echo "duplicate_zone_ids      = $(dup_ids_hcl)"
     } > "$SNAPSHOT_DIR/scalar-variables.txt"
     pass "Snapshot written to $SNAPSHOT_DIR (gitignored; never commit)"
   fi

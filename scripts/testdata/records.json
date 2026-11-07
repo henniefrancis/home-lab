@@ -1,0 +1,14 @@
+{
+  "ResourceRecordSets": [
+    {"Name": "example.com.", "Type": "NS", "TTL": 172800, "ResourceRecords": [{"Value": "ns-1.awsdns-01.org."}]},
+    {"Name": "example.com.", "Type": "SOA", "TTL": 900, "ResourceRecords": [{"Value": "ns-1.awsdns-01.org. hostmaster.example.com. 1 7200 900 1209600 86400"}]},
+    {"Name": "example.com.", "Type": "MX", "TTL": 3600, "ResourceRecords": [{"Value": "0 example-com.mail.example.net."}]},
+    {"Name": "example.com.", "Type": "TXT", "TTL": 3600, "ResourceRecords": [{"Value": "\"v=spf1 include:spf.example.net -all\""}, {"Value": "\"MS=ms00000000\""}]},
+    {"Name": "_dmarc.example.com.", "Type": "TXT", "TTL": 3600, "ResourceRecords": [{"Value": "\"v=DMARC1; p=none; rua=mailto:dmarc@example.com\""}]},
+    {"Name": "k1._domainkey.example.com.", "Type": "TXT", "TTL": 300, "ResourceRecords": [{"Value": "\"v=DKIM1; k=rsa; p=AAAAAAAA\" \"BBBBBBBB\""}]},
+    {"Name": "quote.example.com.", "Type": "TXT", "TTL": 300, "ResourceRecords": [{"Value": "\"say \\\"hi\\\" ${x}\""}]},
+    {"Name": "\\052.example.com.", "Type": "A", "TTL": 300, "ResourceRecords": [{"Value": "100.64.0.1"}]},
+    {"Name": "autodiscover.example.com.", "Type": "CNAME", "TTL": 3600, "ResourceRecords": [{"Value": "autodiscover.mail.example.net"}]},
+    {"Name": "app.example.com.", "Type": "A", "AliasTarget": {"HostedZoneId": "Z0000000000000000000", "DNSName": "d111.cloudfront.example.net.", "EvaluateTargetHealth": false}}
+  ]
+}
