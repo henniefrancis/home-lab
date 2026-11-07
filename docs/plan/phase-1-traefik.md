@@ -1,44 +1,54 @@
-# Phase 1 Build Plan - Edge: Route 53 (adopted into Terraform via HCP Terraform) + Traefik + Socket Proxy + Authentik SSO + Tailscale + Homepage
+# Phase 1 Build Plan - Edge: Route 53 (adopted into Terraform via HCP Terraform) + SSM secrets + Traefik + Socket Proxy + Authentik SSO + Tailscale + Homepage
 
-Status: APPROVED, ready for build (rev 6). All user questions resolved (section 14).
+Status: APPROVED, ready for build (rev 7). All user questions resolved (section 14).
 Owner: Hennie Francis
 Author: Solutions Architect (dev-team pipeline)
 Date: 2026-11-07
 
-> NOTE: This file is written into the OLD working copy at `A:\henniefrancis\home-lab`. Its `origin` still points at
-> `home-lab.git`, which GitHub redirects to the private `home-lab-archive`. **Never push from that working copy.**
-> The developer builds the new repo in a fresh directory with a clean `git init`, and carries this file into the first
-> commit as `docs/plan/phase-1-traefik.md` (task T1). This document is self-contained. Earlier revisions are not needed.
+> This plan lives in the new repo as `docs/plan/phase-1-traefik.md` and is self-contained.
+> The old working copy (`home-lab-archive`) must never be pushed.
 >
 > **Working agreements (owner):**
-> - The owner reviews **milestone by milestone**. Stop at the end of each milestone for review and approval.
+> - The owner reviews **milestone by milestone** and approves each one before the next starts.
 > - GitHub Actions is capped at **100 min/month while the repo is private**. Keep CI lean (T2).
 > - Developer docs are mirrored to the Obsidian vault **"Hennie Francis"**, folder **"Home Lab"**.
-> - **From now on, no console or CLI changes to Route 53 or Route 53 Domains.** Every DNS change goes through Terraform (golden rule).
+> - **No console or CLI changes to Route 53 / Route 53 Domains.** Every DNS change goes through Terraform (golden rule).
+> - **The whole repo, config included, is public.** Nothing secret or account-identifying is committed: no real domain, account ID, ARNs, zone ID, HCP org name, email, or secret values. Runtime secrets live in **AWS SSM Parameter Store**.
 
 Revision history:
 - rev 1-2: initial plan; subdomains; Homepage; GitHub archive.
 - rev 3: Route 53 + Terraform; Roles Anywhere; apex/`www` reserved; `dashboard.`; wildcard-only cert; per-app forward auth.
-- rev 4: registrar is Route 53 Domains; AWS preflight; budget; CAA.
-- rev 5: state in HCP Terraform, remote runs with OIDC dynamic credentials, bootstrap workspace.
-- rev 6 (2026-11-07):
-  - The owner already moved DNS to Route 53 by hand and deleted the Cloudflare account. Verified on public DNS: the NS are 4 `awsdns` servers, the SOA comes from Route 53, and there is no DS record at the `co.za` parent, so DNSSEC is off.
-  - The **Cloudflare migration has been removed entirely.** It is replaced by **adopting the existing hosted zone, records and registered-domain NS into Terraform** with `import` blocks and no-op plans.
-  - Milestones renumbered to M0-M6.
-  - Pi-side details restored in full, so the document stands on its own.
+- rev 4: Route 53 Domains registrar; AWS preflight; budget; CAA.
+- rev 5: HCP Terraform with remote runs, OIDC dynamic credentials and a bootstrap workspace.
+- rev 6: Cloudflare migration removed; the existing Route 53 zone, records and registered-domain NS are adopted via `import` blocks; milestones M0-M6.
+- rev 7 (2026-11-07):
+  - The **whole repo, config included, is public.**
+  - **Runtime secrets now live in SSM Parameter Store** (SecureString, standard tier, AWS-managed `aws/ssm` key):
+    - the parameters are defined in Terraform with **write-only placeholder values**
+    - the owner sets real values through a no-echo script
+  - The Pi fetches them at deploy time through a **second Roles Anywhere profile/role (`home-lab-pi-host`)** with its **own key and certificate**.
+  - The Pi `.env` and `secrets/` dir in the repo checkout are replaced by:
+    - committed `config/lab.env` (public, non-secret)
+    - Terraform-managed SSM `String` config parameters
+    - fetched secret files under `/apps/secrets` (outside the repo)
 
 ---
 
 ## 1. Summary
 
-Rebuild the Raspberry Pi 4B home lab as a fresh, public GitHub repo, starting with a hardened edge layer.
+Rebuild the Raspberry Pi 4B home lab as a fresh, **fully public** GitHub repo, starting with a hardened edge layer. The repo shows exactly how the lab is built: Compose files, Traefik and Authentik config, Terraform, scripts and runbooks. Secrets and account-identifying values never enter git.
 
-**AWS side (Terraform, with state in HCP Terraform):**
+**AWS side (Terraform, state in HCP Terraform):**
 - The domain `example.com` is registered with **Amazon Route 53 Domains**. It is already delegated to a Route 53 public hosted zone that the owner created by hand.
-- Phase 1 **adopts** the zone, its existing records and the registered domain's nameserver setting into Terraform, **without recreating anything**. It then adds the lab records.
-- It also creates:
-  - the IAM role Traefik uses for DNS-01, reached via **IAM Roles Anywhere** (no long-lived keys)
-  - a USD 5 budget alert
+- Phase 1 **adopts** the zone, its existing records and the registered domain's NS into Terraform, **without recreating anything**. It then adds the lab records.
+- Terraform also creates:
+  - **SSM parameters** under `/home-lab/`:
+    - SecureString secrets, whose values the owner sets once (never via Terraform state)
+    - String config values, owned by Terraform
+  - **Two IAM roles reached via IAM Roles Anywhere**, so there are no long-lived keys anywhere:
+    - `home-lab-traefik-dns01`: Traefik's ACME DNS-01; TXT `_acme-challenge` only; no SSM access
+    - `home-lab-pi-host`: deploy-time secret fetch; read-only on `/home-lab/*`
+  - A USD 5 budget alert.
 - HCP Terraform runs authenticate to AWS through **OIDC dynamic credentials**.
 
 **Pi side:**
@@ -47,55 +57,59 @@ Rebuild the Raspberry Pi 4B home lab as a fresh, public GitHub repo, starting wi
 - **Authentik** SSO + MFA with **per-app forward auth** (host-only cookies).
 - **Tailscale** for remote access.
 - **Homepage** at `https://dashboard.${DOMAIN}`.
+- `scripts/deploy.sh` fetches secrets from SSM into `/apps/secrets` (outside the repo, never echoed), then runs `docker compose up -d`.
 
 **Domain layout:**
-- The apex `${DOMAIN}` and `www.${DOMAIN}` are **reserved for a future public website on EC2**. That website is out of scope, and the Pi never serves these names.
+- The apex `${DOMAIN}` and `www.${DOMAIN}` are **reserved for a future public website on EC2** (out of scope; never served by the Pi).
 - Every other subdomain is home lab: private (LAN `10.0.0.0/24` + tailnet `100.64.0.0/10`) and Authentik-authenticated.
 - No port-forwards.
 
-**Hard requirements:**
-- Never type a port.
-- Everything uses Let's Encrypt TLS.
-- Start from `dashboard.${DOMAIN}`.
+**Hard requirements:** never type a port; everything on Let's Encrypt TLS; start from `dashboard.${DOMAIN}`.
 
 **Phase 1 is done when all of the following hold:**
-1. The hosted zone, all its records and the registered domain's NS are managed by Terraform (HCP remote runs), and a fresh plan shows no changes.
-2. `https://dashboard.${DOMAIN}` and `https://traefik.${DOMAIN}` serve the production LE wildcard behind Authentik + MFA, from the LAN and over Tailscale only.
-3. No apex or `www` record points at the Pi.
-4. The repo is public with a clean history.
+1. The zone, its records, the registered-domain NS, the SSM parameters and the IAM/Roles Anywhere objects are all managed by Terraform, and a fresh plan shows no changes.
+2. No real secret value is in HCP state, git or CI.
+3. `https://dashboard.${DOMAIN}` and `https://traefik.${DOMAIN}` serve the production LE wildcard behind Authentik + MFA, from the LAN and over Tailscale only.
+4. No apex or `www` record points at the Pi.
+5. The repo is public.
 
 **Out of scope:**
-- The EC2 website.
-- **Route 53 DNSSEC signing (Phase 2).**
-- VCS-triggered Terraform runs.
-- Managing HCP objects with the `tfe` provider (Phase 2).
-- A blog post (docs stay public-friendly).
+- the EC2 website
+- Route 53 DNSSEC (Phase 2)
+- VCS-triggered Terraform runs
+- the `tfe` provider (Phase 2)
+- a customer-managed KMS key (Phase 2 option)
+- backups (later phase)
+- a blog post (the README tells the public story)
 
 ## 2. Assumptions and decisions
 
 | # | Item | Status |
 |---|------|--------|
-| A1 | Raspberry Pi OS 64-bit (arm64 userland); Docker from Docker's apt repo; Compose >= 2.20 | ASSUMPTION, verified by `scripts/preflight.sh` |
+| A1 | Raspberry Pi OS 64-bit (arm64 userland), Docker apt repo, Compose >= 2.20 | ASSUMPTION; verified by `scripts/preflight.sh` |
 | A2 | Boot device | Preflight WARN; SSD recommended (R5) |
 | A3 | Pi IP | U5 DHCP reservation |
-| A4 | SSH | Preflight reports it. Key-only SSH is recommended; Pi Connect is the break-glass |
-| A5 | **Existing Route 53 state** | **FACT (2026-11-07):** the zone was created by hand and the registered domain's NS were set by hand to the 4 `awsdns` servers. Exact records and any duplicate zones are unknown, so `aws-preflight.sh` lists them (6.9) |
-| A6 | DNSSEC | **FACT:** off (no DS at the `co.za` parent). Phase 2 item |
-| A7 | Cloudflare | **Gone:** account deleted, so the leaked token is dead. The old dashboard hash and Meilisearch key are moot (clean rebuild) |
+| A4 | SSH | Preflight reports it; key-only recommended; Pi Connect is break-glass |
+| A5 | Existing Route 53 state | FACT: the zone and registered NS were made by hand. `aws-preflight.sh` inventories them (6.9) |
+| A6 | DNSSEC | FACT: off. Phase 2 |
+| A7 | Cloudflare | Gone (account deleted); old secrets are moot |
 | A8 | HSTS | `includeSubDomains` on lab hosts only; no preload |
 | A9 | Licence | MIT |
-| A10 | ACME email | Optional; user-supplied in gitignored `.env` (`.example` uses `you@example.com`) |
-| A11 | Update bot | Dependabot (docker-compose, docker, terraform, github-actions), weekly and grouped |
-| A12 | Hostnames | `dashboard.`, `traefik.`, `auth.`, `bg-traefik.` (break-glass). Future: `ha.`, `tools.`, `links.`, `netdata.`, `pihole.`, `portainer.`. **Reserved:** apex, `www` |
-| A13 | GitHub | `home-lab-archive` is private. The new `home-lab` stays PRIVATE until the end of M6 |
-| A14 | AWS login | IAM Identity Center profile `henniefrancis`, used only for the bootstrap and the read-only preflight. The account ID is read via `sts get-caller-identity` and never committed |
+| A10 | ACME email | **Omitted by default** (Let's Encrypt stopped sending expiry email). If Traefik v3.7 requires one (dev to verify), use SecureString `/home-lab/traefik/acme-email`, set by the owner |
+| A11 | Update bot | Dependabot, weekly, grouped |
+| A12 | Hostnames | `dashboard.`, `traefik.`, `auth.`, `bg-traefik.`. Future: `ha.`, `tools.`, `links.`, `netdata.`, `pihole.`, `portainer.`. Reserved: apex, `www` |
+| A13 | GitHub | `home-lab` stays PRIVATE until the end of M6, then public. **Everything committed is designed to be public from day one** |
+| A14 | AWS login | IAM Identity Center profile `henniefrancis`, used only for bootstrap, the read-only preflight and the owner's `set-secret.sh` |
 | A15 | af-south-1 / SCPs | Gated by `aws-preflight.sh` |
-| A16 | Budget | USD 5/month. The email is a sensitive HCP workspace variable set by the owner |
-| A17 | CAA | `0 issue "letsencrypt.org"`, `0 issuewild "letsencrypt.org"`, `0 issue "amazon.com"` |
-| A18 | Terraform runs | HCP Terraform, remote execution, CLI-driven. Every apply needs owner approval. No AWS or HCP credentials in CI |
-| A19 | HCP org name | Never hard-coded: `TF_CLOUD_ORGANIZATION` env var, plus the `hcp_organization` variable in bootstrap |
-| A20 | HCP objects | Project `home-lab`. Workspace `home-lab-bootstrap` (local execution, state only) and workspace `home-lab` (remote, CLI-driven, auto-apply off, destroy plans disabled). The owner creates them in the UI |
-| A21 | State contents | No secrets by design. The only sensitive datum is the budget email, marked sensitive (R28) |
+| A16 | Budget | USD 5/month; email is a sensitive HCP workspace variable |
+| A17 | CAA | `letsencrypt.org` (issue, issuewild), `amazon.com` (issue) |
+| A18 | Terraform runs | HCP Terraform, remote, CLI-driven; owner approves every apply; no AWS/HCP credentials in CI |
+| A19 | HCP org | `TF_CLOUD_ORGANIZATION` / `hcp_organization`; never hard-coded |
+| A20 | HCP objects | Project `home-lab`; workspaces `home-lab-bootstrap` (local execution) and `home-lab` (remote, CLI-driven, auto-apply off, destroy plans disabled); created by the owner in the UI |
+| A21 | State contents | No secrets: SSM SecureString values are write-only placeholders (6.7.3). The only sensitive datum is the budget email |
+| **A22** | **Secret store** | **SSM Parameter Store, SecureString, Standard tier, AWS-managed key `aws/ssm`, region af-south-1.** No customer-managed KMS key: about USD 1/month is 20% of the budget, and IAM path scoping plus Roles Anywhere gives the needed control (R46). GitHub Actions secrets are **not** used for runtime secrets |
+| **A23** | **Pi identities** | **Two separate keys and certs**, both signed by the offline CA: `home-lab-pi-traefik` (mounted only into the ra-helper container) and `home-lab-pi-host` (root-only on the host, never mounted into any container). A compromised Traefik container therefore cannot read SSM |
+| **A24** | **Secret files on the Pi** | **Persistent** under `/apps/secrets` (root-owned dir 0700, files 0400/0600) rather than tmpfs. Reason: the lab must come back after a power cut even when the internet is down. The host's Roles Anywhere key already lives on disk and can fetch every secret, so tmpfs adds little protection (R41) |
 
 ## 3. Architecture
 
@@ -103,96 +117,94 @@ Rebuild the Raspberry Pi 4B home lab as a fresh, public GitHub repo, starting wi
 
 ```mermaid
 flowchart LR
-  subgraph HCP["HCP Terraform (org = TF_CLOUD_ORGANIZATION)"]
-    WSB[home-lab-bootstrap<br/>local execution]
-    WS[home-lab<br/>remote execution, CLI-driven]
+  subgraph HCP["HCP Terraform"]
+    WSB[home-lab-bootstrap<br/>local exec]
+    WS[home-lab<br/>remote exec, CLI-driven]
   end
-  OWN[Owner laptop<br/>SSO henniefrancis<br/>terraform login] --> WSB
+  OWN[Owner laptop<br/>SSO henniefrancis] --> WSB
   OWN --> WS
+  OWN -- "set-secret.sh (no echo)<br/>PutParameter --overwrite" --> SSM
 
   subgraph AWS["AWS account"]
-    OIDC[OIDC provider app.terraform.io]
-    RP[home-lab-hcp-plan<br/>read-only]
-    RAP[home-lab-hcp-apply<br/>scoped write]
-    REG[Route 53 Domains us-east-1<br/>NS -> zone ADOPTED]
-    R53[(Route 53 zone ADOPTED<br/>+ * -> Pi tailnet IP<br/>+ www TXT placeholder<br/>+ CAA)]
-    RA[Roles Anywhere af-south-1]
-    ACME[home-lab-traefik-dns01]
-    BUD[Budget home-lab-monthly]
+    OIDC[OIDC app.terraform.io]
+    RP[home-lab-hcp-plan]
+    RAP[home-lab-hcp-apply]
+    REG[Route 53 Domains<br/>adopted]
+    R53[(Route 53 zone<br/>adopted + lab records)]
+    SSM[(SSM Parameter Store af-south-1<br/>/home-lab/** SecureString aws/ssm<br/>/home-lab/config/* String)]
+    RA[Roles Anywhere af-south-1<br/>trust anchor: offline CA<br/>profiles: traefik, pi-host]
+    ACME[role home-lab-traefik-dns01<br/>TXT _acme-challenge only]
+    HOST[role home-lab-pi-host<br/>ssm Get* /home-lab/* only]
   end
-  WS -- "OIDC aud=aws.workload.identity<br/>sub=...workspace:home-lab:run_phase:plan|apply" --> OIDC
+  WS --> OIDC --> RAP
   OIDC --> RP
-  OIDC --> RAP
   RAP --> REG
   RAP --> R53
+  RAP --> SSM
   RAP --> RA
-  RAP --> ACME
-  RAP --> BUD
 
   subgraph Pi["Raspberry Pi 4B"]
-    TS[tailscale<br/>host network]
-    subgraph tr_ns["traefik netns"]
-      TR[Traefik v3.7]
-      RAH[ra-helper<br/>127.0.0.1:9911]
-    end
-    AKS[authentik-server + worker + postgres]
+    DEP[deploy.sh as root<br/>aws CLI + credential_process<br/>host key /etc/home-lab/pki]
+    SEC[/apps/secrets<br/>0700 root/]
+    TR[Traefik + ra-helper<br/>traefik key only]
+    AK[Authentik]
     HP[Homepage]
-    SP[socket-proxy GET-only]
+    TS[Tailscale]
   end
-  TS --> TR
-  TR -- ForwardAuth --> AKS
-  TR --> HP
-  TR --> SP
-  HP --> SP
-  TR -- "IMDS creds" --> RAH
-  RAH -- CreateSession --> RA
-  TR -- "TXT _acme-challenge only" --> R53
+  DEP -- CreateSession --> RA
+  DEP -- "GetParametersByPath /home-lab" --> SSM
+  DEP --> SEC
+  SEC --> TR
+  SEC --> AK
+  SEC --> HP
+  SEC --> TS
+  TR -- "CreateSession (traefik profile)" --> RA
+  TR -- "TXT _acme-challenge" --> R53
 ```
 
 ### 3.2 Request flow for `https://dashboard.${DOMAIN}`
 
-1. **DNS:** the wildcard `*.${DOMAIN}` A record returns the Pi's tailnet IP. `www` is excluded by an explicit TXT placeholder, and the apex has no A record pointing at the Pi. LAN clients without Tailscale use hosts-file entries until Pi-hole arrives.
+1. **DNS:** the wildcard `*` record returns the Pi's tailnet IP. `www` is excluded by a TXT placeholder, and there is no apex A record pointing at the Pi. LAN clients without Tailscale use hosts entries until Pi-hole arrives.
 2. **Redirect:** `:80` gets a 308 to `:443`.
 3. **Middleware chain:** `lan-allowlist@file`, then `security-headers@file`, then `authentik@file`.
-4. **Authentication:** an unauthenticated user goes via `/outpost.goauthentik.io/` on the same host to `auth.${DOMAIN}` for login + MFA, then gets a **host-only** cookie. The Authentik session on `auth.` gives silent SSO to the next app.
+4. **Authentication:** unauthenticated users go via `/outpost.goauthentik.io/` to `auth.` (login + MFA) and come back with a host-only cookie.
 5. **Routing:** Traefik forwards to Homepage `:3000`.
 
-### 3.3 HCP Terraform bootstrap design
+### 3.3 Secrets flow (new in rev 7)
 
-1. **The owner creates in the HCP UI:**
-   - the org (if new) and project `home-lab`
-   - workspace `home-lab-bootstrap` (CLI-driven, **Local** execution)
-   - workspace `home-lab` (CLI-driven, **Remote** execution, auto-apply off, destroy plans disabled)
-
-   These are a documented exception. They are Terraform's own control plane, not cloud infrastructure. Managing them with `tfe` is Phase 2.
-2. **`terraform/bootstrap`** runs once from the laptop with SSO profile `henniefrancis`; its state is stored in HCP. It creates:
-   - the `app.terraform.io` OIDC provider
-   - the role `home-lab-hcp-plan` (read-only, trusted for `run_phase:plan`)
-   - the role `home-lab-hcp-apply` (scoped write, trusted for `run_phase:apply`)
-
-   Run-role changes are only ever made here.
-3. **The owner sets the `home-lab` workspace variables:** env vars `TFC_AWS_PROVIDER_AUTH=true`, `TFC_AWS_PLAN_ROLE_ARN`, `TFC_AWS_APPLY_ROLE_ARN`, `AWS_REGION=af-south-1`, plus the Terraform variables in 6.7.2. From then on `terraform/edge` runs remotely.
-4. **Why split roles:** a malicious or mistaken plan can't write to AWS. The fallback is one role trusted for `run_phase:*`.
-5. **Why CLI-driven:** VCS-driven pull-request plans on a public repo would run untrusted HCL with AWS credentials.
+1. **Terraform** (`edge`) creates each SecureString parameter with the **write-only** argument `value_wo = "UNSET-set-via-set-secret"` and `value_wo_version = 1`. Write-only values are never stored in state. Terraform also creates the String config parameters (domain, zone ID, Roles Anywhere ARNs), whose values it owns.
+2. **The owner** runs `scripts/set-secret.sh <parameter-name>` on the laptop with SSO profile `henniefrancis`.
+   - It prompts with `read -rs` (no echo).
+   - The value travels only through pipes (`jq -Rs` from stdin, then `aws ssm put-parameter --cli-input-json file:///dev/stdin --overwrite`). It is never in argv, shell history or a file in the repo.
+   - The **password manager** holds the offline copy of every value.
+   - **This is the documented secret-value exception to the Terraform-only rule:** the parameter resource is Terraform-managed; only its value is set out of band.
+3. **The Pi** runs `scripts/deploy.sh` as root. It calls `scripts/fetch-secrets.sh`, which:
+   - uses the AWS CLI v2 with a `credential_process` profile (`aws_signing_helper credential-process` with the **host** cert and key)
+   - runs `GetParametersByPath /home-lab --recursive --with-decryption`
+   - maps each parameter to a file using the committed `config/secrets-manifest.tsv` (parameter, target path, owner, mode, required)
+   - writes to a staging dir under `/apps/secrets/.staging-XXXX` (umask 077), then renames atomically
+   - **fails closed** if any required parameter still holds the `UNSET-` placeholder
+   - on any error, cleans the staging dir up and leaves the last-good secrets in place
+   - never echoes values (no `set -x`; jq output goes straight to files)
+4. **Compose** reads non-secret config from `config/lab.env` (committed) and `${APPS_ROOT}/secrets/runtime.env` (rendered from the `/home-lab/config/*` String parameters). Secrets come in as Compose `secrets:` from `/apps/secrets/<service>/<name>`.
 
 ### 3.4 Key decisions and rejected alternatives
 
 | Decision | Chosen | Rejected and why |
 |----------|--------|------------------|
-| Existing DNS | **Adopt** the hand-made zone, records and registered-domain NS via `import` blocks. The first plan is a no-op apart from tags; later changes are reviewed plans. | Recreating the zone (new NS, an outage, needless NS churn). Leaving it unmanaged (golden rule; drift). |
-| Duplicate zones | If more than one zone exists for the domain, the **real** zone is the one whose NS set equals the registered domain's NS. Any other zone is imported into a separate `aws_route53_zone.duplicate[...]` resource (no `prevent_destroy`, `force_destroy = true`). It is then **removed from config so Terraform deletes it**, with owner approval. | Console deletion (golden rule). Leaving it (cost, confusion). |
-| Registrar NS | `aws_route53domains_registered_domain` (provider alias us-east-1), imported. The `name_server` values are copied **exactly** from the current registration, and a `check` block asserts they equal the zone's NS set. `prevent_destroy`. | `aws_route53domains_domain` (it registers, renews and deregisters; banned). Console edits. |
-| DNS-01 credentials | IAM Roles Anywhere: an offline CA, a key generated on the Pi, a 1-year leaf cert, and 1-hour STS sessions via an `aws_signing_helper serve` sidecar in Traefik's netns. | IAM user access key (secret in state or console-made; long-lived). AWS Private CA (cost). `credential_process` in the musl-based Traefik image. `update` mode (keys on disk, no refresh). |
-| State and execution | HCP Terraform, remote, OIDC dynamic credentials, split plan/apply roles, CLI-driven. | S3 state (superseded by the owner playbook). Static keys in HCP. VCS-driven runs. |
-| Certificate | One LE `*.${DOMAIN}`. | Apex SAN (apex is not on the Pi). Per-host certs (Certificate Transparency leakage). |
-| `www` before the website | Terraform TXT placeholder at `www`. Per Route 53 docs, the wildcard only answers names with no records of any type. | Letting the wildcard catch `www`. |
-| Auth | Per-app `forward_single` with host-only cookies. | A domain-wide cookie (it would be sent to the public website). |
-| Static config | Compose `command:` flags, interpolated from `.env`. | `traefik.yml` (no interpolation; mutually exclusive with CLI flags). |
-| Docker discovery | `tecnativa/docker-socket-proxy`, internal network, GET-only; used by Traefik and Homepage. | Raw `docker.sock`. |
-| Dashboard | Homepage, config-as-code. | Homarr (DB/UI config); Heimdall. |
-| Tailscale | Container, host network, kernel networking, `tag:homelab`, no subnet router. | Host install (not pinned in git); subnet router (blast radius). |
-| Data | Repo at `/opt/home-lab`; runtime data in `/apps/<service>/`. | Named volumes; data in the repo. |
-| Secrets | Password manager, plus Pi `secrets/` (dir 700, files 400/600) via Compose secrets, `_FILE`, `file://` and `HOMEPAGE_FILE_*`. None in Terraform, git or CI. | `.env` secrets (visible in `docker inspect` and to socket-proxy consumers). |
+| Public repo | All config is committed; secrets and identifiers come from SSM. | A private repo or a private config repo (the owner wants to show the build). |
+| Secret store | **SSM Parameter Store SecureString, Standard tier (free), `aws/ssm`.** | **Secrets Manager:** USD 0.40 per secret per month, about 6 secrets is about USD 2.40, half the budget, and rotation features aren't needed. **GitHub Actions secrets:** they would need a self-hosted runner on a public repo, or inbound access to the Pi. **Customer-managed KMS key:** about USD 1/month, which is not justified at this budget. |
+| Secret values in Terraform | **`value_wo` placeholder + `value_wo_version`** (write-only, never in state); the owner sets real values out of band. | `value` + `ignore_changes`: the provider docs state that a SecureString `value` is stored in state as plain text, and a refresh would read the real value back in. Real values in tfvars or workspace variables would land in state. |
+| Pi to AWS identity for secrets | **Separate Roles Anywhere profile and role `home-lab-pi-host`, with its own key and cert (CN `home-lab-pi-host`)**, root-only on the host. | Reusing the Traefik cert/role: a Traefik compromise would then expose every secret. An IAM user key on the Pi (long-lived). |
+| Revocation without a CRL | Both trust policies also pin `aws:PrincipalTag/x509Subject/OU = <pki_generation>` (for example `gen-1`). If a Pi is lost, bump `pki_generation` in Terraform and reissue the certs, and old certs stop working. | CRL import (Phase 2). Replacing the CA (heavier). |
+| Secret files on the Pi | Persistent `/apps/secrets` (0700, files 0400/0600), outside the repo checkout; refreshed by every deploy. | tmpfs `/run`: secrets vanish on reboot, and an offline boot would leave every service down. |
+| Non-secret config | `config/lab.env` committed (CIDRs, TZ, paths, ACME staging/prod switch); `/home-lab/config/*` SSM String values from Terraform (domain, zone ID, ACME Roles Anywhere ARNs). | A gitignored `.env` (hides the config from the public, and drifts). |
+| Existing DNS | Adopt via `import`, no-op first plan, a `check` that the registered NS match the zone. | Recreating. |
+| State / runs | HCP Terraform, remote, OIDC, split plan/apply roles, CLI-driven. | S3; static keys; VCS-driven on a public repo. |
+| Certificate | One LE `*.${DOMAIN}`. | Apex SAN; per-host certs. |
+| Auth | Per-app forward auth, host-only cookies. | A domain cookie. |
+| Docker discovery | GET-only socket proxy. | Raw `docker.sock`. |
+| Tailscale | Container, host network, `tag:homelab`, auth key from SSM. | Host install; subnet router. |
 
 ## 4. Tech stack and pinned versions
 
@@ -200,169 +212,151 @@ flowchart LR
 |-----------|---------|-------------|
 | Traefik | `traefik:v3.7.17` | GitHub releases ("Latest", 30 Oct 2026) |
 | Docker socket proxy | `tecnativa/docker-socket-proxy:v0.5.0` | GitHub / Docker Hub (27 Jul 2026, arm64) |
-| Authentik | `ghcr.io/goauthentik/server:2026.8.5` | GitHub releases ("Latest", 21 Oct 2026); official compose default |
+| Authentik | `ghcr.io/goauthentik/server:2026.8.5` | GitHub releases (21 Oct 2026); official compose default |
 | PostgreSQL | `postgres:16.15-alpine3.24` | Docker Hub (26 Oct 2026) |
 | Tailscale | `tailscale/tailscale:v1.104.4` | Docker Hub (28 Oct 2026) |
-| Homepage | `ghcr.io/gethomepage/homepage:v2.7.0` | GitHub releases ("Latest", 23 Oct 2026) |
+| Homepage | `ghcr.io/gethomepage/homepage:v2.7.0` | GitHub releases (23 Oct 2026) |
 | Break-glass holder | `traefik/whoami:v1.12.0` | Docker Hub (29 Jul 2026) |
-| Roles Anywhere helper | `aws_signing_helper` 1.8.5 Linux Aarch64, SHA256 `3d131aa888cd56da446f9c6bb460b1f0569f6c7edc74eae6193a2fe3928883ba` | AWS Roles Anywhere user guide (24 Aug 2026) |
-| ra-helper base | `debian:trixie-slim` pinned by digest at build | Debian 13, glibc 2.41 (helper needs >= 2.34) |
-| Terraform | 1.17.1 (`~> 1.17`) | GitHub releases (28 Oct 2026) |
-| AWS provider | 6.71.0 (`~> 6.71`); lock file committed | GitHub releases (28 Oct 2026) |
+| Roles Anywhere helper | `aws_signing_helper` 1.8.5 Linux Aarch64, SHA256 `3d131aa888cd56da446f9c6bb460b1f0569f6c7edc74eae6193a2fe3928883ba` | AWS Roles Anywhere user guide (24 Aug 2026). Used in the ra-helper image **and** installed on the Pi host |
+| ra-helper base | `debian:trixie-slim` @digest | Debian 13, glibc 2.41 |
+| AWS CLI v2 (Pi host) | latest v2 aarch64 from the official installer, GPG-signature verified by `bootstrap.sh`; version recorded | AWS CLI install guide |
+| Terraform | 1.17.1 (`~> 1.17`); write-only arguments need >= 1.11 | GitHub releases (28 Oct 2026) |
+| AWS provider | 6.71.0 (`~> 6.71`) | GitHub releases (28 Oct 2026) |
 
-Re-verify every version on build day if more than 2 weeks have passed. Verify arm64 images with `docker manifest inspect`.
+**Official sources (rev 7 additions):**
+- **`aws_ssm_parameter`:** https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ssm_parameter
+  - "The unencrypted value of a SecureString will be stored in the raw state as plain-text"
+  - `value_wo` "write-only values are never stored to state", Terraform >= 1.11
+  - `value_wo_version` must change to push a new write-only value
+- **Roles Anywhere credential helper:** `credential-process` and `serve`: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/credential-helper.html
+- **Roles Anywhere trust model** (PrincipalTag `x509Subject/*` conditions): https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
 
-**Tooling:** gitleaks, yamllint, shellcheck, `terraform fmt`/`validate`, tflint (AWS ruleset), `trivy config`, `docker compose config`, GitHub secret scanning + push protection.
+**Sources carried over from rev 6:** HCP dynamic credentials, Route 53 IAM conditions and wildcard behaviour, `route53domains_registered_domain`, lego route53, Authentik, Homepage, Compose include, Tailscale.
 
-**Official sources:**
-- **HCP Terraform dynamic credentials (AWS):** https://developer.hashicorp.com/terraform/cloud-docs/dynamic-provider-credentials/aws-configuration
-- **Route 53:**
-  - IAM condition keys: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/specifying-rrset-conditions.html
-  - Wildcard behaviour: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/DomainNameFormat.html
-- **Terraform AWS provider:**
-  - `route53domains_registered_domain` (adopts and does not register; destroy only removes it from state; import by domain name): https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/route53domains_registered_domain
-  - `aws_route53_zone` and `aws_route53_record` import docs (record import ID `ZONEID_name_TYPE[_SETIDENTIFIER]`)
-- **lego route53:** https://go-acme.github.io/lego/dns/route53/
-- **Roles Anywhere:**
-  - https://docs.aws.amazon.com/rolesanywhere/latest/userguide/credential-helper.html
-  - https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
-  - https://docs.aws.amazon.com/general/latest/gr/rolesanywhere.html (af-south-1 supported)
-- **Authentik:**
-  - https://docs.goauthentik.io/install-config/install/docker-compose/
-  - https://docs.goauthentik.io/install-config/configuration/
-  - https://docs.goauthentik.io/add-secure-apps/providers/proxy/server_traefik/
-  - https://docs.goauthentik.io/customize/blueprints/v1/tags/
-- **Homepage:**
-  - https://gethomepage.dev/installation/docker/
-  - https://gethomepage.dev/configs/docker/
-- **Compose include:** https://docs.docker.com/reference/compose-file/include/
-- **Tailscale:** https://tailscale.com/docs/features/containers/docker/docker-params
-
-## 5. Repo layout (new repo)
+## 5. Repo layout (public)
 
 ```
 home-lab/
   README.md  LICENSE (MIT)  SECURITY.md
-  .gitignore            # .env, secrets/* (keep .gitkeep, README.md), acme*.json, *.log, homepage/config/logs/,
-                        # **/.terraform/, *.tfstate*, *.tfvars, *.auto.tfvars (keep *.example), *.pem, *.key, *.csr,
-                        # crash.log, adopt-snapshot/
-  .gitattributes        # * text=auto eol=lf
-  .editorconfig  .pre-commit-config.yaml  .yamllint.yaml  .tflint.hcl
-  .env.example
+  .gitignore            # defensive: .env*, secrets/, *.tfvars, *.auto.tfvars (keep *.example), *.tfstate*, **/.terraform/,
+                        # *.pem, *.key, *.csr, *.crt (except pki/*.cnf), adopt-snapshot/, crash.log
+  .gitattributes  .editorconfig  .pre-commit-config.yaml  .yamllint.yaml  .tflint.hcl
   compose.yaml          # include: traefik, authentik, tailscale, homepage
+  config/
+    lab.env             # PUBLIC non-secret config (committed)
+    secrets-manifest.tsv  # parameter -> file path, owner, mode, required (no values)
   .github/dependabot.yml  .github/workflows/ci.yml
   terraform/
     bootstrap/  versions.tf providers.tf oidc.tf roles.tf variables.tf outputs.tf terraform.tfvars.example
     edge/       versions.tf providers.tf variables.tf route53.tf records.tf domains.tf imports.tf checks.tf
-                iam-dns01.tf rolesanywhere.tf budget.tf outputs.tf workspace-variables.example.md
+                iam-dns01.tf iam-pi-host.tf rolesanywhere.tf ssm.tf budget.tf outputs.tf workspace-variables.example.md
   pki/  README.md openssl-ca.cnf openssl-leaf.cnf
   scripts/
-    aws-preflight.sh    # read-only AWS + HCP gate; lists zones, records, registered NS (6.9)
-    preflight.sh  bootstrap.sh  gen-secrets.sh  deploy.sh  cert-expiry.sh
-    pki-new-ca.sh  pki-pi-csr.sh  pki-sign-pi.sh
-  secrets/  .gitkeep  README.md
+    aws-preflight.sh   # laptop, read-only gate before applies
+    set-secret.sh      # laptop, owner-run, no-echo PutParameter --overwrite
+    preflight.sh  bootstrap.sh  deploy.sh  fetch-secrets.sh  cert-expiry.sh      # Pi
+    pki-new-ca.sh  pki-sign.sh  pki-pi-csr.sh
   traefik/  compose.yaml  ra-helper/Dockerfile  dynamic/middlewares.yml  dynamic/tls.yml
   authentik/ compose.yaml  blueprints/homelab-apps.yaml
   homepage/  compose.yaml  config/{settings,services,bookmarks,widgets,docker}.yaml custom.css custom.js
   tailscale/ compose.yaml  policy.example.hujson
   docs/plan/phase-1-traefik.md
-  docs/runbooks/ first-deploy.md hcp-terraform-bootstrap.md adopt-existing-route53.md rolesanywhere-pki.md
-                 cert-staging-to-prod.md break-glass.md rotate-secrets.md add-a-service.md
+  docs/runbooks/ first-deploy.md hcp-terraform-bootstrap.md adopt-existing-route53.md secrets-ssm.md
+                 rolesanywhere-pki.md cert-staging-to-prod.md break-glass.md rotate-secrets.md pi-recovery.md add-a-service.md
 ```
 
-Root `compose.yaml`:
-
-```yaml
-name: home-lab
-include:
-  - traefik/compose.yaml
-  - authentik/compose.yaml
-  - tailscale/compose.yaml
-  - homepage/compose.yaml
-```
-
-A single root `.env` applies to all included files. Per the Compose docs, the project environment takes precedence over each include's own `.env`.
-
-`.env.example` (the real file is `/opt/home-lab/.env`, mode 600):
+`config/lab.env` (committed, public):
 
 ```dotenv
-DOMAIN=example.com
-PI_LAN_IP=10.0.0.10
 LAN_CIDR=10.0.0.0/24
 TAILNET_CIDR=100.64.0.0/10
 TZ=Africa/Johannesburg
-ACME_EMAIL=you@example.com
-ACME_ENV=staging
-ACME_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
-# prod: https://acme-v02.api.letsencrypt.org/directory
 APPS_ROOT=/apps
 PROXY_SUBNET=172.30.0.0/24
 TS_HOSTNAME=homelab-pi
 PUID=1000
 PGID=1000
-# from `terraform output` of the home-lab workspace (not secret; account-identifying, so keep out of git)
-ROUTE53_ZONE_ID=
-RA_TRUST_ANCHOR_ARN=
-RA_PROFILE_ARN=
-RA_ROLE_ARN=
+AWS_SSM_REGION=af-south-1
+ACME_ENV=staging
+ACME_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
+# prod (M6, via PR): ACME_ENV=prod / ACME_CA_SERVER=https://acme-v02.api.letsencrypt.org/directory
 ```
 
-**Secret files on the Pi** (`/opt/home-lab/secrets/`). These are never committed and never printed to a terminal or agent context.
+`${APPS_ROOT}/secrets/runtime.env` (rendered by `fetch-secrets.sh` from `/home-lab/config/*`, mode 0600, never committed):
 
-| File | Contents | Consumer | Owner:mode |
-|------|----------|----------|------------|
-| `rolesanywhere/pi.key` | ECDSA P-256 key generated on the Pi | ra-helper | 10001:10001 0400 |
-| `rolesanywhere/pi.crt` | leaf cert (public) | ra-helper | 10001:10001 0444 |
-| `authentik_secret_key` | `openssl rand -base64 60` | Authentik `file://` | 1000:1000 0400 |
-| `authentik_pg_password` | `openssl rand -base64 36` | Postgres `POSTGRES_PASSWORD_FILE`, Authentik `file://` | 1000:1000 0400 (dev to verify the Postgres read path) |
-| `breakglass_users` | htpasswd bcrypt line | Traefik basicAuth `usersFile` | root:root 0400 |
-| `tailscale.env` | `TS_AUTHKEY=` (one-off key); emptied after join | tailscale `env_file` | root:root 0600 |
-| `homepage_authentik_token` (optional) | read-only Authentik API token | `HOMEPAGE_FILE_AUTHENTIK_TOKEN` | 1000:1000 0400 |
+```dotenv
+DOMAIN=...
+ROUTE53_ZONE_ID=...
+RA_TRUST_ANCHOR_ARN=...
+RA_ACME_PROFILE_ARN=...
+RA_ACME_ROLE_ARN=...
+```
 
-**Offline and laptop secrets:**
-- CA private key: kept in the password manager.
-- HCP user token: in `%APPDATA%\terraform.d\credentials.tfrc.json`, created by `terraform login`. Never print it.
+**Compose invocation** (in `deploy.sh`): `docker compose --env-file config/lab.env --env-file "${APPS_ROOT}/secrets/runtime.env" up -d --remove-orphans`. Later files override earlier ones. The dev must verify that `include:` children interpolate from these project-level env files.
+
+**Pi-local bootstrap file** `/etc/home-lab/aws.env` (root 0600). It is created once by the owner from Terraform outputs and is not secret, but it is account-identifying:
+
+```
+AWS_REGION=af-south-1
+RA_TRUST_ANCHOR_ARN=...
+RA_HOST_PROFILE_ARN=...
+RA_HOST_ROLE_ARN=...
+```
+
+`fetch-secrets.sh` writes `/etc/home-lab/aws-config` (root 0600), a `credential_process` profile pointing to `/usr/local/bin/aws_signing_helper credential-process --certificate /etc/home-lab/pki/host.crt --private-key /etc/home-lab/pki/host.key ...`, and sets `AWS_CONFIG_FILE` for its own process only.
+
+### 5.1 SSM parameter hierarchy
+
+| Parameter | Type | Set by | Consumer | File on the Pi (owner:mode) | Required |
+|-----------|------|--------|----------|-----------------------------|----------|
+| `/home-lab/authentik/secret-key` | SecureString | owner (set-secret) | Authentik `file://` | `/apps/secrets/authentik/secret-key` (1000:1000 0400) | yes |
+| `/home-lab/authentik/postgres-password` | SecureString | owner | Postgres `POSTGRES_PASSWORD_FILE`, Authentik `file://` | `/apps/secrets/authentik/postgres-password` (1000:1000 0400; dev to verify the Postgres read path) | yes |
+| `/home-lab/authentik/bootstrap-password` | SecureString | owner | Authentik `AUTHENTIK_BOOTSTRAP_PASSWORD` for `akadmin` on **first start only**. This closes the initial-setup window. Dev to verify it can be file-sourced; otherwise use the initial-setup flow and leave the parameter UNSET | `/apps/secrets/authentik/bootstrap-password` (1000:1000 0400) | no |
+| `/home-lab/traefik/breakglass-htpasswd` | SecureString | owner (bcrypt line from `htpasswd -nB`; the plaintext stays in the password manager) | Traefik basicAuth `usersFile` | `/apps/secrets/traefik/breakglass-htpasswd` (root 0400) | yes |
+| `/home-lab/tailscale/auth-key` | SecureString | owner (one-off, `tag:homelab`, 1-day key) | written as `TS_AUTHKEY=...` | `/apps/secrets/tailscale/tailscale.env` (root 0600) | **once**: if UNSET, write an empty file (`TS_AUTH_ONCE=true` keeps the node joined) |
+| `/home-lab/homepage/authentik-token` | SecureString | owner (optional read-only Authentik API token) | `HOMEPAGE_FILE_AUTHENTIK_TOKEN` | `/apps/secrets/homepage/authentik-token` (1000:1000 0400) | no |
+| `/home-lab/traefik/acme-email` | SecureString | owner, only if needed (A10) | Traefik `acme.email` (via `runtime.env`) | - | no |
+| `/home-lab/config/domain` | String | Terraform (`var.domain`) | `runtime.env` | - | yes |
+| `/home-lab/config/route53-zone-id` | String | Terraform | `runtime.env` | - | yes |
+| `/home-lab/config/ra-trust-anchor-arn`, `ra-acme-profile-arn`, `ra-acme-role-arn` | String | Terraform | `runtime.env` (ra-helper) | - | yes |
+
+**Rules:**
+- The manifest (`config/secrets-manifest.tsv`) is the single mapping and is public.
+- Adding a service means adding a parameter in `ssm.tf`, adding a manifest row, then running `set-secret.sh`.
+- The **ACME (Traefik) Roles Anywhere key and cert are not in SSM.** They are generated on the Pi under `/etc/home-lab/pki/` (traefik key `10001:10001 0400`). The host key (`root 0400`) is never mounted into any container.
 
 ## 6. Specifications
 
-### 6.1 Docker networks (created by `bootstrap.sh`, `external: true`)
+### 6.1 Docker networks
 
 | Network | Flags | Members |
 |---------|-------|---------|
-| `proxy` | bridge, `--subnet ${PROXY_SUBNET}` | traefik (and ra-helper via shared netns), authentik-server, homepage, future services |
-| `socket-proxy` | bridge, `--internal` | traefik, homepage, socket-proxy |
-| `authentik-internal` | bridge, `--internal` | authentik-server, authentik-worker, authentik-postgresql |
+| `proxy` | bridge, `--subnet ${PROXY_SUBNET}` | traefik (+ ra-helper via shared netns), authentik-server, homepage |
+| `socket-proxy` | `--internal` | traefik, homepage, socket-proxy |
+| `authentik-internal` | `--internal` | authentik server, worker, postgres |
 
-- Traefik and the ra-helper reach Let's Encrypt, `route53.amazonaws.com`, STS and `rolesanywhere.af-south-1.amazonaws.com` via `proxy`.
-- If the Authentik worker needs egress (update checks, GeoIP), the dev adds it to `proxy` and documents why.
-- Every service uses `logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}`.
+Every service uses json-file logging with 10m x 3 rotation.
 
 ### 6.2 Traefik + ra-helper + socket proxy + break-glass (`traefik/compose.yaml`)
 
 **traefik**
-- Hardening: `restart: unless-stopped`, `read_only: true`, `security_opt: [no-new-privileges:true]`, `cap_drop: [ALL]`, `cap_add: [NET_BIND_SERVICE]`, memory 256M, `TZ`, healthcheck `traefik healthcheck --ping`.
-- Ports: `80:80` and `443:443` only. No 8080.
+- Hardening: `restart: unless-stopped`, `read_only`, `no-new-privileges`, `cap_drop ALL` + `NET_BIND_SERVICE`, memory 256M, healthcheck `traefik healthcheck --ping`.
+- Ports: 80/443 only.
 - Mounts: `./dynamic:/etc/traefik/dynamic:ro`, `${APPS_ROOT}/traefik/letsencrypt:/letsencrypt`, `${APPS_ROOT}/traefik/logs:/logs`.
-- Secrets: `breakglass_users`.
-- Environment: `AWS_REGION=us-east-1`, `AWS_HOSTED_ZONE_ID=${ROUTE53_ZONE_ID}`, `AWS_EC2_METADATA_SERVICE_ENDPOINT=http://127.0.0.1:9911`. No static AWS keys or profile. `AWS_EC2_METADATA_DISABLED` must be unset.
-- Static config via `command:`. Validate every flag against the Traefik v3.7 reference.
+- Secret: `breakglass_users` from `file: ${APPS_ROOT}/secrets/traefik/breakglass-htpasswd`.
+- Environment: `AWS_REGION=us-east-1`, `AWS_HOSTED_ZONE_ID=${ROUTE53_ZONE_ID}`, `AWS_EC2_METADATA_SERVICE_ENDPOINT=http://127.0.0.1:9911`. No static keys; `AWS_EC2_METADATA_DISABLED` unset.
+- Static config (`command:`). Validate every flag against the v3.7 docs.
 
 ```
 --global.checkNewVersion=false
 --global.sendAnonymousUsage=false
---log.level=INFO
---log.format=json
---accesslog=true
---accesslog.format=json
---accesslog.filepath=/logs/access.log
---ping=true
---api.dashboard=true
---api.insecure=false
+--log.level=INFO --log.format=json
+--accesslog=true --accesslog.format=json --accesslog.filepath=/logs/access.log
+--ping=true --api.dashboard=true --api.insecure=false
 --providers.docker.endpoint=tcp://socket-proxy:2375
 --providers.docker.exposedByDefault=false
 --providers.docker.network=proxy
---providers.file.directory=/etc/traefik/dynamic
---providers.file.watch=true
+--providers.file.directory=/etc/traefik/dynamic --providers.file.watch=true
 --entrypoints.web.address=:80
 --entrypoints.web.http.redirections.entrypoint.to=websecure
 --entrypoints.web.http.redirections.entrypoint.scheme=https
@@ -373,635 +367,537 @@ RA_ROLE_ARN=
 --entrypoints.websecure.http.tls.options=modern@file
 --entrypoints.websecure.http.tls.domains[0].main=*.${DOMAIN}
 --entrypoints.websecure.http.middlewares=security-headers@file
---certificatesresolvers.le.acme.email=${ACME_EMAIL}
 --certificatesresolvers.le.acme.caServer=${ACME_CA_SERVER}
 --certificatesresolvers.le.acme.storage=/letsencrypt/acme-${ACME_ENV}.json
 --certificatesresolvers.le.acme.dnsChallenge.provider=route53
 --certificatesresolvers.le.acme.dnsChallenge.resolvers=1.1.1.1:53,8.8.8.8:53
 ```
 
-Notes:
-- Separate ACME storage per CA, so the staging-to-prod switch is a clean, reversible `.env` change.
-- Public resolvers are used for the propagation check, so a future Pi-hole can't break it.
-
-Router labels:
-
-```yaml
-traefik.enable: "true"
-traefik.http.routers.dashboard.rule: Host(`traefik.${DOMAIN}`)
-traefik.http.routers.dashboard.entrypoints: websecure
-traefik.http.routers.dashboard.service: api@internal
-traefik.http.routers.dashboard.middlewares: lan-allowlist@file,authentik@file
-traefik.http.routers.dashboard-outpost.rule: Host(`traefik.${DOMAIN}`) && PathPrefix(`/outpost.goauthentik.io/`)
-traefik.http.routers.dashboard-outpost.entrypoints: websecure
-traefik.http.routers.dashboard-outpost.service: authentik
-traefik.http.routers.dashboard-outpost.middlewares: lan-allowlist@file
-traefik.http.routers.dashboard-outpost.priority: "100"
-traefik.http.middlewares.breakglass-auth.basicauth.usersfile: /run/secrets/breakglass_users
-```
-
-During M3, before Authentik exists, the dashboard router temporarily uses `lan-allowlist@file,breakglass-auth@docker`.
+**Router labels:**
+- `dashboard`: `Host(traefik.${DOMAIN})`, `api@internal`, middlewares `lan-allowlist@file,authentik@file`.
+- `dashboard-outpost`: `Host(traefik.${DOMAIN}) && PathPrefix(/outpost.goauthentik.io/)`, service `authentik`, `lan-allowlist@file`, priority 100.
+- Middleware `breakglass-auth`: basicauth usersfile `/run/secrets/breakglass_users`.
+- During M3 the dashboard uses `lan-allowlist@file,breakglass-auth@docker`.
 
 **ra-helper**
-- `build: ./ra-helper` produces image `home-lab/ra-helper:1.8.5`. The Dockerfile:
-  - `FROM debian:trixie-slim@sha256:<digest>`
-  - installs `ca-certificates`
-  - `ADD --checksum=sha256:3d131aa8... https://rolesanywhere.amazonaws.com/releases/1.8.5/Aarch64/Linux/Amzn2023/aws_signing_helper /usr/local/bin/`
-  - `chmod 0555`
-  - `USER 10001`
-- `network_mode: "service:traefik"`. The helper only listens on 127.0.0.1, so only Traefik can reach it.
-- `command: serve --certificate /run/secrets/ra_pi_crt --private-key /run/secrets/ra_pi_key --trust-anchor-arn ${RA_TRUST_ANCHOR_ARN} --profile-arn ${RA_PROFILE_ARN} --role-arn ${RA_ROLE_ARN} --session-duration 3600 --port 9911 --hop-limit 1`
-- Hardening: `read_only`, `cap_drop ALL`, `no-new-privileges`, memory 64M, `restart: unless-stopped`, `depends_on: [traefik]`.
-- **Caveat:** if Traefik is recreated, the helper must be recreated too. `deploy.sh` always runs `up -d`, and the runbook covers manual restarts.
-- The dev may use the official `public.ecr.aws/rolesanywhere/credential-helper` instead, if a pinned arm64 tag is confirmed working on the Pi.
+- `home-lab/ra-helper:1.8.5`, built from `debian:trixie-slim@digest` + `ca-certificates` + `ADD --checksum=sha256:3d131aa8...` of the official binary; `USER 10001`.
+- `network_mode: service:traefik`.
+- `command: serve --certificate /run/secrets/ra_acme_crt --private-key /run/secrets/ra_acme_key --trust-anchor-arn ${RA_TRUST_ANCHOR_ARN} --profile-arn ${RA_ACME_PROFILE_ARN} --role-arn ${RA_ACME_ROLE_ARN} --session-duration 3600 --port 9911 --hop-limit 1`
+- Secrets come from `/etc/home-lab/pki/traefik.crt` and `traefik.key`. **The traefik key only, never the host key.**
+- Hardening: `read_only`, `cap_drop ALL`, `no-new-privileges`, 64M, `depends_on: [traefik]`.
+- If Traefik is recreated, recreate the helper too (`deploy.sh` always runs `up -d`).
 
 **socket-proxy**
-- `tecnativa/docker-socket-proxy:v0.5.0` with `CONTAINERS=1 EVENTS=1 VERSION=1 PING=1 POST=0`; all other sections are 0.
-- `/var/run/docker.sock:/var/run/docker.sock:ro`.
-- Network `socket-proxy` only; no published ports; memory 64M; `no-new-privileges`; `read_only` with tmpfs `/run` if needed (dev to verify).
+- `tecnativa/docker-socket-proxy:v0.5.0` with `CONTAINERS=1 EVENTS=1 VERSION=1 PING=1 POST=0`.
+- Socket mounted `:ro`; `socket-proxy` network only; no ports; 64M; `no-new-privileges`.
 
-**breakglass** (Compose `profiles: [breakglass]`)
-- `traefik/whoami:v1.12.0` with router `bg-traefik` (`Host(bg-traefik.${DOMAIN})`), service `api@internal`, middlewares `lan-allowlist@file,breakglass-auth@docker`.
-- Enable with `docker compose --profile breakglass up -d breakglass`; disable with `docker compose rm -sf breakglass`.
+**breakglass** (profile)
+- `traefik/whoami:v1.12.0`, router `bg-traefik` -> `api@internal`, `lan-allowlist@file,breakglass-auth@docker`.
 
-### 6.3 Traefik dynamic config (`traefik/dynamic/`)
+### 6.3 Traefik dynamic config
 
 `middlewares.yml`:
+- `lan-allowlist`: `ipAllowList.sourceRange` = `10.0.0.0/24`, `100.64.0.0/10`. `preflight.sh` checks this against `config/lab.env`.
+- `security-headers`: `stsSeconds` 300 (raised to 31536000 at M6), `stsIncludeSubdomains`, no preload, `forceSTSHeader`, `contentTypeNosniff`, `frameDeny`, `referrerPolicy strict-origin-when-cross-origin`, `permissionsPolicy "camera=(), microphone=(), geolocation=(), payment=()"`, `X-Robots-Tag noindex, nofollow`, `Server ""`.
+- `authentik`: forwardAuth to `http://authentik-server:9000/outpost.goauthentik.io/auth/traefik`, `trustForwardHeader: true`, `maxResponseBodySize: 4194304`, and `authResponseHeaders`: X-authentik-username, groups, entitlements, email, name, uid, jwt, meta-jwks, meta-outpost, meta-provider, meta-app, meta-version.
 
-```yaml
-http:
-  middlewares:
-    lan-allowlist:
-      ipAllowList:
-        sourceRange: ["10.0.0.0/24", "100.64.0.0/10"]   # keep in sync with LAN_CIDR / TAILNET_CIDR
-    security-headers:
-      headers:
-        stsSeconds: 300                 # raise to 31536000 at M6
-        stsIncludeSubdomains: true
-        stsPreload: false
-        forceSTSHeader: true
-        contentTypeNosniff: true
-        frameDeny: true
-        referrerPolicy: strict-origin-when-cross-origin
-        permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
-        customResponseHeaders:
-          X-Robots-Tag: "noindex, nofollow"
-          Server: ""
-    authentik:
-      forwardAuth:
-        address: http://authentik-server:9000/outpost.goauthentik.io/auth/traefik
-        trustForwardHeader: true
-        maxResponseBodySize: 4194304
-        authResponseHeaders:
-          - X-authentik-username
-          - X-authentik-groups
-          - X-authentik-entitlements
-          - X-authentik-email
-          - X-authentik-name
-          - X-authentik-uid
-          - X-authentik-jwt
-          - X-authentik-meta-jwks
-          - X-authentik-meta-outpost
-          - X-authentik-meta-provider
-          - X-authentik-meta-app
-          - X-authentik-meta-version
-```
-
-- `trustForwardHeader` is safe only because Traefik is the edge and no `forwardedHeaders.trustedIPs` is set.
-- `preflight.sh` warns if `LAN_CIDR` differs from this file.
-
-`tls.yml`:
-
-```yaml
-tls:
-  options:
-    modern:
-      minVersion: VersionTLS12
-      sniStrict: true
-```
+`tls.yml`: option `modern` with `minVersion: VersionTLS12` and `sniStrict: true`.
 
 ### 6.4 Authentik (`authentik/compose.yaml`)
 
-This is based on the official 2026.8.5 compose (no Redis), with these deviations: no published ports, no `docker.sock`, `file://` secrets, memory limits, internal networks, a blueprints mount, and a pinned Postgres patch version.
+Based on the official 2026.8.5 compose (no Redis), with no published ports, no `docker.sock`, internal networks and memory limits.
 
 **authentik-postgresql**
 - `postgres:16.15-alpine3.24`
-- Environment: `POSTGRES_DB=authentik`, `POSTGRES_USER=authentik`, `POSTGRES_PASSWORD_FILE=/run/secrets/authentik_pg_password`
-- Volume: `${APPS_ROOT}/authentik/postgres:/var/lib/postgresql/data`
-- Healthcheck: `pg_isready -d authentik -U authentik` (30s / 5s / 5 / 20s)
-- `authentik-internal` only; memory 512M
+- `POSTGRES_DB=authentik`, `POSTGRES_USER=authentik`, `POSTGRES_PASSWORD_FILE=/run/secrets/pg_password` (from `${APPS_ROOT}/secrets/authentik/postgres-password`)
+- Volume `${APPS_ROOT}/authentik/postgres`; healthcheck `pg_isready`; 512M
 
 **authentik-server**
-- `command: server`; networks `proxy` + `authentik-internal`; `depends_on` postgres healthy; memory 1G
+- `command: server`; `proxy` + `authentik-internal`; 1G
 - Environment:
-  - `AUTHENTIK_POSTGRESQL__HOST=authentik-postgresql`
-  - `AUTHENTIK_POSTGRESQL__NAME=authentik`
-  - `AUTHENTIK_POSTGRESQL__USER=authentik`
-  - `AUTHENTIK_POSTGRESQL__PASSWORD=file:///run/secrets/authentik_pg_password`
+  - `AUTHENTIK_POSTGRESQL__HOST=authentik-postgresql`, `__NAME=authentik`, `__USER=authentik`
+  - `AUTHENTIK_POSTGRESQL__PASSWORD=file:///run/secrets/pg_password`
   - `AUTHENTIK_SECRET_KEY=file:///run/secrets/authentik_secret_key`
   - `AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS=${PROXY_SUBNET}`
   - `AUTHENTIK_ERROR_REPORTING__ENABLED=false`
   - `DOMAIN=${DOMAIN}`
-  - **`AUTHENTIK_COOKIE_DOMAIN` unset**, so cookies are host-only
-- Mounts: `${APPS_ROOT}/authentik/data:/data`, `${APPS_ROOT}/authentik/custom-templates:/templates`, `./blueprints:/blueprints/custom:ro` (dev to confirm the path)
-- Labels: router `authentik`, `Host(auth.${DOMAIN})`, `websecure`, middleware `lan-allowlist@file`, service port 9000, `traefik.docker.network=proxy`
+  - `AUTHENTIK_COOKIE_DOMAIN` **unset**
+  - Optional bootstrap password (5.1)
+- Mounts: `/data`, `/templates`, `./blueprints:/blueprints/custom:ro`
+- Labels: `Host(auth.${DOMAIN})`, `lan-allowlist@file`, port 9000
 
 **authentik-worker**
-- `command: worker`; same environment and secrets; `/data`, `/certs`, blueprints mounts; `authentik-internal`; memory 1G; **no `docker.sock`**
+- `command: worker`; same environment and secrets; no `docker.sock`
 
-**Blueprint `homelab-apps.yaml`**
-- One `forward_single` proxy provider per app, with `external_host` `https://dashboard.<DOMAIN>` and `https://traefik.<DOMAIN>` (built with `!Format` / `!Env DOMAIN`).
-- Applications `homepage` and `traefik`.
-- Both providers added to the embedded outpost (`!Find`).
-- Group `homelab-admins` bound to both.
-- If any field misbehaves, document the UI steps as a fallback.
+**Blueprint**
+- `forward_single` providers + applications for `dashboard` (Homepage) and `traefik`
+- embedded outpost
+- group `homelab-admins`
 
-**First-run hardening (owner, U10)**
-1. Run the initial setup at `https://auth.${DOMAIN}/if/flow/initial-setup/`.
-2. Create a personal admin in `homelab-admins` with WebAuthn or TOTP.
-3. Enforce MFA in the authentication flow.
-4. Deactivate `akadmin`, or protect it with MFA.
-5. Test recovery: `docker compose exec authentik-worker ak create_recovery_key 1 <user>`.
+**First-run (U10)**
+- MFA enforced; `akadmin` deactivated or protected; recovery key tested.
+- If the bootstrap password was used, set the parameter back to UNSET afterwards.
 
 ### 6.5 Tailscale (`tailscale/compose.yaml`)
 
-- `tailscale/tailscale:v1.104.4`, `network_mode: host`, `restart: unless-stopped`.
-- `devices: [/dev/net/tun:/dev/net/tun]`, `cap_add: [NET_ADMIN]` (dev to confirm the minimal set; `tun` is preloaded by bootstrap).
-- Environment: `TS_HOSTNAME`, `TS_STATE_DIR=/var/lib/tailscale`, `TS_USERSPACE=false`, `TS_AUTH_ONCE=true`, `TS_ACCEPT_DNS=false`, `TS_EXTRA_ARGS=--advertise-tags=tag:homelab`.
-- `env_file: ../secrets/tailscale.env`.
-- Volume `${APPS_ROOT}/tailscale/state:/var/lib/tailscale`; memory 128M.
-- `policy.example.hujson`: `tag:homelab` owned by `autogroup:admin`; grant `autogroup:member` access to `tag:homelab` on tcp 443/80/22 only.
-- The Pi joins in M2, **before** the wildcard record is applied, because the record holds its tailnet IP.
+- `tailscale/tailscale:v1.104.4`, host network, `/dev/net/tun`, `NET_ADMIN`.
+- Environment: `TS_STATE_DIR=/var/lib/tailscale`, `TS_USERSPACE=false`, `TS_AUTH_ONCE=true`, `TS_ACCEPT_DNS=false`, `TS_EXTRA_ARGS=--advertise-tags=tag:homelab`, `TS_HOSTNAME`.
+- `env_file: ${APPS_ROOT}/secrets/tailscale/tailscale.env`.
+- State in `${APPS_ROOT}/tailscale/state`.
+- After the node joins, the owner sets `/home-lab/tailscale/auth-key` back to UNSET (`set-secret.sh --unset`).
 
 ### 6.6 Homepage (`homepage/compose.yaml`)
 
-- `ghcr.io/gethomepage/homepage:v2.7.0`, memory 256M, `no-new-privileges`, `cap_drop ALL`, networks `proxy` + `socket-proxy`, no published ports.
-- Environment: `HOMEPAGE_ALLOWED_HOSTS=dashboard.${DOMAIN}`, `PUID`, `PGID`, `TZ`, `HOMEPAGE_VAR_DOMAIN=${DOMAIN}`. Optional: `HOMEPAGE_FILE_AUTHENTIK_TOKEN=/run/secrets/homepage_authentik_token`.
-- Mounts: `./config:/app/config` (try `:ro`) and `${APPS_ROOT}/homepage/logs:/app/config/logs`. If a read-only mount isn't possible, `deploy.sh` warns when the tree is dirty.
-- Labels:
-  - router `homepage`: `Host(dashboard.${DOMAIN})`, middlewares `lan-allowlist@file,authentik@file`, port 3000
-  - router `homepage-outpost`: `Host(dashboard.${DOMAIN}) && PathPrefix(/outpost.goauthentik.io/)` -> service `authentik`, priority 100
-- `docker.yaml`: `homelab: {host: socket-proxy, port: 2375}`.
-- `services.yaml`:
-  - Infrastructure (live, with `server: homelab` + `container`): Traefik (`https://traefik.{{HOMEPAGE_VAR_DOMAIN}}`) and Authentik (`https://auth.{{HOMEPAGE_VAR_DOMAIN}}`).
-  - "Apps (coming soon)" placeholders: Home Assistant `ha.`, IT Tools `tools.`, Linkwarden `links.`, Netdata `netdata.`, Pi-hole `pihole.`, Portainer `portainer.`.
-  - No ports anywhere.
-- `widgets.yaml`: resources and datetime. `bookmarks.yaml`: AWS console (Route 53), Tailscale admin, GitHub repo.
-- Widget keys are only ever passed via `HOMEPAGE_FILE_*`.
+- `ghcr.io/gethomepage/homepage:v2.7.0`, `proxy` + `socket-proxy`, no ports.
+- `HOMEPAGE_ALLOWED_HOSTS=dashboard.${DOMAIN}`, `HOMEPAGE_VAR_DOMAIN=${DOMAIN}`.
+- Optional `HOMEPAGE_FILE_AUTHENTIK_TOKEN`.
+- Routers `homepage` (`lan-allowlist@file,authentik@file`) and `homepage-outpost`.
+- Config committed; tiles use `{{HOMEPAGE_VAR_DOMAIN}}`.
+- Live tiles: Traefik and Authentik. Placeholders: Home Assistant, IT Tools, Linkwarden, Netdata, Pi-hole, Portainer.
 
 ### 6.7 Terraform
 
 **Conventions:**
-- All AWS resources via Terraform. Hyphens only, no em dashes, in names and descriptions.
-- `default_tags`: `Project=home-lab`, `ManagedBy=terraform`, `Owner=hennie`, `Repo=github.com/henniefrancis/home-lab`.
-- No org name, account ID, domain, zone ID or email in git.
-- Lock files committed.
-- `prevent_destroy` on the OIDC provider, both run roles, the primary zone and the registered domain.
-- **The developer loads the `aws-iam` skill (and `aws-secrets-manager` per the global rules) before IAM, OIDC or Roles Anywhere work.** Never print secret values.
+- All AWS resources via Terraform; hyphens only, no em dashes.
+- `default_tags`.
+- No identifiers in git; lock files committed.
+- `prevent_destroy` on the OIDC provider, run roles, primary zone, registered domain, and the SSM SecureString parameters.
+- **The developer loads the `aws-iam` and `aws-secrets-manager` skills before IAM, OIDC, Roles Anywhere or SSM work, and never prints secret values.**
 
-#### 6.7.1 `terraform/bootstrap` (workspace `home-lab-bootstrap`, local execution, SSO profile)
+#### 6.7.1 `terraform/bootstrap` (local execution, SSO)
 
-- Variables come from gitignored `terraform.tfvars`: `aws_profile` (`henniefrancis`), `hcp_organization`, `hcp_project` (`home-lab`), `hcp_workspace` (`home-lab`), `domain`.
-- **`oidc.tf`:** `aws_iam_openid_connect_provider` with `url = "https://app.terraform.io"` and `client_id_list = ["aws.workload.identity"]`. Omit the thumbprint if provider 6.71 allows it; otherwise use the `tls_certificate` data source. Import it if it already exists.
-- **`roles.tf`:** both roles have `max_session_duration = 3600` and `prevent_destroy`. Trust is `sts:AssumeRoleWithWebIdentity` with `StringEquals`:
-  - `app.terraform.io:aud = aws.workload.identity`
-  - `app.terraform.io:sub = organization:<org>:project:<project>:workspace:<ws>:run_phase:plan` (plan role), or `...:run_phase:apply` (apply role)
-- **Plan role (read-only):**
-  - `route53:Get*`, `route53:List*`
-  - `route53domains:GetDomainDetail`, `ListTagsForDomain`, `GetOperationDetail`
-  - `rolesanywhere:Get*`, `List*`
-  - `iam:GetRole`, `GetRolePolicy`, `ListRolePolicies`, `ListAttachedRolePolicies`, `ListRoleTags`
-  - `budgets:ViewBudget`, `ListTagsForResource`
-  - `sts:GetCallerIdentity`
-- **Apply role (scoped write):**
+- **OIDC provider** `app.terraform.io` (audience `aws.workload.identity`).
+- **Plan and apply roles:** trust uses exact `aud` and `sub` per phase (`organization:<org>:project:home-lab:workspace:home-lab:run_phase:plan|apply`); 1-hour sessions; `prevent_destroy`.
+- **Plan role** (read-only):
+  - Route 53, Route 53 Domains, Roles Anywhere, IAM and budget reads, as in rev 6
+  - `ssm:DescribeParameters`, `ssm:GetParameter(s)`, `ssm:ListTagsForResource` on `parameter/home-lab/*`
+  - `kms:Decrypt` on the `aws/ssm` key, only with `kms:ViaService = ssm.af-south-1.amazonaws.com`, **only if** the provider reads with decryption during refresh (dev to verify; if it doesn't, omit it, R47)
+- **Apply role:** rev 6 statements (Route 53, Route 53 Domains with its Deny list, Roles Anywhere in af-south-1, budget), plus:
 
 | Statement | Actions | Resource / conditions |
 |-----------|---------|-----------------------|
-| Route53 | `CreateHostedZone`, `DeleteHostedZone` (needed only for duplicate-zone cleanup; removed again in T5b if unused), `ChangeTagsForResource`, `UpdateHostedZoneComment`, `ChangeResourceRecordSets`, `GetChange`, plus the reads | `hostedzone/*`, `change/*`. `CreateHostedZone` on `*`. Tighten to the zone ARN in T5b |
-| Route53Domains | `GetDomainDetail`, `UpdateDomainNameservers`, `EnableDomainAutoRenew`, `DisableDomainAutoRenew`, `EnableDomainTransferLock`, `UpdateTagsForDomain`, `ListTagsForDomain`, `GetOperationDetail` | `*` (no resource-level scoping exists) with `aws:RequestedRegion = us-east-1`. No DS actions in Phase 1 (DNSSEC is Phase 2) |
-| DenyDomainDanger | **Deny** `DeleteDomain`, `TransferDomain`, `TransferDomainToAnotherAwsAccount`, `AcceptDomainTransferFromAnotherAwsAccount`, `RejectDomainTransferFromAnotherAwsAccount`, `CancelDomainTransferToAnotherAwsAccount`, `RegisterDomain`, `RenewDomain`, `UpdateDomainContact`, `UpdateDomainContactPrivacy`, `RetrieveDomainAuthCode`, `DisableDomainTransferLock`, `PushDomain`, `AssociateDelegationSignerToDomain`, `DisassociateDelegationSignerFromDomain` | `*` |
-| RolesAnywhere | Create/Update/Enable/Disable on TrustAnchor and Profile, `TagResource`, `UntagResource`, `PutNotificationSettings`, `ResetNotificationSettings` | `*` with `aws:RequestedRegion = af-south-1` |
-| AcmeRoleOnly | `iam:CreateRole`, `UpdateRole`, `UpdateAssumeRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `TagRole`, `UntagRole`, `DeleteRole` | only `role/home-lab-traefik-dns01` |
-| PassAcmeRole | `iam:PassRole` | same ARN; `iam:PassedToService = rolesanywhere.amazonaws.com` |
-| Budget | `budgets:ModifyBudget`, `ViewBudget`, `TagResource` | `budget/home-lab-monthly` |
+| SsmHomeLab | `ssm:PutParameter`, `DeleteParameter`, `GetParameter`, `GetParameters`, `AddTagsToResource`, `RemoveTagsFromResource`, `ListTagsForResource` | `arn:aws:ssm:af-south-1:<acct>:parameter/home-lab/*` |
+| SsmDescribe | `ssm:DescribeParameters` | `*` |
+| KmsViaSsm | `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey` | `aws/ssm` key ARN; `kms:ViaService = ssm.af-south-1.amazonaws.com` |
+| LabRolesOnly | IAM role CRUD as rev 6 (`CreateRole`, `UpdateRole`, `UpdateAssumeRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `TagRole`, `UntagRole`, `DeleteRole`) | `role/home-lab-traefik-dns01` **and** `role/home-lab-pi-host` only |
+| PassLabRoles | `iam:PassRole` | the same 2 ARNs; `iam:PassedToService = rolesanywhere.amazonaws.com` |
 
-- Neither role gets IAM on the OIDC provider or on `home-lab-hcp-*`, nor `iam:CreateUser`, `iam:CreateAccessKey`, `organizations:*`, `s3:*` or `kms:*`.
-- **T5b (M6):** run IAM Access Analyzer policy generation from CloudTrail for both roles, remove unused actions, and re-apply via bootstrap.
-- Outputs: `plan_role_arn`, `apply_role_arn`, `oidc_provider_arn`.
+- Still no IAM on `home-lab-hcp-*` or the OIDC provider.
+- No users or access keys.
+- No `ssm:*` outside `/home-lab/`.
 
-#### 6.7.2 `terraform/edge` (workspace `home-lab`, remote execution, dynamic credentials)
+#### 6.7.2 `terraform/edge` (remote, dynamic credentials)
 
-`providers.tf`:
+- **Providers:** default af-south-1 plus alias `us_east_1`, both via `tfc_aws_dynamic_credentials` (dev to verify alias reuse).
+- **Workspace variables (HCP):** as rev 6, plus `pki_generation` (default `gen-1`).
+  - The full set: `TFC_AWS_PROVIDER_AUTH`, `TFC_AWS_PLAN_ROLE_ARN`, `TFC_AWS_APPLY_ROLE_ARN`, `domain`, `existing_zone_id`, `existing_zone_comment`, `registered_name_servers`, `domain_auto_renew`, `domain_transfer_lock`, `existing_records`, `duplicate_zone_ids`, `pi_tailnet_ipv4`, `ca_cert_pem`, `budget_usd`, `budget_email` (sensitive), `pki_generation`.
+  - No tfvars files for `edge`.
+- **Adoption** (unchanged from rev 6):
+  - `imports.tf`: zone, `existing_records` (`for_each`), registered domain, duplicate zones.
+  - `checks.tf`: registered NS == zone NS.
+  - `records.tf`: wildcard (gated on `pi_tailnet_ipv4`), `www` TXT placeholder, CAA, collision rule.
+  - `domains.tf`: adopted registered domain, NS copied exactly, `prevent_destroy`, `aws_route53domains_domain` banned.
+  - The adoption plan must be a no-op (11.2).
 
-```hcl
-variable "tfc_aws_dynamic_credentials" {
-  description = "Injected by HCP Terraform dynamic provider credentials"
-  type = object({
-    default = object({ shared_config_file = string })
-    aliases = map(object({ shared_config_file = string }))
-  })
-}
-provider "aws" {
-  region              = "af-south-1"
-  shared_config_files = [var.tfc_aws_dynamic_credentials.default.shared_config_file]
-  default_tags { tags = local.tags }
-}
-provider "aws" {
-  alias               = "us_east_1"   # Route 53 Domains API is us-east-1 only
-  region              = "us-east-1"
-  shared_config_files = [var.tfc_aws_dynamic_credentials.default.shared_config_file]
-  default_tags { tags = local.tags }
-}
-```
-
-The dev must verify that the alias can reuse the default credentials. If it can't, use a tagged alias as described in the HCP docs.
-
-**Workspace variables** (set by the owner in HCP; documented with placeholders in `workspace-variables.example.md`). **No `*.tfvars` or `*.auto.tfvars` files for `edge`**; CLI-driven runs would upload them.
-
-| Name | Kind | Sensitive | Source |
-|------|------|-----------|--------|
-| `TFC_AWS_PROVIDER_AUTH` | env | no | `true` |
-| `TFC_AWS_PLAN_ROLE_ARN`, `TFC_AWS_APPLY_ROLE_ARN` | env | no | bootstrap outputs |
-| `domain` | tf | no | the real domain |
-| `existing_zone_id` | tf | no | `aws-preflight.sh` (the **delegated** zone) |
-| `existing_zone_comment` | tf | no | preflight (mirrored so the adoption plan is a no-op) |
-| `registered_name_servers` | tf (HCL list) | no | preflight, **copied exactly, same order** |
-| `domain_auto_renew`, `domain_transfer_lock` | tf | no | preflight (mirrored) |
-| `existing_records` | tf (HCL map) | no | preflight listing, excluding apex NS/SOA. Each entry: `{ name, type, ttl, records, alias = optional(...), set_identifier = optional(...) }` with values **exactly as found** |
-| `duplicate_zone_ids` | tf (HCL list) | no | preflight (expected empty) |
-| `pi_tailnet_ipv4` | tf | no | after M2 (`null` before) |
-| `ca_cert_pem` | tf (heredoc) | no | public CA cert PEM contents |
-| `budget_usd` | tf | no | `5` |
-| `budget_email` | tf | **yes** | the owner's own address |
-
-**`imports.tf`** (Terraform >= 1.7, so `for_each` works on import blocks):
-
-```hcl
-import {
-  to = aws_route53_zone.primary
-  id = var.existing_zone_id
-}
-import {
-  for_each = var.existing_records
-  to       = aws_route53_record.existing[each.key]
-  id       = join("_", compact([var.existing_zone_id, each.value.name, each.value.type, try(each.value.set_identifier, null)]))
-}
-import {
-  provider = aws.us_east_1
-  to       = aws_route53domains_registered_domain.this
-  id       = var.domain
-}
-import {
-  for_each = toset(var.duplicate_zone_ids)
-  to       = aws_route53_zone.duplicate[each.value]
-  id       = each.value
-}
-```
-
-**`route53.tf`:**
-- `aws_route53_zone.primary`: `name = var.domain`, `comment = var.existing_zone_comment` (may be changed to "home-lab public zone - managed by Terraform" in a later, reviewed apply), `prevent_destroy`.
-- `aws_route53_zone.duplicate`: `for_each` over `duplicate_zone_ids`, `force_destroy = true`, **no** `prevent_destroy`. It exists only so the duplicates can be removed through Terraform.
-
-**`records.tf`:**
-- `aws_route53_record.existing`: `for_each = var.existing_records`, recreating each record exactly as found (adopted).
-- **Planned lab records, created by Terraform:**
-  - `*.${domain}` A -> `var.pi_tailnet_ipv4`, TTL 300 (`count` gated on the variable being set)
-  - `www.${domain}` TXT `"reserved for public website"`, TTL 300
-  - apex CAA `0 issue "letsencrypt.org"`, `0 issuewild "letsencrypt.org"`, `0 issue "amazon.com"`, TTL 3600
-- **Collision rule:** if an existing record has the same name and type as a planned record (for example an existing `*` A, `www` record or apex CAA), the dev **imports it at the planned resource address** with an explicit `import` block. It is left out of `existing_records`, and the value change is made in a separate reviewed apply.
-- **Never managed:** apex NS/SOA (owned by the zone) and `_acme-challenge` (owned by Traefik at issuance).
-- **Never created:** apex A/AAAA/ALIAS or `www` A/AAAA/CNAME pointing at the Pi, and AAAA records for lab names.
-
-**`domains.tf`:**
-
-```hcl
-resource "aws_route53domains_registered_domain" "this" {
-  provider    = aws.us_east_1
-  domain_name = var.domain
-  dynamic "name_server" {
-    for_each = var.registered_name_servers          # exactly as currently registered
-    content { name = name_server.value }
-  }
-  auto_renew    = var.domain_auto_renew
-  transfer_lock = var.domain_transfer_lock
-  # contacts and privacy are NOT managed here
-  lifecycle { prevent_destroy = true }
-}
-```
-
-- `aws_route53domains_domain` is banned in this repo (CI grep guard). That resource can register, renew and deregister domains.
-
-**`checks.tf`:**
-
-```hcl
-check "registered_ns_match_zone" {
-  assert {
-    condition     = toset([for n in var.registered_name_servers : trimsuffix(lower(n), ".")]) == toset([for n in aws_route53_zone.primary.name_servers : trimsuffix(lower(n), ".")])
-    error_message = "Registered domain NS do not match the adopted hosted zone NS - wrong zone imported or delegation drift."
-  }
-}
-```
-
-**`iam-dns01.tf`**, role `home-lab-traefik-dns01`:
-- Trust: `rolesanywhere.amazonaws.com`, actions `sts:AssumeRole`, `sts:TagSession`, `sts:SetSourceIdentity`. Conditions:
-  - `ArnEquals aws:SourceArn` = the trust anchor
-  - `StringEquals aws:PrincipalTag/x509Subject/CN = home-lab-pi-traefik`
-  - `StringEquals aws:PrincipalTag/x509Issuer/CN = home-lab-offline-ca`
-- Inline policy:
+**`iam-dns01.tf`** (`home-lab-traefik-dns01`):
+- Trust: `rolesanywhere.amazonaws.com`; actions `sts:AssumeRole`, `sts:TagSession`, `sts:SetSourceIdentity`. Conditions:
+  - `aws:SourceArn` = the trust anchor
+  - `x509Subject/CN = home-lab-pi-traefik`
+  - `x509Subject/OU = var.pki_generation`
+  - `x509Issuer/CN = home-lab-offline-ca`
+- Policy:
   - `route53:GetChange` on `change/*`
   - `route53:ListResourceRecordSets` on the zone
-  - `route53:ChangeResourceRecordSets` on the zone, with `ForAllValues:StringEquals`: `ChangeResourceRecordSetsNormalizedRecordNames = ["_acme-challenge.<domain>"]`, `ChangeResourceRecordSetsRecordTypes = ["TXT"]`, `ChangeResourceRecordSetsActions = ["UPSERT","DELETE"]`
-- Add `ListHostedZonesByName` or `CREATE` only if Traefik logs show they are needed.
-- `max_session_duration = 3600`. Validate with Access Analyzer.
+  - `route53:ChangeResourceRecordSets` on the zone, with `ForAllValues:StringEquals`: `NormalizedRecordNames ["_acme-challenge.<domain>"]`, `RecordTypes ["TXT"]`, `Actions ["UPSERT","DELETE"]`
+- **No SSM or KMS.** 1-hour sessions.
 
-**`rolesanywhere.tf`** (af-south-1):
-- Trust anchor `home-lab-offline-ca`: `CERTIFICATE_BUNDLE` from `var.ca_cert_pem`; expiry `notification_settings` if supported.
-- Profile `home-lab-traefik`: `duration_seconds = 3600`.
-- Revocation is done by setting `enabled = false`.
+**`iam-pi-host.tf`** (new, `home-lab-pi-host`):
+- Trust: same shape as the ACME role, but `x509Subject/CN = home-lab-pi-host` (+ OU generation, issuer CN, SourceArn).
+- Policy:
 
-**`budget.tf`:** `home-lab-monthly`, USD 5, notifications at 80% ACTUAL and 100% FORECASTED to `var.budget_email`.
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "ReadHomeLabParams", "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"],
+      "Resource": ["arn:aws:ssm:af-south-1:<acct>:parameter/home-lab",
+                   "arn:aws:ssm:af-south-1:<acct>:parameter/home-lab/*"] },
+    { "Sid": "DecryptViaSsmOnly", "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "<aws/ssm key ARN via data.aws_kms_alias>",
+      "Condition": { "StringEquals": { "kms:ViaService": "ssm.af-south-1.amazonaws.com" } } }
+  ]
+}
+```
 
-**`outputs.tf`:** `zone_id`, `name_servers`, `trust_anchor_arn`, `profile_arn`, `role_arn`.
+- No `ssm:PutParameter`, `DeleteParameter` or `DescribeParameters`; no Route 53. 1-hour sessions.
+- Dev to verify the exact resource ARN needed for `GetParametersByPath` on the path root.
 
-**Rules:**
-- Never run `terraform destroy` on `home-lab`; destroy plans are disabled in the workspace.
-- **Cost:** about USD 0.50/month per hosted zone (duplicates add to this until removed). Roles Anywhere is free. HCP is on the free tier (owner to confirm the plan).
+**`rolesanywhere.tf`:**
+- Trust anchor `home-lab-offline-ca` (from `ca_cert_pem`).
+- Profiles:
+  - `home-lab-traefik` -> `home-lab-traefik-dns01`
+  - `home-lab-pi-host` -> `home-lab-pi-host`
+  - both with `duration_seconds = 3600`
+- Revocation:
+  - disable a profile, or
+  - bump `pki_generation` and reissue the certs
+
+#### 6.7.3 `ssm.tf` (new)
+
+```hcl
+locals {
+  secure_params = {
+    "authentik/secret-key"         = "Authentik secret key"
+    "authentik/postgres-password"  = "Authentik PostgreSQL password"
+    "authentik/bootstrap-password" = "Authentik akadmin bootstrap password - first start only"
+    "traefik/breakglass-htpasswd"  = "Traefik break-glass basic auth htpasswd line"
+    "tailscale/auth-key"           = "Tailscale one-off auth key - UNSET after join"
+    "homepage/authentik-token"     = "Homepage Authentik widget API token - optional"
+  }
+}
+resource "aws_ssm_parameter" "secret" {
+  for_each         = local.secure_params
+  name             = "/home-lab/${each.key}"
+  description      = each.value                 # hyphens only, no em dashes
+  type             = "SecureString"
+  tier             = "Standard"
+  # key_id omitted -> AWS managed key alias/aws/ssm
+  value_wo         = "UNSET-set-via-set-secret"
+  value_wo_version = 1                          # NEVER bump: it would overwrite real values with the placeholder (CI guard)
+  lifecycle { prevent_destroy = true }
+}
+resource "aws_ssm_parameter" "config" {
+  for_each       = {
+    "config/domain"              = var.domain
+    "config/route53-zone-id"     = aws_route53_zone.primary.zone_id
+    "config/ra-trust-anchor-arn" = aws_rolesanywhere_trust_anchor.this.arn
+    "config/ra-acme-profile-arn" = aws_rolesanywhere_profile.traefik.arn
+    "config/ra-acme-role-arn"    = aws_iam_role.dns01.arn
+  }
+  name           = "/home-lab/${each.key}"
+  type           = "String"
+  tier           = "Standard"
+  insecure_value = each.value                   # non-secret, Terraform-owned
+}
+```
+
+**Critical verification (T5, before the owner sets any real value):**
+1. Apply.
+2. Owner sets a dummy value on one parameter (`set-secret.sh`).
+3. Run a remote **refresh-only plan**.
+4. Inspect the state: the SecureString `value` must be empty or absent and `has_value_wo` must be true. Report match counts only.
+
+If the provider **does** read the decrypted value into state, stop and switch to the fallback: the owner-run `set-secret.sh --create` creates the SecureString parameters, Terraform manages only IAM/KMS and the String parameters, and this is documented as a broader exception. Record the result in the runbook.
+
+**Outputs:** zone, NS, trust anchor, both profile ARNs, both role ARNs. They are not sensitive, but `/etc/home-lab/aws.env` is filled from them and never committed.
+
+#### 6.7.4 Budget
+
+`home-lab-monthly`, USD 5, alerts at 80% actual and 100% forecast to `var.budget_email`.
+
+**Cost:**
+- About USD 0.50 per hosted zone.
+- SSM Standard parameters and standard-throughput API calls cost nothing.
+- `aws/ssm` has no monthly fee; KMS request charges are negligible at this volume.
+- Roles Anywhere is free; HCP is on the free tier.
+- **Total about USD 0.50-1/month.**
 
 ### 6.8 PKI (Roles Anywhere)
 
-1. **On the laptop**, outside the repo, run `pki-new-ca.sh`. It creates an ECDSA P-384 CA, CN `home-lab-offline-ca`, valid 5 years, with `basicConstraints=critical,CA:true,pathlen:0` and `keyUsage=critical,keyCertSign,cRLSign`. Store `ca.key` in the password manager.
-2. **On the Pi**, run `pki-pi-csr.sh`. It creates `secrets/rolesanywhere/pi.key` (P-256, 0400, uid 10001) and `pi.csr` (CN `home-lab-pi-traefik`).
-3. **On the laptop**, run `pki-sign-pi.sh`. It signs the CSR with `CA:false`, `digitalSignature`, `clientAuth`, SHA-256, valid 365 days. Copy `pi.crt` back to the Pi.
-4. Paste the CA cert PEM into the `ca_cert_pem` workspace variable, then delete the local copy of the CA key.
-5. Renew yearly. `cert-expiry.sh` and the preflight WARN at less than 30 days. No script ever echoes key material; they print fingerprints, subjects and expiry dates only.
+1. **CA:** offline ECDSA P-384, CN `home-lab-offline-ca`, 5 years, created on the laptop outside the repo. `ca.key` goes into the password manager.
+2. **On the Pi**, `pki-pi-csr.sh` generates **two** P-256 keys and CSRs under `/etc/home-lab/pki/`:
+   - `traefik.key` (10001:10001 0400), Subject `CN=home-lab-pi-traefik, OU=<pki_generation>`
+   - `host.key` (root:root 0400), Subject `CN=home-lab-pi-host, OU=<pki_generation>`
+3. **On the laptop**, `pki-sign.sh` signs both: `CA:false`, `digitalSignature`, `clientAuth`, SHA-256, 365 days. Copy the certs back.
+4. Renew yearly. `cert-expiry.sh` and preflight WARN at less than 30 days.
+5. No script echoes key material.
 
-### 6.9 AWS + HCP preflight (`scripts/aws-preflight.sh`)
+### 6.9 Laptop scripts
 
-Must pass before ANY apply. It is read-only, uses `--profile henniefrancis`, and prints no secrets.
+**`aws-preflight.sh`** (read-only; rev 6 checks plus):
+- `aws ssm describe-parameters --region af-south-1 --parameter-filters Key=Path,Option=Recursive,Values=/home-lab` succeeds. It lists existing `/home-lab/*` names only, never values; any that exist must be imported.
+- The `aws/ssm` alias exists (`aws kms describe-key --key-id alias/aws/ssm`). It is created on first use, so a WARN is fine.
+- The rev 6 checks:
+  - tooling, HCP, identity
+  - af-south-1 and Roles Anywhere reachability
+  - registration details
+  - hosted-zone inventory with the DELEGATED/DUPLICATE detection and the HCL `existing_records` output
+  - DS sanity
+  - existing IAM objects (now also `home-lab-pi-host`)
+  - permission simulation
 
-1. **Tooling:** AWS CLI v2; Terraform 1.17.x.
-2. **HCP:** `TF_CLOUD_ORGANIZATION` is set; the HCP credentials file is present (presence only); `terraform -chdir=terraform/bootstrap init` succeeds.
-3. **Identity:** `aws sts get-caller-identity`. FAIL on an expired SSO session, with a hint to run `aws sso login --profile henniefrancis`.
-4. **af-south-1:** `aws account get-region-opt-status --region-name af-south-1`. It must be enabled; if not, FAIL and point to the remedy (R24).
-5. **Roles Anywhere:** `aws rolesanywhere list-trust-anchors --region af-south-1` succeeds (also detects an SCP block).
-6. **Registration:** `aws route53domains get-domain-detail --region us-east-1`. The domain must be in this account. Print the NS in order, AutoRenew, TransferLock, privacy flags and the DnssecKeys count (expect 0).
-7. **Hosted zones (adoption inventory):**
-   - `aws route53 list-hosted-zones-by-name --dns-name <domain>`: list every zone with that exact name, showing zone ID, comment, record count, and its NS set (`get-hosted-zone`).
-   - Mark as **DELEGATED** the zone whose NS set equals the registered NS set. **FAIL if none match, or if more than one matches.**
-   - **WARN for every other zone (DUPLICATE)** and print its ID for `duplicate_zone_ids`, plus its non-NS/SOA record count. Duplicates with records need owner review before removal.
-   - For the delegated zone, `aws route53 list-resource-record-sets`: print every record except the apex NS and SOA (name, type, TTL, values, alias target, set identifier) in a copy-ready HCL map format for `existing_records`.
-   - Flag **collisions** with planned records (`*` A, `www` any type, apex CAA), any `_acme-challenge` leftovers, and any **apex or `www` address record pointing at a private/CGNAT IP**.
-   - Optionally save the listing to `adopt-snapshot/` (gitignored), never committed.
-8. **DNSSEC sanity:** `dig +short DS <domain> @<a co.za parent NS>` returns nothing; `dig NS <domain> @1.1.1.1` returns the delegated zone's NS.
-9. **Existing IAM:** check for the OIDC provider `app.terraform.io`, and the roles `home-lab-hcp-plan`, `home-lab-hcp-apply` and `home-lab-traefik-dns01`. WARN if any exist, because they must be imported.
-10. **Permissions:** `simulate-principal-policy` for the bootstrap actions (WARN-only), and `organizations describe-organization` (WARN-only).
+**`set-secret.sh`** (owner, laptop, SSO):
+- **Usage:** `set-secret.sh <name>` (for example `authentik/secret-key`), `--unset`, or `--create` (fallback mode only).
+- **Before writing:**
+  - refuses names outside `/home-lab/` and `config/*`
+  - checks that the parameter exists and is a SecureString
+  - checks `aws sts get-caller-identity`
+- **Input:** prompts twice with `read -rs`; compares; refuses empty values.
+- **Writing:** pipes `printf '%s' "$v" | jq -Rs --arg n "/home-lab/$name" '{Name:$n, Value:., Type:"SecureString", Overwrite:true}' | aws ssm put-parameter --cli-input-json file:///dev/stdin --region af-south-1`, then `unset v`.
+  - The parameter name is in jq argv; the value is not.
+- **Output:** prints the new parameter version only.
+- **Platform:** on Windows it runs in Git Bash or WSL. The dev verifies `file:///dev/stdin` works there; otherwise use a `mktemp` file in a 0700 temp dir, removed by `trap`.
+- **Hygiene:** never in shell history, never in the repo, never pasted into chats or agents.
+
+### 6.10 Pi scripts
+
+**`bootstrap.sh`** (root, idempotent):
+- Creates `/apps/{traefik,authentik,homepage,tailscale}`, `/apps/secrets` (0700 root) and `/etc/home-lab/pki` (0700 root).
+- Creates the Docker networks and loads `tun`.
+- Installs AWS CLI v2 (aarch64 official installer, signature verified).
+- Installs `aws_signing_helper` 1.8.5 aarch64 to `/usr/local/bin` (SHA256 verified, 0555).
+- Refuses to run if `preflight.sh` FAILs.
+
+**`fetch-secrets.sh`** (root; called by `deploy.sh`):
+- `set -euo pipefail`; `umask 077`; never `set -x`.
+- `trap` removes staging on any exit.
+- Sources `/etc/home-lab/aws.env`, builds `/etc/home-lab/aws-config` (`credential_process`), and runs `aws ssm get-parameters-by-path --path /home-lab --recursive --with-decryption --output json` piped straight into jq.
+- For each manifest row, writes the value into the staging file; validates (placeholder check, required check); chowns and chmods; then renames the staging dir into `/apps/secrets` atomically.
+- Renders `runtime.env` from `/home-lab/config/*`.
+- On AWS failure (offline): exit non-zero and keep the existing secrets. `deploy.sh` may continue with the last-good secrets only with `--offline` (explicit flag).
+
+**`deploy.sh`:** `git pull --ff-only`, then `fetch-secrets.sh`, then `docker compose --env-file config/lab.env --env-file /apps/secrets/runtime.env pull && up -d --remove-orphans`, then health summary and `cert-expiry.sh`. It never writes inside the repo checkout except via git.
+
+**`preflight.sh`** (rev 6 checks plus):
+- `/etc/home-lab/aws.env` is present.
+- PKI files: correct owners and modes; certs valid for more than 30 days; subject OU matches `pki_generation` (read from `aws.env`).
+- `aws_signing_helper` and AWS CLI are present at their pinned versions.
+- `/apps/secrets` is 0700 root.
+- **No secret files inside the repo checkout** (`git status --ignored` shows none).
 
 ## 7. Well-Architected lens
 
 - **Operational excellence:**
-  - Everything is in Terraform, including adopted hand-made DNS.
-  - HCP holds state, locking and run history.
-  - Preflight gates each apply.
-  - Milestone-by-milestone owner review.
-  - Runbooks, grouped Dependabot, and lean CI.
+  - The fully public repo is the documentation.
+  - Everything in Terraform, apart from the documented secret-value exception.
+  - One deploy command fetches secrets and starts services.
+  - Pi recovery is reproducible (`pi-recovery.md`).
+  - Milestone reviews.
 - **Security:**
-  - No long-lived AWS keys: HCP uses OIDC, the Pi uses Roles Anywhere, the owner uses SSO.
-  - Plan and apply roles are split, with trust pinned to the org/project/workspace/phase.
-  - The apply role can't escalate privileges and is denied dangerous domain actions.
-  - The DNS-01 role is limited to TXT `_acme-challenge`.
-  - No secrets in state.
-  - The dead Cloudflare account removes the leaked-token risk.
-  - LAN/tailnet allowlist, MFA, host-only cookies, and a GET-only socket proxy.
-  - No VCS-triggered runs on the public repo.
+  - No long-lived keys anywhere: HCP uses OIDC; the Pi uses two Roles Anywhere identities with separate keys and least-privilege roles; the owner uses SSO.
+  - Secrets: SecureString encrypted with KMS, never in state, git, CI or the repo checkout; fetched read-only and path-scoped; decrypt only via SSM.
+  - A Traefik compromise can't read secrets; a Pi compromise can be revoked by bumping `pki_generation`.
+  - Plus the LAN/tailnet allowlist, MFA, host-only cookies and the GET-only socket proxy.
 - **Reliability:**
-  - Adoption with no-op plans means no DNS change during adoption.
-  - A `check` guards against importing the wrong zone.
-  - `prevent_destroy` on the critical resources.
-  - Route 53 SLA, persisted ACME state, break-glass and Pi Connect.
-- **Performance efficiency:** about 3.4 GB worst-case memory ceiling on 8 GB. The ra-helper is idle except during renewals.
-- **Cost optimisation:** about USD 0.5-1/month, plus removal of any duplicate zones. USD 5 budget alert. Self-managed CA. HCP free tier.
-- **Sustainability:** one ARM host and managed services.
+  - Persisted last-good secrets survive offline boots.
+  - Atomic secret refresh; fail-closed on placeholders.
+  - Adoption no-op gates and `prevent_destroy`.
+  - Break-glass and Pi Connect.
+- **Performance:** unchanged; the fetch is one API call per deploy.
+- **Cost:** about USD 0.50-1/month (SSM Standard free, `aws/ssm` free, no Secrets Manager, no CMK); USD 5 alert.
+- **Sustainability:** one ARM host, managed services.
 
-## 8. Phased delivery plan (owner review and approval at the end of EVERY milestone)
+## 8. Phased delivery plan (owner review at the end of EVERY milestone)
 
 | Milestone | Depends on | Acceptance |
 |-----------|-----------|------------|
-| **M0 - Repo reset** | - | New PRIVATE `home-lab` repo with one commit from a fresh directory. gitleaks over the full history = 0. CI green in under 5 minutes. The Cloudflare token gate is **satisfied** (account deleted). |
-| **M1 - HCP + AWS foundation + adopt existing DNS** | M0, U9 | 1. HCP org, project and the 2 workspaces exist. 2. `aws-preflight.sh` passes: exactly one DELEGATED zone, duplicates listed, records inventoried, DS count 0. 3. Bootstrap applied (OIDC provider + 2 roles). 4. Workspace variables set. 5. **Adoption apply:** the plan imports the zone, all existing records, the registered domain and any duplicate zones, with **0 to destroy, 0 to replace, no change to any record value, NS, auto-renew or transfer lock**. Only tag additions are allowed. The `check` passes. The owner approves. 6. Follow-up reviewed applies: create the `www` placeholder, CAA, ACME role, Roles Anywhere trust anchor (after `ca_cert_pem` exists, else M2) and budget. Resolve collisions and DROP/REPLACE decisions on the inventoried records. Remove duplicate zones (owner-approved). 7. A fresh plan shows **No changes**. 8. CloudTrail shows writes only by `home-lab-hcp-apply`, and no `UpdateDomainNameservers` at all. 9. tflint, trivy and Access Analyzer are clean. |
-| **M2 - Pi preflight, bootstrap, Tailscale, PKI, wildcard** | M0 (parallel with M1) | `preflight.sh` passes. DHCP reservation in place. Bootstrap is idempotent. The Pi has joined the tailnet (`tag:homelab`) and `tailscale.env` is emptied. The Pi cert is issued. A helper `credential-process` test returns credentials, verified without printing them. `ca_cert_pem` and `pi_tailnet_ipv4` are set, and a remote apply creates the trust anchor and the wildcard record. `dig random.<domain>` returns the tailnet IP; `www` returns NODATA. |
-| **M3 - Traefik + socket proxy + ra-helper (STAGING)** | M1, M2 | Staging wildcard issued via Route 53 (issuer contains "(STAGING)", SAN exactly `*.${DOMAIN}`). CloudTrail shows `CreateSession` and `ChangeResourceRecordSets` by `home-lab-traefik-dns01`. Q14 negative tests pass. 308 redirect; headers present; no `docker.sock` in Traefik. The dashboard is on break-glass auth for now. |
-| **M4 - Authentik SSO** | M3 | MFA enforced. Per-app providers created by blueprint. Outpost routes work. Unauthenticated requests get a 302 to `auth.`. Cookies have no `Domain=` attribute. A non-admin user is denied. Fail-closed when Authentik is down. Break-glass tested. The dashboard router now uses `authentik@file`. |
-| **M5 - Homepage on `dashboard.`** | M4 | Login, then dashboard. Live statuses come via the socket proxy. Six placeholder tiles. `ALLOWED_HOSTS` enforced. No ports anywhere. The repo tree stays clean. |
-| **M6 - Production cert, hardening, go public** | M5 | `ACME_ENV=prod` and the production wildcard is served. HSTS max-age 1 year. testssl shows TLS 1.2+ only. T5b role tightening applied. HCP workspaces have no VCS connection and destroy plans disabled. A fresh plan shows No changes. README and runbooks complete. No open High or Critical issues. TAM Go and CTO sign-off. **Repo flipped PUBLIC**, with secret scanning and push protection on. |
+| **M0 - Repo reset** | - | Done: PRIVATE repo, clean history, CI green. Rev 7 adds a public-readiness rule: every committed file is fit to be public now. |
+| **M1 - HCP + AWS foundation + adopt DNS + SSM + identities** | M0, U9 | 1. HCP objects exist. 2. `aws-preflight.sh` passes. 3. Bootstrap applied (OIDC + plan/apply roles **with the rev 7 SSM/KMS/pi-host additions**). 4. Workspace variables set. 5. Adoption apply is a no-op (imports only + tags; the `check` passes). 6. Follow-up applies: `www` placeholder, CAA, ACME role, **pi-host role**, Roles Anywhere trust anchor + **both profiles** (once `ca_cert_pem` exists), **SSM SecureString parameters (placeholders) and config String parameters**, budget; inventory decisions; duplicate-zone removal. 7. **The write-only verification (6.7.3) passes.** 8. The owner sets the real values with `set-secret.sh` (U12); a refresh-only plan shows No changes and the state has no values. 9. A fresh plan shows No changes. 10. CloudTrail shows writes only by `home-lab-hcp-apply`, and SSM writes only by the owner's SSO session. 11. tflint, trivy and Access Analyzer are clean. |
+| **M2 - Pi preflight, bootstrap, PKI, first secret fetch, Tailscale, wildcard** | M1 (identities + parameters) | 1. `preflight.sh` passes. 2. `bootstrap.sh` installs AWS CLI + helper (checksums verified). 3. **Two** Pi certs issued and installed. 4. `/etc/home-lab/aws.env` written. 5. **`fetch-secrets.sh` succeeds**: correct files, owners and modes; no output values; placeholder detection tested. 6. Tailscale joins using the SSM key, which is then UNSET. 7. `pi_tailnet_ipv4` applied, so the wildcard exists. 8. Negative tests S17 pass. |
+| **M3 - Traefik + ra-helper (STAGING)** | M1, M2 | Staging wildcard via Route 53 with the traefik identity; Q14; 308; headers; no `docker.sock`; break-glass htpasswd from SSM works. |
+| **M4 - Authentik SSO** | M3 | Secrets from SSM; MFA; per-app providers; host-only cookies; fail-closed; break-glass. |
+| **M5 - Homepage** | M4 | As in rev 6. |
+| **M6 - Production + public** | M5 | Prod ACME via a PR to `config/lab.env`; HSTS 1 year; T5b role tightening (now including the pi-host role); public-readiness review (S12); **repo flipped PUBLIC**; secret scanning and push protection on. |
 
-## 9. Work breakdown for the full-stack-developer (ordered)
+## 9. Work breakdown for the full-stack-developer
 
-1. **T1 Fresh repo.** New directory and `git init -b main`; never touch the old copy's git. Copy only this plan across. Add `.gitattributes` first, then `.gitignore`, `.editorconfig`, MIT `LICENSE`, `SECURITY.md` and the `secrets/` placeholders. Mark scripts executable. Run gitleaks before the first commit.
-2. **T2 Lean CI.**
-   - One job, with `concurrency` cancel-in-progress, `paths` filters and caching; target under 5 minutes.
-   - Steps:
-     - gitleaks (full history)
-     - yamllint and shellcheck
-     - `docker compose config -q` with `.env.example` and dummy secret files
-     - `terraform fmt -check -recursive`
-     - `terraform init -backend=false && terraform validate` per module (no HCP token)
-     - tflint and `trivy config`
-     - guards: fail if tracked `*.tfvars` or `*.auto.tfvars` files exist (other than `*.example`), and fail if `aws_route53domains_domain` appears anywhere
-   - Pin actions to SHAs. Dependabot weekly and grouped.
-3. **T3 `aws-preflight.sh`** (6.9), including the zone, record and NS inventory and the HCL output for `existing_records`.
-4. **T4 `terraform/bootstrap`** and `hcp-terraform-bootstrap.md`. Load the `aws-iam` skill first. Apply only with owner approval.
-5. **T5 `terraform/edge`** (6.7.2) and `adopt-existing-route53.md` (11.2). The first plan must satisfy the M1 adoption criteria. Validate policies with Access Analyzer.
-6. **T5b (M6)** Access Analyzer policy generation from CloudTrail; tighten via bootstrap.
-7. **T6 PKI scripts** and `rolesanywhere-pki.md`.
-8. **T7 Pi scripts:** `preflight.sh` (arm64 kernel and userland, OS, boot device, disk, Docker/Compose >= 2.20, memory cgroup FAIL with the `cmdline.txt` fix, NTP, IP/DHCP, ssh, ports 80/443/53, `/dev/net/tun`, arm64 manifests, `.env`/`secrets` modes, CIDR sync, PKI expiry, `www` NODATA), plus `bootstrap.sh`, `gen-secrets.sh`, `deploy.sh` and `cert-expiry.sh`.
-9. **T8** `traefik/*` and ra-helper.
-10. **T9** `tailscale/*`.
-11. **T10** `authentik/*`.
-12. **T11** `homepage/*`.
-13. **T12 Docs.**
-    - README: architecture; domain layout; "no ports, all TLS, start at `dashboard.`"; AWS and HCP prerequisites; the "no console DNS changes" rule; quick start; security model; roadmap.
-    - All runbooks.
-    - Mirror everything into the Obsidian vault "Hennie Francis", folder "Home Lab".
-14. **T13** Hand off to QA and security at each milestone.
+1. **T1-T2** done in M0. Extend the CI guards (T2b, below).
+2. **T2b CI additions:**
+   - fail if `value_wo_version` in `ssm.tf` differs from 1
+   - fail if any `aws_ssm_parameter` with `type = "SecureString"` uses `value =`
+   - fail if `config/` contains `DOMAIN=`, `arn:aws:` or a 12-digit account-ID pattern
+   - keep the existing guards (tfvars, banned `aws_route53domains_domain`, gitleaks)
+3. **T3** `aws-preflight.sh` (6.9 plus the SSM checks).
+4. **T4** `terraform/bootstrap` with the rev 7 role additions.
+5. **T5** `terraform/edge`: adoption, records, domains, `iam-dns01.tf`, **`iam-pi-host.tf`**, `rolesanywhere.tf` (2 profiles, OU generation), **`ssm.tf`**, budget. Run the write-only verification. Access Analyzer.
+6. **T5c** `scripts/set-secret.sh` and `docs/runbooks/secrets-ssm.md`.
+7. **T6** PKI scripts (two Pi identities).
+8. **T7** Pi scripts: `preflight.sh`, `bootstrap.sh`, **`fetch-secrets.sh`**, `deploy.sh`, `cert-expiry.sh`, plus `config/lab.env` and `config/secrets-manifest.tsv`.
+9. **T8-T11** Traefik/ra-helper, Tailscale, Authentik, Homepage, with secrets from `/apps/secrets`.
+10. **T12 Docs.**
+    - **README for the public:**
+      - what the lab is
+      - architecture diagram
+      - "everything here is real config; secrets live in SSM and are fetched with short-lived certificate-based credentials"
+      - how to fork it (replace `config/lab.env`, the Terraform workspace variables and the SSM values)
+      - the security model and no-ports principle
+      - the roadmap
+    - **Runbooks:**
+      - `secrets-ssm.md`
+      - `rotate-secrets.md` (per secret, including the coordinated Postgres password change)
+      - `pi-recovery.md`
+      - the rev 6 runbooks
+    - **Obsidian mirror.**
+11. **T5b (M6)** Access Analyzer tightening of all four roles (plan, apply, dns01, pi-host).
 
 ## 10. Testing and security hooks
 
 **QA**
-- **Q1:** CI green in under 5 minutes; tfvars and banned-resource guards work.
-- **Q2:** `preflight.sh` and `aws-preflight.sh` FAIL/WARN logic: expired SSO, region disabled, domain not in the account, zero or multiple delegated zones, duplicates, collisions.
-- **Q3:** `bootstrap.sh` is idempotent.
-- **Q4:** Lab hosts give a 308, the right headers and no ports. The apex and `www` are not served by the Pi:
-  - no apex A record pointing at the Pi
-  - `www` returns NODATA
-  - `--resolve` against the Pi gives a Traefik 404
-- **Q5:** The same cert serial on all lab hosts; SAN exactly `*.${DOMAIN}`; staging, then prod; the switch is reversible.
-- **Q6:** Per-app SSO with a silent second login. No `Domain=` on cookies. A non-admin user is denied.
-- **Q7:** Fail-closed when Authentik is down; break-glass works.
-- **Q8:** The allowlist returns 403 from a non-allowlisted bridge source.
-- **Q9:** The Tailscale path works off-LAN, and the access log shows a 100.x source.
-- **Q10:** After a reboot, no new ACME order and the same serial.
-- **Q11:** Memory stays under limits with no OOM kills over 24 hours.
-- **Q12:** Homepage: tiles, statuses, `ALLOWED_HOSTS` rejection, clean tree.
-- **Q13:** The ra-helper survives a Traefik recreate; port 9911 is unreachable from other containers.
-- **Q14:** DNS-01 least privilege:
-  - TXT `_acme-challenge` is allowed
-  - any other name, type or zone is denied
-  - IAM and S3 are denied
-- **Q15 (new): adoption no-op.**
-  - The first `edge` plan shows imports only, plus tag additions.
-  - Public DNS answers for every inventoried record are identical before and after the adoption apply (`dig` the list from the preflight snapshot).
-  - The registered NS are unchanged.
-- **Q16 (new): drift.** At every milestone review, a fresh remote plan shows **No changes**. Any drift is investigated as a possible console change and reconciled through Terraform.
-- **Q17: run-role separation.** CloudTrail shows no writes from `home-lab-hcp-plan`. A scratch workspace in the same org can't assume either role.
+- **Q1-Q17:** as in rev 6. Q1 now includes the T2b guards.
+- **Q18 (new) - secret fetch:**
+  - files land with the manifest owners and modes
+  - `deploy.sh` and journal output contain no secret values (grep for value fingerprints computed separately by the owner; report counts only)
+  - a placeholder in a required parameter makes the deploy fail closed without touching the existing secrets
+  - an interrupted fetch leaves no staging dir
+  - nothing secret appears in the repo checkout (`git status --ignored`)
+- **Q19 (new) - offline boot:** with the uplink unplugged, reboot. All services come up on the persisted secrets. `deploy.sh` without `--offline` fails clearly.
+- **Q20 (new) - Pi recovery drill (tabletop or real on a spare SD):**
+  - new keys and certs
+  - `aws.env`
+  - deploy restores all secrets from SSM
+  - Authentik comes back from the blueprint (users and MFA need re-enrolment until backups exist)
 
 **Security**
-- **S1:** New-repo full-history scan = 0. The archive is private. The Cloudflare account is confirmed deleted.
-- **S2:** No secret values in container Env. Traefik's Env holds only the zone ID, region and IMDS endpoint.
-- **S3:** File modes: `.env` 600; `secrets/` 700; `pi.key` 0400 owned by 10001; `acme-*.json` 600.
-- **S4:** The socket proxy is GET-only for Traefik and Homepage; it is not reachable from `proxy` or the LAN; 2375 is not published.
-- **S5:** Host listeners are 80/443 only (plus sshd and tailscaled). 9911 is isolated. No 3000, 8080, 9000, 9443 or 5432.
-- **S6:** Header spoofing is blocked; `TRUSTED_PROXY_CIDRS=${PROXY_SUBNET}`.
-- **S7:** Container hardening, including the ra-helper (non-root, read-only).
-- **S8:** Authentik: MFA, `akadmin` handled, initial setup closed, recovery tested, host-only cookies. Every lab router except `auth.` carries `authentik@file` plus an outpost route.
-- **S9:** No secrets in either HCP state; report match counts only. Roles Anywhere trust conditions. Exact DNS-01 permissions. No IAM users or keys. The CA key is offline.
-- **S10:** The Tailscale policy is minimal.
-- **S11:** TLS 1.2+ only; `sniStrict`.
-- **S12:** Public-readiness: no domain, account ID, ARNs, zone ID, HCP org, email, IPs (beyond example ranges) or keys in git. The TAM also reviews this.
-- **S13: zone review after adoption.**
-  - Inventoried records are classified KEEP/REPLACE/DROP, and the decisions are documented.
-  - No apex or `www` address record pointing at the Pi; the `www` placeholder is present.
-  - CAA is as agreed.
-  - No stray `_acme-challenge` records.
-  - The wildcard points at a 100.64/10 address.
-  - Duplicate zones have been removed via Terraform.
-- **S14: no out-of-band DNS changes.** CloudTrail since adoption shows Route 53 and Route 53 Domains write calls only from `home-lab-hcp-apply` (and `home-lab-traefik-dns01` for `_acme-challenge` TXT).
-- **S15: registered domain.**
-  - `prevent_destroy` is set, and `aws_route53domains_domain` is absent.
-  - The NS are unchanged by adoption, and the `check` passes.
-  - Contacts are not managed.
-  - The DS count is 0.
-- **S16: OIDC trust.**
-  - Exact `aud` and per-phase `sub`, with no wildcard on org, project or workspace.
-  - No self-escalation; the Deny list is present.
-  - The plan role is read-only.
-  - Sessions last 1 hour.
-  - Workspaces are CLI-driven, with auto-apply off, destroy plans disabled and `budget_email` sensitive.
-  - The HCP token is not in the repo or CI.
+- **S1-S16:** as in rev 6.
+  - **S9** adds: after the owner sets real values and a refresh-only plan runs, HCP state for every SecureString shows no value (`has_value_wo = true`).
+  - **S12** adds: every committed file is public-safe (`config/lab.env` has CIDRs, TZ and paths only).
+- **S17 (new) - identity isolation**, all using session credentials and printing API outcomes only:
+  - **pi-host role:**
+    - `GetParameter /home-lab/authentik/secret-key` succeeds
+    - `GetParameter /not-home-lab/x` returns **AccessDenied** (not ParameterNotFound)
+    - `PutParameter` is denied
+    - any `route53:*` call is denied
+    - `kms:Decrypt` called directly (not via SSM) is denied
+  - **ACME (traefik) role:** `ssm:GetParameter /home-lab/...` is denied; `kms:Decrypt` is denied.
+  - **Mounts:** the host key is not mounted into any container (`docker inspect` mounts); the traefik key is mounted only in ra-helper.
+  - **Revocation:** after bumping `pki_generation` in a test, the old certs fail `CreateSession` or assume-role. Revert afterwards.
+- **S18 (new) - parameter hygiene:**
+  - every `/home-lab/*` secret is SecureString, Standard tier, `alias/aws/ssm`
+  - `/home-lab/config/*` holds only non-secret values
+  - `value_wo_version = 1`
+  - CloudTrail `PutParameter` events come only from the owner's SSO role (and the apply role at creation)
+  - no secret has been passed via argv (inspect `set-secret.sh`)
+  - the password manager holds every value (owner attests)
+- **S19 (new) - Pi secret files:**
+  - `/apps/secrets` is 0700 root, with modes per the manifest
+  - `/etc/home-lab/pki` is 0700, `host.key` root 0400
+  - `/etc/home-lab/aws-config` and `aws.env` are 0600
+  - no secrets in the container Env (S2)
 
 ## 11. Manual steps for the owner
 
 | # | When | Step |
 |---|------|------|
-| U0 | **Now** | **Stop making DNS changes in the AWS console.** If something urgent comes up before M1, write it down so it can be reconciled at adoption. |
-| U3 | M0 | GitHub: confirm the archive is private. Create `home-lab` PRIVATE and empty. Enable secret scanning, push protection, Dependabot and branch protection. |
-| U4 | M0 | Rename the old local copy to `...\home-lab-archive` and point its remote at `home-lab-archive.git`. Never push from it. |
-| U5 | M2 | DHCP reservation for the Pi; set `PI_LAN_IP`. |
-| U6 | M2 | Pi: memory cgroup if preflight asks for it; optional key-only SSH; consider an SSD. |
-| U7 | M2 | Clone to `/opt/home-lab`. Create `.env` (with your own `ACME_EMAIL` if you want one), `breakglass_users`, run `gen-secrets.sh`, and save the values in the password manager. |
-| U8 | M2 | Tailscale: paste the policy; generate a one-off `tag:homelab` auth key; join; empty the file; install clients. Set the `pi_tailnet_ipv4` workspace variable. |
-| **U9** | **M1** | **HCP Terraform + AWS.**<br/>1. Create the HCP org (if needed), project `home-lab`, workspace `home-lab-bootstrap` (CLI-driven, Local) and workspace `home-lab` (CLI-driven, Remote, auto-apply off, destroy plans disabled).<br/>2. Run `terraform login`, set `TF_CLOUD_ORGANIZATION=<org>` (user env var), and run `aws sso login --profile henniefrancis`.<br/>3. Run `scripts/aws-preflight.sh` and review the zone inventory with the developer. Decide KEEP/REPLACE/DROP for each existing record, and confirm any duplicate zones can be removed.<br/>4. Fill in gitignored `terraform/bootstrap/terraform.tfvars` and approve the bootstrap apply.<br/>5. Set the `home-lab` workspace variables (6.7.2), including `budget_email` (sensitive).<br/>6. Approve the adoption apply (no-op), then the follow-up applies. |
-| U9c | M2 | PKI: create the CA outside the repo and put `ca.key` in the password manager. Create the Pi CSR, sign it, copy the cert back, set `ca_cert_pem`, and delete the local CA key copy. |
-| U10 | M4 | Authentik first-run hardening (6.4). |
-| U11 | M6 | Approve the switch to production ACME. Confirm the HCP workspace settings. Flip the repo to public. |
-
-**At every milestone:** review the developer's summary and the Obsidian notes, check that the fresh plan shows "No changes", then approve the next milestone.
+| U0 | Now | No console DNS changes. **Never paste secret values into chats or agents.** |
+| U5-U7 | M2 | DHCP reservation; Pi prep (memory cgroup, SSH, SSD); clone to `/opt/home-lab`; run `bootstrap.sh`. |
+| U8 | M2 | Tailscale: paste the policy; generate a one-off `tag:homelab` key and store it with `set-secret.sh tailscale/auth-key`; run deploy (the node joins); run `set-secret.sh --unset tailscale/auth-key`; set the `pi_tailnet_ipv4` workspace variable. |
+| U9 | M1 | HCP objects; `terraform login`; `TF_CLOUD_ORGANIZATION`; `aws sso login --profile henniefrancis`; `aws-preflight.sh`; inventory decisions; bootstrap apply; workspace variables; adoption apply; follow-up applies. |
+| U9c | M1/M2 | PKI: create the CA (password manager); set `ca_cert_pem`; on the Pi, generate the 2 CSRs; sign both on the laptop; install the certs. |
+| **U12** | **M1, after the parameters exist** | **Set the secrets.** Generate each value in the password manager (store it there first), then run `scripts/set-secret.sh` for `authentik/secret-key` (60+ chars), `authentik/postgres-password` (under 99 chars), `traefik/breakglass-htpasswd` (bcrypt line; the plaintext stays in the password manager), and optionally `authentik/bootstrap-password` and `homepage/authentik-token` (after M4). |
+| **U13** | **M2** | Write `/etc/home-lab/aws.env` on the Pi from the `terraform output` values (root 0600). |
+| U10 | M4 | Authentik first-run hardening; set `authentik/bootstrap-password` back to UNSET if it was used. |
+| U11 | M6 | Approve the prod ACME PR; confirm the HCP settings; flip the repo to public. |
 
 ### 11.1 Route 53 records after Phase 1
 
-| Type | Name | Value | Managed as |
-|------|------|-------|-----------|
-| NS/SOA | apex | Route 53 (unchanged) | part of the adopted zone |
-| (various) | existing records from the inventory | as found, then KEEP/REPLACE/DROP via reviewed applies | `aws_route53_record.existing[...]` (adopted) |
-| A | `*.${DOMAIN}` | Pi tailnet IPv4, TTL 300 | new |
-| TXT | `www.${DOMAIN}` | `"reserved for public website"`, TTL 300 | new (or adopted at this address if `www` existed) |
-| CAA | apex | `letsencrypt.org` (issue, issuewild), `amazon.com` (issue), TTL 3600 | new (or adopted if CAA existed) |
-| TXT | `_acme-challenge.${DOMAIN}` | transient | Traefik only; never in Terraform |
+Unchanged from rev 6:
+- the adopted zone and its existing records (each KEEP, REPLACE or DROP via reviewed applies)
+- the wildcard A record pointing at the Pi's tailnet IP
+- the `www` TXT placeholder
+- CAA records for `letsencrypt.org` and `amazon.com`
+- `_acme-challenge` managed by Traefik only
+- no apex or `www` address records pointing at the Pi
 
-Absent by design:
-- apex or `www` address records pointing at the Pi
-- AAAA records for lab names
-- per-service records
-- DS records (Phase 2)
+### 11.2 Runbook: adopt the existing Route 53 setup
 
-### 11.2 Runbook: adopt the existing Route 53 setup (`adopt-existing-route53.md`)
+Unchanged from rev 6, steps AD1-AD7:
+1. Console freeze; run the preflight.
+2. Classify each existing record.
+3. Set the workspace variables.
+4. Run the no-op adoption plan (imports only, 0 destroy, 0 replace, tags only).
+5. Apply it and check public DNS is unchanged.
+6. Make the follow-up changes, one concern per apply.
+7. Confirm a fresh plan shows "No changes".
 
-| Step | Action | Check |
-|------|--------|-------|
-| AD1 | Console freeze (U0). Run `aws-preflight.sh`. | Exactly one DELEGATED zone, whose NS match the registered NS and public `dig NS`. DS count 0. |
-| AD2 | Review the inventory with the owner: classify each record as KEEP, REPLACE or DROP; identify collisions with planned records; identify duplicate zones. | The decisions are recorded in the runbook, without real values. |
-| AD3 | Set the workspace variables: `existing_zone_id`, `existing_zone_comment`, `registered_name_servers` (exact order), `domain_auto_renew`, `domain_transfer_lock`, `existing_records` (values **exactly as found**), `duplicate_zone_ids`. For collisions, write the dedicated `import` blocks. | - |
-| AD4 | **Adoption plan:** a remote `terraform plan`. | Imports only; `0 to destroy`, `0 to replace`; no attribute changes except tag additions; the `check` passes. If anything else appears, fix the config. Never apply a diff you don't understand. |
-| AD5 | Owner approves, then the adoption apply runs. | Public DNS answers unchanged (Q15); registered NS unchanged; CloudTrail shows no `UpdateDomainNameservers`. |
-| AD6 | **Follow-up reviewed applies**, one concern per apply: (a) planned records (`www` placeholder, CAA); (b) REPLACE edits; (c) DROP removals (delete the map entries); (d) remove duplicate zones by deleting the IDs from `duplicate_zone_ids` (`force_destroy` deletes their records first); (e) optional zone comment update. | Each plan shows only the intended change; public DNS checked after each apply. |
-| AD7 | A fresh plan shows **No changes**. | The M1 gate. |
+### 11.3 Runbook: Pi recovery (`pi-recovery.md`, new)
 
-**Recovery from a bad apply:** every Route 53 change is a reviewed plan, so revert the variable or config and apply again. The zone and registered domain can't be destroyed (`prevent_destroy`, destroy plans disabled). Registered NS changes are blocked by the `check` unless done intentionally.
+1. Flash a new Pi, then run `preflight.sh` and `bootstrap.sh`.
+2. **If the old Pi was lost or stolen:** bump `pki_generation` in the workspace variables and apply. The old certs stop working.
+3. Generate 2 CSRs on the new Pi; sign them with the CA from the password manager; install the certs.
+4. Write `/etc/home-lab/aws.env`.
+5. Run `deploy.sh`, which restores all secrets from SSM. The password manager remains the offline backup if SSM is unavailable; in that case use `set-secret.sh` from the laptop.
+6. **Tailscale:** generate a new one-off key, `set-secret.sh`, deploy, unset. Remove the old node in the Tailscale admin.
+7. **Authentik data** (users, MFA) is lost until backups exist (a later phase). Config comes back from the blueprints. Re-enrol MFA.
 
 ## 12. Risks and mitigations
 
+**Carried over from rev 6:** R1-R14, R16-R18, R20-R25 and R28-R39 are unchanged. Notes:
+- R25 (a secret in state) is now addressed by `value_wo`.
+- The R20 cert expiry now covers 2 certs.
+
+New in rev 7:
+
 | # | Risk | L / I | Mitigation |
 |---|------|-------|------------|
-| R1 | Old secrets go public | Low / Crit | Fresh repo; gitleaks; push protection. The Cloudflare account is deleted. |
-| R2 | Let's Encrypt rate limits | Med / Med | Staging until M6; separate storage per CA; persisted state. |
-| R3 | Rebinding protection drops 100.64/10 answers | Med / Med | Tailscale clients; hosts-file fallback; split DNS once Pi-hole arrives. |
-| R4 | Memory cgroup disabled | Med / Med | Preflight FAIL with the documented fix. |
-| R5 | SD card wear | Med / High | SSD; log rotation. |
-| R6 | Authentik outage | Med / Low | Fail-closed; break-glass; Pi Connect; recovery key. |
-| R7 | A Docker outage takes Tailscale down | Low / Med | Pi Connect. |
-| R8 | Authentik resource use | Low / Med | Memory limits; Q11. |
-| R9 | Header spoofing | Low / High | Traefik is the edge; trusted CIDRs. |
-| R10 | A compromised Pi misuses the DNS-01 role | Low / Med | TXT `_acme-challenge` only; CAA; disable the profile. |
-| R11 | HSTS misconfiguration | Low / Low | Short max-age until M6; lab hosts only. |
-| R12 | CRLF line endings break scripts | Med / Low | `.gitattributes`. |
-| R13 | Docker/Tailscale iptables interplay | Low / Med | Q9. |
-| R14 | Authentik blueprint drift | Low / Low | Pinned version; UI fallback. |
-| R16 | Homepage can read container metadata | Med / Med | No secrets in Env; GET-only proxy. |
-| R17 | Homepage writes into the repo | Med / Low | Logs mount; dirty-tree warning. |
-| R18 | A push from the old working copy | Low / High | Fresh directory; S1. |
-| R20 | The Pi's Roles Anywhere cert expires | Med / High | Expiry warnings; LE renewal buffer. |
-| R21 | The CA key is lost | Low / Med | Password manager; documented rebuild. |
-| R22 | The ra-helper detaches from the Traefik netns | Med / Med | `up -d`; Q13. |
-| R23 | The wildcard covers the future website's names | Low / Med | `www` placeholder; no apex A record pointing at the Pi. |
-| R24 | af-south-1 disabled or blocked by an SCP | Low / Med | Preflight gate; `aws_account_region`; fallback region for Roles Anywhere (eu-west-1). |
-| R25 | A secret lands in state | Low / High | Design rule; S9. |
-| R28 | Personal data in HCP state | Low / Low | Sensitive variable; minimal data. |
-| R29 | Over-broad OIDC trust | Low / Crit | Exact `sub` and `aud`; S16; Q17. |
-| R30 | Run-role privilege escalation | Low / High | No IAM on its own roles or the OIDC provider; Deny list. |
-| R31 | `route53domains` permissions can't be ARN-scoped | Low / Med | Deny dangerous actions; minimal allowed actions; CloudTrail. |
-| R32 | A stray local tfvars file overrides workspace variables | Med / Med | No tfvars for `edge`; CI guard. |
-| R33 | HCP outage blocks changes | Low / Med | DNS keeps serving; wait it out; never fall back to the console. |
-| R34 | CI minutes run out while private | Med / Low | Lean CI; goes public at M6. |
-| R35 | Bootstrap context lost | Low / Low | State in HCP; values in the password manager; re-runnable with imports. |
-| **R36** | **The adoption apply alters live DNS** (wrong value transcribed, wrong import ID) | Med / High | Values copied from the preflight HCL output; the AD4 no-op gate; dig before and after (Q15); one concern per apply. |
-| **R37** | **The wrong zone is imported** (a duplicate instead of the delegated one) | Low / High | Preflight DELEGATED detection; `check` block comparing the registered NS with the zone NS; FAIL on 0 or more than 1 match. |
-| **R38** | **Console changes continue after adoption** (drift, or a golden-rule breach) | Med / Med | U0 rule; README; Q16 plan at every milestone; S14 CloudTrail review. HCP drift detection (health assessments) if the owner's plan includes it. |
-| **R39** | A duplicate zone holds needed records, or deleting it causes surprise | Low / Med | Preflight shows record counts; owner review at AD2; removal is its own reviewed apply. |
+| R40 | A real secret enters HCP state (a refresh reads the decrypted value, or someone uses `value`) | Low-Med / High | `value_wo` write-only; the 6.7.3 verification before real values exist; CI guard against `value =` on SecureString; S9/S18; a documented fallback (owner-created parameters). |
+| R41 | Pi compromise means every `/home-lab/*` secret is readable via the host key | Low / High | Separate host and traefik keys; the host key is root-only and never mounted; LAN/tailnet only, no port-forwards; revoke by bumping `pki_generation`; `rotate-secrets.md`. |
+| R42 | AWS or the internet is unavailable at deploy or boot | Med / Med | Persisted last-good secrets; `restart: unless-stopped`; fetch fails closed without deleting anything; `--offline` flag. |
+| R43 | An accidental `value_wo_version` bump overwrites real secrets with the placeholder | Low / High | CI guard; `prevent_destroy`; deploy fails closed on placeholders; password manager backup and `set-secret.sh` to restore. |
+| R44 | Secret leakage while setting values (argv, history, clipboard, chats) | Med / High | `read -rs`; pipes only; no argv; `HISTCONTROL`; never paste into agents (U0); clear the clipboard in the password manager. |
+| R45 | Public repo exposes the lab topology and design | Med / Low | Accepted by the owner (an educational goal). No identifiers or secrets in git. Allowlist + MFA + no port-forwards; security relies on controls, not obscurity. |
+| R46 | AWS-managed `aws/ssm` key has no custom key policy | Low / Low | IAM path scoping + `kms:ViaService`; CMK as a Phase 2 option if budget allows. |
+| R47 | The plan role can decrypt SecureStrings during refresh (if the provider reads with decryption) | Low / Med | Only CLI-driven runs by the owner; grant `kms:Decrypt` to the plan role only if verification shows it's required; otherwise omit. |
+| R48 | Coordinated rotation mistakes (for example a Postgres password changed in SSM but not in the DB) | Med / Med | `rotate-secrets.md` per secret (the Postgres password is changed via `ALTER USER` first, then SSM, then deploy). Authentik secret-key rotation invalidates sessions (documented). |
 
 ## 13. Review flags
 
-- **security-specialist:** S9, S13, S14, S15 and S16; Q14; R29-R31; R36-R38.
-- **technical-account-manager:** the U9 HCP and adoption steps; milestone cadence; CI minutes; HCP plan and pricing; the M6 public gate; the yearly PKI renewal.
+- **security-specialist:**
+  - S9, S12, S16-S19
+  - R40-R44, R47
+  - the `set-secret.sh` design
+  - the decision to keep secret files on disk instead of tmpfs (A24)
+  - the separate host key
+- **technical-account-manager:**
+  - the public-repo story and README
+  - Pi recovery drill (Q20)
+  - the offline-boot behaviour
+  - owner secret procedures (U12)
+  - cost (still about USD 0.50-1)
 - **cto:**
-  - adopt-not-recreate pattern with `import` blocks and a `check`
-  - duplicate-zone removal via Terraform
-  - HCP + OIDC with split roles
-  - CLI-driven runs
-  - Roles Anywhere
-  - per-app auth
-  - pinned versions
-  - Phase 2 items: Route 53 DNSSEC (KMS key in us-east-1, plus DS via `aws_route53domains_delegation_signer_record`), the `tfe` provider, VCS-driven runs with fork plans disabled, CRL import
+  - SSM vs Secrets Manager
+  - `value_wo` write-only parameters, and the fallback
+  - two Roles Anywhere identities with OU-generation revocation
+  - committed `lab.env` plus SSM config parameters
+  - persistent vs tmpfs secrets
+  - the earlier decisions: HCP + OIDC, adoption
 
 ## 14. User decisions (all resolved)
 
 | # | Topic | Decision |
 |---|-------|----------|
-| Q1 | AWS auth | SSO profile `henniefrancis`, used for bootstrap and preflight only; region and SCP status checked by the preflight. |
-| Q2 | Registrar / DNSSEC | Route 53 Domains. NS already point at the hand-made Route 53 zone, which is adopted via Terraform. DNSSEC is off; DNSSEC is Phase 2. |
-| Q3 | Email / SaaS | None known; the preflight inventory lists everything. |
-| Q4 | Budget | USD 5/month; the email is a sensitive HCP variable set by the owner. |
-| Q5 | Cookies | Per-app forward auth with host-only cookies. |
-| Q6 | CAA | `letsencrypt.org` + `amazon.com`. |
-| Q7 | Roles Anywhere | Confirmed. |
-| Q8 | State | HCP Terraform, workspace `home-lab`, remote execution, OIDC; org from `TF_CLOUD_ORGANIZATION`. |
-| Q9 | Working agreements | Milestone reviews; CI under 100 min/month while private; Obsidian vault "Hennie Francis" / "Home Lab"; no console DNS changes from now on. |
-| Q10 (rev 6) | Cloudflare | Account deleted; migration done by hand; the existing Route 53 setup is adopted, not recreated. |
+| Q1-Q10 | as in rev 6 | SSO `henniefrancis`; Route 53 Domains registrar with the existing zone adopted; DNSSEC off (Phase 2); no email/SaaS records; budget USD 5; per-app cookies; CAA LE + ACM; Roles Anywhere; HCP Terraform + OIDC; working agreements; Cloudflare gone |
+| **Q11 (rev 7)** | Public repo | The whole repo, config included, is public |
+| **Q12 (rev 7)** | Secrets | SSM Parameter Store SecureString (Standard, `aws/ssm`), fetched on the Pi at deploy via Roles Anywhere (a separate host identity); values set by the owner via `set-secret.sh`; no GitHub Actions secrets for runtime |
+
+---
+
+## M1 delta (rev 6 to rev 7) for the developer currently building M1
+
+Apply these in the M1 code (terraform/, scripts/, ci.yml, docs/runbooks):
+
+1. **`terraform/bootstrap/roles.tf`:**
+   - **Apply role:**
+     - add `SsmHomeLab` (Put/Delete/Get/tags on `parameter/home-lab/*`, af-south-1)
+     - add `SsmDescribe` (`*`)
+     - add `KmsViaSsm` (Encrypt/Decrypt/GenerateDataKey on the `aws/ssm` key with `kms:ViaService = ssm.af-south-1.amazonaws.com`)
+     - extend the IAM role statements and `PassRole` to **`role/home-lab-pi-host`**
+   - **Plan role:** add `ssm:DescribeParameters`, `GetParameter(s)` and `ListTagsForResource` on `/home-lab/*`. Add `kms:Decrypt` (ViaService) **only if** the verification in item 3 proves it's needed.
+2. **`terraform/edge`:**
+   - New `iam-pi-host.tf` (role `home-lab-pi-host`; trust on CN `home-lab-pi-host` + OU `var.pki_generation` + issuer CN + SourceArn; SSM read on `/home-lab` and `/home-lab/*` plus `kms:Decrypt` via SSM only).
+   - `iam-dns01.tf`: add the OU = `var.pki_generation` condition.
+   - `rolesanywhere.tf`: a second profile `home-lab-pi-host`.
+   - New variable `pki_generation` (default `gen-1`).
+   - New outputs for the host profile and role ARNs.
+3. **New `terraform/edge/ssm.tf`** (6.7.3):
+   - SecureString parameters with `value_wo` placeholder and `value_wo_version = 1`, Standard tier, default key, `prevent_destroy`.
+   - `/home-lab/config/*` String parameters with `insecure_value`.
+   - **Run the write-only state verification before the owner sets real values.** If it fails, switch to the fallback and flag it to the architect.
+4. **`scripts/aws-preflight.sh`:** list existing `/home-lab/*` parameter **names** (imports) and check `alias/aws/ssm`; add `home-lab-pi-host` to the existing-IAM check.
+5. **New `scripts/set-secret.sh`** (6.9) and `docs/runbooks/secrets-ssm.md` (owner procedure U12, the exception to the Terraform-only rule, rotation pointers).
+6. **`ci.yml`** (T2b guards):
+   - `value_wo_version` must stay 1
+   - no `value =` on SecureString parameters
+   - no `DOMAIN=`, `arn:aws:` or 12-digit numbers in `config/`
+7. **Docs and runbooks:** replace any `.env` / repo `secrets/` references with `config/lab.env`, SSM and `/apps/secrets`. Update `workspace-variables.example.md` with `pki_generation`. The M1 acceptance now includes SSM parameters, the pi-host identity, and U12.
