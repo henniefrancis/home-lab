@@ -38,3 +38,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# PKI material (the CA lives outside the repo; certs and CSRs are never committed)
+*.crt
+*.srl
+*.p12

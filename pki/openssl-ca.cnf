@@ -1,0 +1,16 @@
+# OpenSSL config for the OFFLINE home-lab CA certificate (scripts/pki/new-ca.sh).
+# The CN is pinned by the Roles Anywhere trust policies (x509Issuer/CN) in terraform/edge. Do not change it
+# without changing iam-dns01.tf and iam-pi-host.tf.
+[ req ]
+distinguished_name = dn
+x509_extensions    = ca_ext
+prompt             = no
+string_mask        = utf8only
+
+[ dn ]
+CN = home-lab-offline-ca
+
+[ ca_ext ]
+basicConstraints     = critical, CA:true, pathlen:0
+keyUsage             = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash

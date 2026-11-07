@@ -1,0 +1,8 @@
+# Extensions for the two Pi end-entity certificates (scripts/pki/sign.sh).
+# IAM Roles Anywhere needs an X.509v3 end-entity cert with CA:false and the digitalSignature key usage.
+[ leaf_ext ]
+basicConstraints       = critical, CA:false
+keyUsage               = critical, digitalSignature
+extendedKeyUsage       = clientAuth
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid
