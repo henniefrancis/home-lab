@@ -1,0 +1,23 @@
+// Example Tailscale policy fragment for the home lab (plan 6.5 and U8). MERGE these entries into the tailnet policy
+// at https://login.tailscale.com/admin/acls/file ; do not blindly replace an existing policy.
+//
+// Tailscale's admin console is a SaaS outside AWS, so the golden "all infrastructure through Terraform" rule (which
+// covers AWS) does not apply to it. This file is the committed, reviewable source of truth; the owner pastes it
+// by hand. (A Terraform provider for Tailscale could manage it later; it is not part of the phase 1 plan.)
+{
+  // Only tailnet admins may assign tag:homelab. Auth keys created with this tag make the node tagged: it is owned
+  // by the tag rather than by a user, its key does not expire, and it can be targeted by the ACL below.
+  "tagOwners": {
+    "tag:homelab": ["autogroup:admin"],
+  },
+
+  "acls": [
+    // The tailnet's own users may reach the Pi's web ports (Traefik serves 80 and 443). Nothing else is opened, and
+    // there is deliberately no rule with src tag:homelab, so a compromised Pi cannot connect out to other devices.
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["tag:homelab:80,443"],
+    },
+  ],
+}

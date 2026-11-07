@@ -64,7 +64,7 @@ Afterwards put the placeholder back with `--unset`, or overwrite the dummy with 
 | `/home-lab/tailscale/auth-key` | one-off auth key, set back to UNSET after joining |
 | `/home-lab/homepage/authentik-token` | optional Authentik API token for Homepage |
 
-Adding a parameter means adding it to `local.secure_params` in `ssm.tf`, a row in `config/secrets-manifest.tsv` (M2), then running `set-secret.sh`.
+Adding a parameter means adding it to `local.secure_params` in `ssm.tf`, a row in `config/secrets-manifest.tsv`, then running `set-secret.sh`.
 
 ## IAM summary
 

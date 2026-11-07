@@ -95,13 +95,19 @@ jobs:
           files="$(git ls-files '*.sh')"
           if [ -n "$files" ]; then
             # (the shellcheck binary ships on ubuntu-latest runners)
-            echo "$files" | xargs shellcheck
+            echo "$files" | xargs shellcheck -x
           else
             echo "No shell scripts yet."
           fi
 
       - name: Self-test - existing_records generator
         run: bash scripts/test-inventory.sh
+
+      - name: Self-test - PKI scripts (offline CA, CSR, sign, install)
+        run: bash scripts/pki/test-pki.sh
+
+      - name: Self-test - fetch-secrets.sh with a mock aws (runs as root on the runner, temp dirs only)
+        run: sudo -E bash scripts/test-fetch-secrets.sh
 
       - name: docker compose config
         run: |
@@ -110,6 +116,15 @@ jobs:
           else
             echo "No compose.yaml yet (added in M3)."
           fi
+
+      - name: docker compose config - tailscale (dummy env, no secrets)
+        run: |
+          set -eu
+          d="$(mktemp -d)"
+          mkdir -p "$d/secrets/tailscale"
+          : > "$d/secrets/tailscale/tailscale.env"
+          { echo "APPS_ROOT=$d"; echo "TS_HOSTNAME=ci-dummy"; } > "$d/ci.env"
+          docker compose -f tailscale/compose.yaml --env-file "$d/ci.env" config -q
 
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |
