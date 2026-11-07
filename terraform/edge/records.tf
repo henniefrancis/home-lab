@@ -42,7 +42,7 @@ resource "aws_route53_record" "www_reserved" {
   name    = "www.${var.domain}"
   type    = "TXT"
   ttl     = 300
-  records = ["\"reserved for public website\""]
+  records = ["reserved for public website"] # the provider adds the TXT wire quotes
 }
 
 resource "aws_route53_record" "caa" {
