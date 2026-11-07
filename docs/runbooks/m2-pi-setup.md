@@ -47,24 +47,122 @@ Steps 4 to 8 do not depend on steps 1 to 3 finishing, so the CA can be created w
 
 ## 0. Prerequisites [Pi]
 
-- **Raspberry Pi OS 64-bit** (Debian 12 or newer; `uname -m` prints `aarch64` and `dpkg --print-architecture` prints `arm64`).
-- **Boot from a USB 3 SSD** if you can (the preflight WARNs on an SD card; Docker, Postgres and logs wear SD cards out).
-- **Docker Engine and the Compose plugin** from Docker's official apt repository: follow https://docs.docker.com/engine/install/debian/
-  (install `docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin`). Compose must be 2.20 or newer.
-- **Router DHCP reservation (U5):** give the Pi a fixed LAN address inside `10.0.0.0/24`. The preflight prints the MAC to use. The Pi cannot
-  verify a reservation, so that preflight line stays a WARN until you have done it; read it and move on.
-- **Clone the repo** to `/opt/home-lab` (the repo is private until the end of M6, so the Pi needs read access). One option is a read-only
-  deploy key:
+The Pi is headless: everything below is typed in its terminal (Raspberry Pi Connect remote shell, or SSH). Paste one block at a time.
 
-  ```bash
-  ssh-keygen -t ed25519 -N '' -C home-lab-pi-deploy -f ~/.ssh/home-lab-deploy
-  cat ~/.ssh/home-lab-deploy.pub        # add this as a READ-ONLY deploy key in the GitHub repo settings (owner, web UI)
-  sudo mkdir -p /opt/home-lab && sudo chown "$USER": /opt/home-lab
-  GIT_SSH_COMMAND='ssh -i ~/.ssh/home-lab-deploy -o IdentitiesOnly=yes' git clone git@github.com:<owner>/home-lab.git /opt/home-lab
-  git -C /opt/home-lab config core.sshCommand 'ssh -i ~/.ssh/home-lab-deploy -o IdentitiesOnly=yes'
-  ```
+### 0.1 What is on the Pi now (read-only)
 
-  The deploy key is a credential on the Pi's disk: it is read-only, repo-scoped and revocable in GitHub. After M6 (public repo) it is not needed.
+```bash
+grep -E '^(PRETTY_NAME|VERSION_CODENAME)=' /etc/os-release
+uname -m; dpkg --print-architecture
+tr -d '\0' < /proc/device-tree/model; echo
+findmnt -no SOURCE /
+docker version --format 'docker engine {{.Server.Version}}' 2>&1 | tail -1
+docker compose version 2>&1
+dpkg -l | awk '/docker|containerd/ {print $2, $3}'
+ip -4 -br addr | grep -v '^lo'
+ip route show default
+nmcli -t -f NAME,DEVICE,TYPE connection show --active 2>&1
+```
+
+You need: `aarch64` and `arm64` (64-bit kernel and userland), Debian 12 `bookworm` or 13 `trixie`, Docker from Docker's own
+repository (`docker-ce`, not Debian's `docker.io`), and Compose 2.20 or newer. `findmnt` shows `/dev/mmcblk0p2` for an SD card or
+`/dev/sda2` for a USB SSD (the preflight WARNs on an SD card: Docker, Postgres and logs wear them out).
+
+### 0.2 Update the OS
+
+```bash
+sudo apt update && sudo apt full-upgrade -y
+sudo rpi-eeprom-update            # shows bootloader firmware; add -a to stage an update if one is offered
+sudo reboot
+```
+
+This brings every package to the latest release **within** your Debian version. Moving from bookworm to trixie is a major upgrade:
+Raspberry Pi recommend a fresh install of the new image rather than an in-place upgrade. Phase 1 starts with an empty `/apps`, so a
+reflash (Raspberry Pi Imager, "Raspberry Pi OS Lite (64-bit)", enable SSH and set the user in its settings) is the clean path if you want
+trixie. Bookworm is supported and fine for this build.
+
+### 0.3 Docker Engine and Compose from Docker's repository
+
+If 0.1 listed `docker-ce` from Docker's repository, the `full-upgrade` above already updated it: just re-check `docker compose version`.
+If it listed `docker.io`, `docker-compose` or `podman-docker` (Debian's packages), or nothing, install Docker's own packages
+(https://docs.docker.com/engine/install/debian/):
+
+```bash
+for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do sudo apt-get remove -y "$pkg"; done
+sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker "$USER"   # log out and back in (or reboot) for this to take effect
+```
+
+Removing Debian's packages keeps images and volumes in `/var/lib/docker`. Check afterwards:
+
+```bash
+docker version --format '{{.Server.Version}}'; docker compose version; docker run --rm hello-world
+```
+
+### 0.4 A fixed LAN address (U5)
+
+The Pi needs an address that never changes, inside `10.0.0.0/24`. Two ways; pick one.
+
+**A. Router DHCP reservation (preferred).** In your router's admin page (from the laptop's browser, usually `http://10.0.0.1`), find
+"DHCP reservation", "Static lease" or "Address reservation" and bind the Pi's MAC address to its current IP. The router then never gives
+that address to anything else. The Pi's MAC:
+
+```bash
+ip -br link | grep -E '^(eth0|wlan0)'
+```
+
+**B. Static address on the Pi (when the router has no reservation option).** Raspberry Pi OS bookworm and later use NetworkManager.
+Pick an address **outside** the router's DHCP pool (check the pool range in the router; `10.0.0.50` below is an example), and use the
+gateway shown by `ip route show default`:
+
+```bash
+CON=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: '$2=="eth0"||$2=="wlan0"{print $1; exit}')
+echo "connection: $CON"
+sudo nmcli connection modify "$CON" ipv4.method manual ipv4.addresses 10.0.0.50/24 ipv4.gateway 10.0.0.1 ipv4.dns "10.0.0.1 1.1.1.1"
+sudo nmcli connection up "$CON"
+```
+
+The terminal may freeze for a few seconds while the address changes; Raspberry Pi Connect reconnects through its relay. To undo:
+`sudo nmcli connection modify "$CON" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns "" && sudo nmcli connection up "$CON"`.
+
+### 0.5 Clone the repo
+
+Clone to `/opt/home-lab` (the repo is private until the end of M6, so the Pi needs read access). One option is a read-only
+deploy key:
+
+On the Pi:
+
+```bash
+sudo apt-get install -y git
+ssh-keygen -t ed25519 -N '' -C home-lab-pi-deploy -f ~/.ssh/home-lab-deploy
+cat ~/.ssh/home-lab-deploy.pub        # the PUBLIC key: one line starting with ssh-ed25519
+```
+
+On the laptop, register that public line as a **read-only** deploy key (or GitHub web UI: repo Settings, Deploy keys, "Allow write
+access" unticked):
+
+```bash
+gh repo deploy-key add - --repo <owner>/home-lab --title home-lab-pi <<< 'ssh-ed25519 AAAA... home-lab-pi-deploy'
+```
+
+Back on the Pi:
+
+```bash
+sudo mkdir -p /opt/home-lab && sudo chown "$USER": /opt/home-lab
+GIT_SSH_COMMAND='ssh -i ~/.ssh/home-lab-deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' \
+  git clone git@github.com:<owner>/home-lab.git /opt/home-lab
+git -C /opt/home-lab config core.sshCommand 'ssh -i ~/.ssh/home-lab-deploy -o IdentitiesOnly=yes'
+```
+
+The deploy key is a credential on the Pi's disk: it is read-only, repo-scoped and revocable in GitHub. After M6 (public repo) it is not
+needed.
 
 All Pi commands below run from `cd /opt/home-lab`.
 
