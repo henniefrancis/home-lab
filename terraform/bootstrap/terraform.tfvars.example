@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Never commit the real file.
+aws_profile      = "henniefrancis"
+hcp_organization = "your-hcp-organization"
+hcp_project      = "home-lab"
+hcp_workspace    = "home-lab"
+# create | import | existing. aws-preflight.sh warns when the provider already exists; "existing" manages nothing.
+oidc_provider_mode = "create"
