@@ -76,6 +76,9 @@ sudo rpi-eeprom-update            # shows bootloader firmware; add -a to stage a
 sudo reboot
 ```
 
+If apt says `dpkg was interrupted`, run `sudo dpkg --configure -a` first, then the block again. If it warns that Docker's repository is
+"configured multiple times" in `docker.list` and `docker.sources`, remove the old one: `sudo rm /etc/apt/sources.list.d/docker.list`.
+
 This brings every package to the latest release **within** your Debian version. Moving from bookworm to trixie is a major upgrade:
 Raspberry Pi recommend a fresh install of the new image rather than an in-place upgrade. Phase 1 starts with an empty `/apps`, so a
 reflash (Raspberry Pi Imager, "Raspberry Pi OS Lite (64-bit)", enable SSH and set the user in its settings) is the clean path if you want
@@ -93,8 +96,14 @@ sudo apt-get install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
 sudo chmod a+r /etc/apt/keyrings/docker.asc
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo rm -f /etc/apt/sources.list.d/docker.list   # old one-line format; two entries make apt warn "configured multiple times"
+sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/debian
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
 sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo usermod -aG docker "$USER"   # log out and back in (or reboot) for this to take effect
