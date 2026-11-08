@@ -8,7 +8,8 @@
 #   2. apt: curl, unzip, gnupg, jq, openssl, ca-certificates, git (only the missing ones).
 #   3. Directory layout: $APPS_ROOT/{traefik,authentik,homepage,tailscale,secrets}, /etc/home-lab, /etc/home-lab/pki.
 #   4. Docker networks (plan 6.1): proxy, socket-proxy (internal), authentik-internal (internal).
-#   5. Loads and persists the tun kernel module (Tailscale).
+#   5. Loads and persists the tun kernel module and sets net.ipv4.conf.all.src_valid_mark=1 on the host (Tailscale; the
+#      container cannot write /proc/sys, so this is done here instead of adding capabilities).
 #   6. Installs AWS CLI v2 (aarch64): official installer, GPG signature verified against the AWS CLI team key.
 #   7. Installs aws_signing_helper at the pinned version: SHA256 verified against the AWS user guide value
 #      (scripts/lib/pins.sh cites the source), installed 0555 root.
@@ -69,7 +70,6 @@ for d in traefik authentik homepage tailscale; do
   install -d -m 0755 -o root -g root "$APPS_ROOT/$d"
 done
 install -d -m 0700 -o root -g root "$APPS_ROOT/traefik/letsencrypt" "$APPS_ROOT/tailscale/state"
-install -d -m 0755 -o root -g root "$APPS_ROOT/traefik/logs"
 # fetch-secrets.sh publishes releases under .secrets.d and points $APPS_ROOT/secrets at the current one (atomic swap).
 install -d -m 0700 -o root -g root "$APPS_ROOT/.secrets.d"
 if [ ! -L "$APPS_ROOT/secrets" ]; then
@@ -98,12 +98,30 @@ esac
 ensure_network socket-proxy --internal
 ensure_network authentik-internal --internal
 
-step "5/7 tun kernel module"
+step "5/7 tun kernel module and Tailscale sysctl"
 if modprobe tun 2> /dev/null; then
-  printf 'tun\n' > /etc/modules-load.d/home-lab.conf
+  printf 'tun
+' > /etc/modules-load.d/home-lab.conf
   info "tun loaded and persisted in /etc/modules-load.d/home-lab.conf"
 else
   warn "could not load the tun module; Tailscale needs /dev/net/tun"
+fi
+# Tailscale marks its packets and wants src_valid_mark=1 (reverse-path filtering with fwmark routing). The container
+# runs with host networking but a read-only /proc/sys, so it logs "failed to enable src_valid_mark"; the host sets it.
+SYSCTL_FILE=/etc/sysctl.d/99-home-lab.conf
+SYSCTL_WANT=$'# Managed by home-lab scripts/bootstrap.sh
+net.ipv4.conf.all.src_valid_mark = 1
+'
+if [ "$(cat "$SYSCTL_FILE" 2> /dev/null || true)" != "${SYSCTL_WANT%$'
+'}" ]; then
+  printf '%s' "$SYSCTL_WANT" > "$SYSCTL_FILE"
+  chmod 0644 "$SYSCTL_FILE"
+  info "wrote $SYSCTL_FILE"
+fi
+if sysctl -q -p "$SYSCTL_FILE" > /dev/null 2>&1; then
+  info "net.ipv4.conf.all.src_valid_mark=$(sysctl -n net.ipv4.conf.all.src_valid_mark) (persisted)"
+else
+  warn "could not apply $SYSCTL_FILE; Tailscale may log 'failed to enable src_valid_mark' (harmless once the value is 1)"
 fi
 
 step "6/7 AWS CLI v2 (aarch64)"

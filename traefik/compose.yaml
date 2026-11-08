@@ -67,7 +67,6 @@ services:
     volumes:
       - ./dynamic:/etc/traefik/dynamic:ro
       - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/traefik/letsencrypt:/letsencrypt
-      - ${APPS_ROOT}/traefik/logs:/logs
     secrets:
       - breakglass_users
     command:
@@ -78,14 +77,15 @@ services:
       - --global.aliasHeadersStrategy=delete
       - --log.level=INFO
       - --log.format=json
+      # Access log as JSON on stdout (the application log is JSON too): Docker's json-file driver (10 MB x 3, set below)
+      # rotates both, so nothing grows unbounded on the SD card. Access-log lines are the ones with a DownstreamStatus field:
+      #   docker logs traefik 2>&1 | jq -c 'select(.DownstreamStatus)'
+      # addInternals is REQUIRED while every router is served by an internal service (dashboard api@internal, the
+      # HTTP-to-HTTPS redirect): by default Traefik does not access-log requests handled by internal routers or
+      # services, which left the access log empty in M3. It also records 401/403 on the dashboard.
       - --accesslog=true
       - --accesslog.format=json
-      - --accesslog.filepath=/logs/access.log
-      # /ping for the container healthcheck lives on its own loopback-only entrypoint, so the default "traefik"
-      # entrypoint (:8080) is never created and no API/ping surface is reachable from the network.
-      - --ping=true
-      - --ping.entryPoint=ping
-      - --entrypoints.ping.address=127.0.0.1:8082
+      - --accesslog.addInternals=true
       # The dashboard is served only through the "dashboard" router below (allowlist plus break-glass basic auth);
       # the insecure API and the debug endpoints stay off.
       - --api.dashboard=true
@@ -115,7 +115,9 @@ services:
       - --certificatesresolvers.le.acme.dnsChallenge.provider=route53
       - --certificatesresolvers.le.acme.dnsChallenge.resolvers=1.1.1.1:53,8.8.8.8:53
     healthcheck:
-      test: ["CMD", "traefik", "healthcheck", "--ping", "--ping.entryPoint=ping", "--entrypoints.ping.address=127.0.0.1:8082"]
+      # TCP connect to the web entrypoint (BusyBox nc). Deliberately not `traefik healthcheck --ping`: the ping endpoint
+      # needs an entrypoint of its own and, with addInternals on, every probe would be written to the access log.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "80"]
       interval: 30s
       timeout: 5s
       retries: 3

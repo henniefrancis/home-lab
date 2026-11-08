@@ -24,7 +24,13 @@ services:
       TS_USERSPACE: "false"
       TS_AUTH_ONCE: "true"
       TS_ACCEPT_DNS: "false"
-      TS_EXTRA_ARGS: --advertise-tags=tag:homelab
+      # --snat-subnet-routes=false is REQUIRED for Traefik's lan-allowlist: by default Tailscale masquerades traffic that
+      # is forwarded from tailscale0 into a local network (the published ports reach Traefik through the Docker bridge),
+      # so Traefik saw every tailnet client as the proxy-network gateway (172.30.0.1) and answered 403. With SNAT off the
+      # real 100.x source address arrives. TS_EXTRA_ARGS goes to `tailscale up`, which TS_AUTH_ONCE=true skips for a node
+      # that is already logged in; the preference itself is stored in the persisted state (/apps/tailscale/state), and
+      # a freshly built node picks it up from here. Check with: tailscale debug prefs | grep NoSNAT
+      TS_EXTRA_ARGS: --advertise-tags=tag:homelab --snat-subnet-routes=false
       # F01: the image's iptables tried to modprobe ip_tables inside the container, which has no /lib/modules, so
       # every start logged "iptables ... ts-input ... modprobe: can't change directory to '/lib/modules'". nftables mode
       # (documented at https://tailscale.com/docs/features/firewall-mode) programs the firewall through netlink and

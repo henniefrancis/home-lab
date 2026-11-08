@@ -4,7 +4,7 @@
 # Renders traefik/compose.yaml with DUMMY values (no real domain, ARN or secret), then starts the pinned Traefik image
 # with the exact static-config flags from the compose file and checks that:
 #   - Traefik accepts every flag and the dynamic files (it exits at once on an unknown flag or a bad file)
-#   - the container healthcheck (loopback ping entrypoint) passes
+#   - the container healthcheck passes
 #   - nothing listens on :8080 and the insecure API / debug flags are absent
 #   - plain HTTP gets a permanent redirect to HTTPS (308 for a POST)
 #   - a TLS 1.1 handshake and an unknown or missing server name are refused (sniStrict, default option)
@@ -66,10 +66,12 @@ check "no host key reference anywhere" bash -c '! printf "%s" "$1" | grep -q "ho
 check "ra-helper shares traefik's network namespace" test "$(jq -r '.services["ra-helper"].network_mode' <<< "$json")" = "service:traefik"
 check "ACME storage file is per CA environment" bash -c 'printf "%s\n" "$@" | grep -q -- "acme\.storage=/letsencrypt/acme-staging\.json"' _ "${flags[@]}"
 
+check "tailscale keeps NoSNAT (real client source reaches the allowlist)" grep -q -- "snat-subnet-routes=false" tailscale/compose.yaml
+
 # --- run the real image with the real flags ---------------------------------------------------------------------
 cid="$(docker create -p 127.0.0.1::80 -p 127.0.0.1::443 \
   -e AWS_REGION=us-east-1 -e AWS_HOSTED_ZONE_ID="$ROUTE53_ZONE_ID" -e AWS_EC2_METADATA_SERVICE_ENDPOINT=http://127.0.0.1:9911 \
-  --tmpfs /letsencrypt --tmpfs /logs "$image" "${flags[@]}")"
+  --tmpfs /letsencrypt "$image" "${flags[@]}")"
 # Stage the dynamic directory plus a dummy wildcard certificate (the only SAN is the wildcard, like the real one).
 # The stage dir is inside the checkout and referenced relatively so docker.exe resolves it under Git Bash too.
 stage="$(mktemp -d -p . .traefik-test.XXXXXX)"
@@ -121,6 +123,19 @@ if command -v openssl > /dev/null; then
 else
   echo "SKIP  TLS checks (openssl not found)"
 fi
+
+# --- access log: JSON on stdout, internal routers included, healthcheck probes not logged ---------------------------
+alog() { docker logs "$cid" 2> /dev/null | tr -d '\r'; }
+export -f alog
+export cid
+check "access log is JSON in the container log and records the 308 redirect (internal router)" bash -c 'alog | jq -e "select(.RouterName == \"web-to-websecure@internal\" and .DownstreamStatus == 308)"'
+check "access log records the 403 of the probe router" bash -c 'alog | jq -e "select(.RouterName == \"probe@file\" and .DownstreamStatus == 403)"'
+docker exec "$cid" "${hcargs[@]}" > /dev/null 2>&1 || true
+sleep 3
+check "healthcheck probes leave no access-log line (every access-log line has a real router, none is a ping)"   bash -c '! alog | jq -e "select(.DownstreamStatus != null and ((.RouterName // \"\") == \"\" or ((.RouterName // \"\") | test(\"ping\"))))" > /dev/null'
+check "no file access log is configured (stdout and Docker rotation instead)" bash -c '! printf "%s
+" "$@" | grep -q "accesslog.filepath"' _ "${flags[@]}"
+check "stdout/stderr rotation is set on traefik (10m x 3)" test "$(jq -c '.services.traefik.logging.options' <<< "$json")" = '{"max-file":"3","max-size":"10m"}'
 
 if [ "$fails" -gt 0 ]; then
   printf '\n%s check(s) FAILED\n' "$fails"

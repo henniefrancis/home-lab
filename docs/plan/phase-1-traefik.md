@@ -910,11 +910,18 @@ These record where the built M3 differs from the text above; the files in the re
 
 1. `aws_signing_helper` is 1.8.6 (see section 4). 1.8.6 makes `serve` reject a mismatched `Host` header and exit if it cannot get credentials at start.
 2. Redirect: Traefik v3.7 gives **301 for GET/HEAD and 308 for other methods** (no status option on entrypoint redirections).
-3. Added static flags: `--global.aliasHeadersStrategy=delete`, `--certificatesresolvers.le.acme.keyType=EC256`, and a loopback-only ping entrypoint
-   (`--ping.entryPoint=ping`, `--entrypoints.ping.address=127.0.0.1:8082`) so the default `:8080` entrypoint never exists.
+3. Added static flags: `--global.aliasHeadersStrategy=delete` and `--certificatesresolvers.le.acme.keyType=EC256`. No `--ping` and no `:8080` entrypoint: the container
+   healthcheck is `nc -z 127.0.0.1 80` (a ping endpoint would be written to the access log, see 9).
 4. `tls.yml` defines the `default` option as well as `modern` (identical), otherwise unmatched names (apex, no SNI) are not subject to `sniStrict`.
 5. A10 closed: the ACME email is optional in Traefik v3.7.17; no `acme-email` parameter.
 6. `authentik@file` is added to `middlewares.yml` in M4, not M3 (nothing to point it at yet). M3 dashboard protection = `lan-allowlist@file` + `breakglass-auth@docker`.
 7. `compose.yaml` at the root includes `traefik/` and `tailscale/` (project name `home-lab`); `deploy.sh` always uses `-p home-lab`, builds local images (`--build`, `pull --ignore-buildable`)
    and passes `--remove-orphans` only for a full deploy.
 8. Tailscale F01: `TS_DEBUG_FIREWALL_MODE=nftables` (no capability, mount or host change).
+9. Access log: JSON on stdout with `--accesslog.addInternals=true` (without it Traefik logs nothing for internal routers/services, and in M3 every router is internal); Docker's
+   json-file rotation (10 MB x 3) replaces `/logs/access.log` and any logrotate.
+10. **Risk R49 (Tailscale SNAT breaks the allowlist):** by default Tailscale masquerades forwarded traffic into the Docker bridge, so Traefik sees the proxy gateway
+    (`172.30.0.1`) instead of the client and `lan-allowlist` returns 403 for tailnet clients. Mitigation: `--snat-subnet-routes=false` in `TS_EXTRA_ARGS` (and the persisted
+    preference). Detection: `nsenter -t <traefik pid> -n ss -tnH '( sport = :443 )'` must show `100.x` or `10.0.0.x` peers. Troubleshooting: `docs/runbooks/m3-traefik-staging.md`, F02.
+11. Tailscale in a container: `TS_DEBUG_FIREWALL_MODE=nftables` (F01) and the host sysctl `net.ipv4.conf.all.src_valid_mark=1` from `scripts/bootstrap.sh` via
+    `/etc/sysctl.d/99-home-lab.conf` (F05); no added capabilities.
