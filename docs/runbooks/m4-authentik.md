@@ -108,6 +108,63 @@ printf '%s\n' 'from authentik.blueprints.models import BlueprintInstance as B' \
 
 Expected: `[('Home lab - SSO apps, MFA and embedded outpost', 'successful')]`. (Also visible in the UI: Customization, Blueprints.)
 
+### 3.4a Blueprint progress on a Pi: how to check, how long it takes, the manual fallback (F06)
+
+**Expect a long wait on a Pi 4 with an SD card: about 25 minutes from the first `up` to a fully applied blueprint** (M4 deploy, 2026-11-08). The worker applies the stock
+blueprints one after the other (each is many small database writes, slow on SD), and until it has applied them our blueprint cannot find the flows it needs. For about 4 of those
+minutes `BlueprintInstance.status` stayed `unknown` for four instances (ours, `system/providers-oauth2.yaml`, the default implicit-consent authorization flow, the default
+source-enrollment flow) before they went to `successful`; the providers appeared only afterwards. That is slow, not broken: do not restart the worker while it is applying
+(a restart starts the queue again). Any later edit of `authentik/blueprints/homelab-apps.yaml` (for example for a new app) is re-applied the same slow way: allow up to ~25 minutes
+on the Pi and check with the commands below before testing the app. M5 (Homepage) did not change the blueprint, so it adds no wait.
+
+Check progress (all read-only; run on the Pi):
+
+```bash
+# 1. All blueprint instances and their status (successful / unknown / error / orphaned). "unknown" for a few minutes is normal while queued.
+printf '%s\n' 'from authentik.blueprints.models import BlueprintInstance as B' \
+  'print("BP", [(b.status, b.name) for b in B.objects.order_by("name")])' \
+  | docker exec -i authentik-worker ak shell 2>/dev/null | grep '^BP'
+# 2. Are the objects there? Providers, applications, the outpost binding, the admin group.
+printf '%s\n' 'from authentik.providers.proxy.models import ProxyProvider as P' 'from authentik.core.models import Application as A, Group as G' \
+  'from authentik.outposts.models import Outpost as O' \
+  'print("PROV", sorted(P.objects.values_list("name", "mode")))' 'print("APPS", sorted(A.objects.values_list("slug", flat=True)))' \
+  'print("OUTPOST", [(o.name, sorted(o.providers.values_list("name", flat=True))) for o in O.objects.all()])' \
+  'print("GROUP", list(G.objects.filter(name="homelab-admins").values_list("name", flat=True)))' \
+  | docker exec -i authentik-worker ak shell 2>/dev/null | grep -E '^(PROV|APPS|OUTPOST|GROUP)'
+# 3. MFA enforced: the validation stage must be set to "configure" (not "skip").
+printf '%s\n' 'from authentik.stages.authenticator_validate.models import AuthenticatorValidateStage as S' \
+  'print("MFA", list(S.objects.filter(name="default-authentication-mfa-validation").values_list("not_configured_action", "device_classes")))' \
+  | docker exec -i authentik-worker ak shell 2>/dev/null | grep '^MFA'
+# 4. What the worker is doing right now (it logs every blueprint it applies).
+docker logs --since 5m authentik-worker 2>&1 | grep -i blueprint | cut -c1-200 | tail -8
+```
+
+Done when: check 1 shows every instance `successful` (ours included), check 2 lists `homelab-dashboard` and `homelab-traefik` (mode `forward_single`), the apps `dashboard` and
+`traefik`, an outpost carrying both providers and the group `homelab-admins`, and check 3 shows `('configure', ['totp', 'webauthn'])`. Then run check 3.5 below.
+
+**Dependency order** (our blueprint waits for these through `metaapplyblueprint`; this is also the order to use by hand):
+
+1. `default/flow-default-authentication-flow.yaml` (Default - Authentication flow)
+2. `default/flow-default-authenticator-totp-setup.yaml` and `default/flow-default-authenticator-webauthn-setup.yaml` (MFA setup flows)
+3. `default/flow-default-provider-authorization-implicit-consent.yaml` and `default/flow-default-provider-invalidation.yaml` (provider flows)
+4. `system/bootstrap.yaml` (authentik Bootstrap: creates `akadmin`)
+5. `system/providers-oauth2.yaml`, `system/providers-proxy.yaml` and `default/flow-default-source-enrollment.yaml` (provider models and the enrolment flow that were `unknown` in M4)
+6. `custom/homelab-apps.yaml` (ours, mounted at `/blueprints/custom`: MFA enforcement, group, providers, applications, embedded outpost)
+
+**Manual fallback** if an instance is still `unknown` or `error` after ~30 minutes (the worker is healthy and the log shows no activity): apply that blueprint yourself, in the order
+above, one at a time, and wait for each to return. Paths are relative to `/blueprints` inside the worker (ours is `custom/homelab-apps.yaml`). The command validates, then applies,
+and several paths can be given in order (`--dry-run` only validates). It writes the objects directly, so the instance status in the UI may still say `unknown` afterwards: judge by
+checks 2 and 3, not by check 1.
+
+```bash
+docker exec authentik-worker ak apply_blueprint default/flow-default-authentication-flow.yaml
+docker exec authentik-worker ak apply_blueprint system/providers-oauth2.yaml
+docker exec authentik-worker ak apply_blueprint custom/homelab-apps.yaml
+```
+
+Then repeat checks 1 to 3. If one fails with a message about a missing flow or stage, a prerequisite from the list is not applied yet: apply that one first. `apply_blueprint` runs in the
+foreground and may itself take several minutes on the Pi. A real `error` (not `unknown`) is a content problem: open the instance in the UI (Customization, Blueprints) for the message.
+
 ```bash
 # 3.5 forward auth answers (from inside the proxy network, bypassing the allowlist, which a loopback curl on the Pi would fail with 403)
 DOMAIN="$(sudo sed -n 's/^DOMAIN=//p' /apps/secrets/runtime.env)"
@@ -224,4 +281,5 @@ or LAN client in front of forward auth; the memory limits under real use (`docke
 | `Permission denied` after a good login | The user is not in `homelab-admins` (Directory, Groups). |
 | `ak create_recovery_key` fails with `KeyError: getpwuid()` | The container lost `USER=authentik` from its environment (it is set in `authentik/compose.yaml`); use `docker exec -e USER=authentik ...`. |
 | Secret rotated in SSM but Authentik still uses the old value | Containers keep the secret file they were created with: `dc up -d --force-recreate authentik-server authentik-worker` after `deploy.sh`. |
+| Providers, apps or the outpost binding are missing 5 to 25 minutes after the first deploy | The worker is still applying blueprints (slow on Pi/SD): section 3.4a. Do not restart the worker; use the progress checks and, after ~30 minutes, the manual `ak apply_blueprint` fallback. |
 | Blueprint shows `error` | Admin interface, Customization, Blueprints, open the instance for the message; `docker logs authentik-worker 2>&1 | grep -i blueprint`. |
