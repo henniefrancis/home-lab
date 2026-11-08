@@ -49,7 +49,7 @@ Version** to 1.17.1 (or any 1.16+ release) so remote and local runs agree. Upgra
 - `home-lab-hcp-plan` is read-only and trusted only for `run_phase:plan` of this exact org, project and workspace.
 - `home-lab-hcp-apply` has scoped write and is trusted only for `run_phase:apply`. It cannot touch the OIDC provider or the
   `home-lab-hcp-*` roles, **cannot create or change ANY role, trust policy, inline policy or Roles Anywhere object** (no `iam:*` or `rolesanywhere:*` write, and an explicit deny; SEC-H1), cannot create IAM users or keys,
-  may write SSM only under `/home-lab/` and encrypt (never decrypt) with the home-lab KMS key, may change Route 53 records only in the home-lab hosted zone (SEC-M1), and is explicitly denied dangerous
+  may write SSM only under `/home-lab/config/` (the SecureStrings are owner-managed, ADR-013) and has no KMS permission, may change Route 53 records only in the home-lab hosted zone (SEC-M1), and is explicitly denied dangerous
   Route 53 Domains actions (delete, transfer, register, renew, contacts, auth code, transfer-lock disable, DS records, name server changes, disabling auto-renew). Route 53 Domains has no resource-level
   permissions, so its few allowed actions (`EnableDomainAutoRenew`, `EnableDomainTransferLock`, `UpdateTagsForDomain`) apply to every domain in the account; they are protective or metadata only.
 - Changes to either run role are made here, from the laptop, never from the remote workspace.

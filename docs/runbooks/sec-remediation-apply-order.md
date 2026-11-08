@@ -5,7 +5,7 @@ variables and the password manager. Nothing in this runbook has been run against
 
 What changed, in one paragraph: the Pi's AWS identity (Roles Anywhere trust anchor, two profiles, the DNS-01 role and the Pi-host role) moved from `terraform/edge`
 (applied by the HCP apply role) to `terraform/bootstrap` (applied by you, admin SSO). The HCP apply role lost every `iam:*` and `rolesanywhere:*` write permission, is
-scoped to the home-lab hosted zone, and can no longer decrypt secrets. SecureStrings move to a customer-managed key. The Docker socket proxy is gone, deploys verify a
+scoped to the home-lab hosted zone, and can no longer decrypt secrets. SecureStrings move to a customer-managed key and become owner-managed (ADR-013): Terraform no longer touches them. The Docker socket proxy is gone, deploys verify a
 signature, and the checkout is root-owned.
 
 Why "remove the permission" and not a permissions boundary: IAM conditions cannot constrain the contents of a trust policy, so a boundary on `iam:UpdateAssumeRolePolicy`
@@ -18,8 +18,8 @@ The two roles change rarely; an admin SSO apply is the right place for them.
 |---|-----|------|-------------|
 | 0 | Laptop | Pull the commits, run the offline self-tests, set up commit signing (section 1) | yes |
 | 1 | Owner | `terraform/bootstrap` apply with the migration flags (section 2): imports the live identity, creates the KMS key, narrows the apply role | yes (the old edge layout still has the objects in its state until step 3) |
-| 2 | Owner | Re-set every secret with `set-secret.sh` so it is encrypted under the new key (section 3) | yes |
-| 3 | Owner or lead | HCP workspace `home-lab`: new variables, then plan and apply `terraform/edge` (section 4) | yes |
+| 2 | Owner | Check the six secrets are on the new key with `set-secret.sh --check` (section 3) | yes |
+| 3 | Owner or lead | Second bootstrap apply (3 in-place changes), HCP variables, then plan and apply `terraform/edge`: 13 objects forgotten (section 4) | yes |
 | 4 | Owner | Close the migration window in bootstrap (section 5) | yes |
 | 5 | Pi | Bootstrap, signing key, ownership, deploy (section 6) | yes |
 | 6 | Owner | GitHub, Tailscale and Authentik settings (section 7) | yes |
@@ -43,7 +43,7 @@ Edit the gitignored `terraform/bootstrap/terraform.tfvars` (keep your existing l
 ```hcl
 domain                 = "<your domain>"
 home_lab_zone_id       = "<the zone id, edge variable existing_zone_id>"
-owner_role_arn_pattern = "arn:aws:iam::<account id>:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_<your permission set>_*"
+owner_role_arn_pattern = "arn:aws:iam::<account id>:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_<your permission set>_*"
 ca_cert_pem            = <<-EOT
   -----BEGIN CERTIFICATE-----
   (the public CA certificate, same value as the edge variable ca_cert_pem)
@@ -61,7 +61,7 @@ adopt_ids = {
 # enable_audit_logging = true           # only if the account has no CloudTrail trail (SEC-L1); see section 5
 ```
 
-The UUIDs are in the existing edge outputs: `terraform -chdir=terraform/edge output` (after `terraform login`). Keep the owner SSO role pattern as exact as you can; it grants
+The UUIDs are in the existing edge outputs: `terraform -chdir=terraform/edge output` (after `terraform login`). The IAM Identity Center role path has NO region segment (`.../aws-reserved/sso.amazonaws.com/AWSReservedSSO_<set>_<id>`), so do not put `/*/` in it. Keep the pattern as exact as you can; it grants
 only ENCRYPT through SSM, never decrypt.
 
 ```bash
@@ -84,55 +84,38 @@ terraform apply tfplan
 
 Confirm the new key and the identity: `terraform output ssm_kms_key_alias` prints `alias/home-lab-ssm`.
 
-## 3. Re-set every secret under the new key (owner, laptop)
+## 3. Check the secrets are on the new key (owner, laptop)
 
-A write-only value cannot be re-encrypted by Terraform, so each SecureString is written again, now with `--key-id alias/home-lab-ssm` (the script passes it). You need each value: they
-are in the password manager (S18). For each of the six parameters:
+The six SecureStrings are owner-managed from now on (ADR-013), so there is no Terraform step for them. If you already re-set them with `set-secret.sh` (they then carry `alias/home-lab-ssm`), just verify:
 
 ```bash
 aws sso login --profile henniefrancis
-scripts/set-secret.sh authentik/secret-key
-scripts/set-secret.sh authentik/postgres-password
-scripts/set-secret.sh traefik/breakglass-htpasswd          # value: htpasswd -nBi -C 12 admin (m2-pi-setup.md step 11)
-scripts/set-secret.sh --unset tailscale/auth-key           # already UNSET after the join: re-write the placeholder under the new key
-scripts/set-secret.sh --unset authentik/bootstrap-password # or set the real bootstrap password if you are still pre-first-login
-scripts/set-secret.sh --unset homepage/authentik-token     # or set the token if you use the widget
+scripts/set-secret.sh --check
 ```
 
-Use the real value for any parameter that currently holds one. `authentik/secret-key` MUST be the original value (a different one invalidates every session and can break
-fields Authentik encrypted with the old key). If you are unsure, recover the original from the password manager or from the previous SSM version (`aws ssm get-parameter-history`).
+It prints each expected SecureString with its key and version (never a value) and exits 1 when one is missing, is not a SecureString, or is not on `alias/home-lab-ssm`. For a missing one:
+`scripts/set-secret.sh --create <name>` then set it; for one on the wrong key, set the value again (use the ORIGINAL value, `authentik/secret-key` especially; it is in the password manager).
 
-Verify the fetch works with the new key, on the Pi: `sudo scripts/fetch-secrets.sh --dry-run` (exit 0, no value printed). The legacy-key statement is still in place, so this passes
-even for a parameter you forgot; to prove none was forgotten, list the key per parameter from the laptop without reading values:
+## 4. Narrow the HCP roles (second bootstrap apply), then `terraform/edge`
 
-```bash
-aws ssm describe-parameters --region af-south-1 --parameter-filters "Key=Path,Option=Recursive,Values=/home-lab" \
-  --query 'Parameters[?Type==`SecureString`].[Name,KeyId]' --output table
-```
+**4a. Bootstrap, second apply.** The code now also scopes the HCP roles' SSM access to `/home-lab/config/*`, removes their KMS permissions (the apply role's key-user statement is gone from the key policy) and keeps only
+the explicit decrypt deny. `terraform -chdir=terraform/bootstrap plan -out tfplan` must show **0 to add, 3 to change, 0 to destroy** (in place: the plan role policy `read-only`, the apply role policy
+`scoped-write`, and the KMS key policy; nothing else). Apply it. The migration flags (`adopt_from_edge`, `allow_legacy_ssm_key`) can still be set or already removed: removing them in the same apply is fine
+(the extra change is then the pi-host policy, 4 to change).
 
-Every SecureString must show `alias/home-lab-ssm`.
-
-## 4. HCP workspace `home-lab`: new variables, then `terraform/edge`
-
-In the workspace (Variables) make these changes:
+**4b. HCP workspace variables** (if not done yet):
 
 | Action | Variable |
 |--------|----------|
 | add (terraform) | `ra_trust_anchor_arn` = bootstrap output `trust_anchor_arn` |
 | add (terraform) | `ra_acme_profile_arn` = bootstrap output `traefik_profile_arn` |
 | add (terraform) | `ra_acme_role_arn` = bootstrap output `dns01_role_arn` |
-| delete | `ca_cert_pem` and `pki_generation` (they belong to bootstrap now) |
-| keep | everything else (`existing_zone_id`, `domain`, ...) |
+| delete | `ca_cert_pem` and `pki_generation` |
 
-Use `terraform -chdir=terraform/bootstrap output -raw <name>`. Then queue a plan for `terraform/edge` (plan role). **Before approving the apply, check the plan:**
-
-- the seven `removed` blocks show as "will be removed from the Terraform state, but will not be destroyed" for the two roles, two role policies, two profiles and the trust anchor;
-- **no resource is destroyed or replaced**; the six `aws_ssm_parameter.secret` show **no change** (their `key_id` is `alias/home-lab-ssm` already, from step 3). If a SecureString
-  shows an in-place `key_id` update, STOP: step 3 was incomplete for that parameter, because applying would send the placeholder over the real value. Redo step 3 for it first;
-- the three `config/ra-*` String parameters show no change (same ARNs as before).
-
-If the plan only reads "forget" and no change, apply it. This stack can no longer touch the Roles Anywhere objects, which is the point. If the apply role reports AccessDenied while
-refreshing during this plan, that is the narrowed policy working: it only reads those objects; if a read is denied, tell the developer (do not re-add write permissions).
+**4c. Edge plan.** Queue a plan for `terraform/edge` (plan role). It must show **0 to add, 0 to change, 0 to destroy** and a warning "Some objects will no longer be managed by Terraform" listing exactly **13 objects**
+(removed from state, not deleted): the 6 `aws_ssm_parameter.secret[...]` and the 7 identity objects (`aws_iam_role.traefik_dns01`, `aws_iam_role.pi_host`, their 2 role policies, 2 Roles Anywhere profiles, the trust
+anchor). If the 7 identity objects were already forgotten by an earlier apply, expect 6. The 3 `config/ra-*` and the other `/home-lab/config/*` String parameters show no change. `removed` blocks are not refreshed
+(tested with a dead proxy: no API call), so the narrowed plan role does not need to read them. If anything is to be created, changed or destroyed, stop and tell the developer. Then apply.
 
 ## 5. Close the migration window and optional extras (owner)
 

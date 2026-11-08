@@ -409,6 +409,8 @@ sudo stat -c '%U:%G %a %n' /etc/home-lab/aws.env      # expect: root:root 600 /e
 
 ```bash
 aws sso login --profile henniefrancis
+scripts/set-secret.sh --check                         # which of the six SecureStrings exist (key and version only)
+scripts/set-secret.sh --create <name>                # only for one that is missing (the six are owner-managed, ADR-013)
 scripts/set-secret.sh authentik/secret-key          # 60+ characters
 scripts/set-secret.sh authentik/postgres-password   # under 99 characters
 scripts/set-secret.sh traefik/breakglass-htpasswd   # a bcrypt htpasswd line, see below
