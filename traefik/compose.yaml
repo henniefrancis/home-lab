@@ -8,6 +8,8 @@
 #              ${APPS_ROOT}/secrets/traefik/breakglass-htpasswd (SSM /home-lab/traefik/breakglass-htpasswd).
 # Runbook:     docs/runbooks/m3-traefik-staging.md
 #
+# M4: the dashboard is behind Authentik forward auth (labels on traefik below; the middleware is in dynamic/middlewares.yml).
+#
 # Rules kept here: no published port besides 80 and 443; the Docker socket is only ever mounted (read-only) into the
 # socket proxy; the Traefik certificate key is mounted ONLY into ra-helper; no static AWS keys anywhere.
 services:
@@ -86,7 +88,7 @@ services:
       - --accesslog=true
       - --accesslog.format=json
       - --accesslog.addInternals=true
-      # The dashboard is served only through the "dashboard" router below (allowlist plus break-glass basic auth);
+      # The dashboard is served only through the "dashboard" router below (allowlist plus Authentik forward auth);
       # the insecure API and the debug endpoints stay off.
       - --api.dashboard=true
       - --api.insecure=false
@@ -124,12 +126,21 @@ services:
       start_period: 20s
     labels:
       traefik.enable: "true"
-      # Dashboard. M3 interim protection (Authentik arrives in M4): LAN/tailnet allowlist plus HTTP basic auth with the
-      # break-glass htpasswd line from SSM. M4 swaps breakglass-auth for authentik@file.
+      # Dashboard (M4): LAN/tailnet allowlist, then Authentik forward auth (authentik@file in dynamic/middlewares.yml,
+      # SSO + enforced MFA, group homelab-admins). The basic-auth break-glass path is the bg-traefik router of the
+      # "breakglass" profile below; the breakglass-auth middleware stays defined here for it.
       traefik.http.routers.dashboard.rule: Host(`traefik.${DOMAIN}`)
       traefik.http.routers.dashboard.entrypoints: websecure
       traefik.http.routers.dashboard.service: api@internal
-      traefik.http.routers.dashboard.middlewares: lan-allowlist@file,breakglass-auth@docker
+      traefik.http.routers.dashboard.middlewares: lan-allowlist@file,authentik@file
+      # The outpost's own endpoints on THIS host (/outpost.goauthentik.io/start, /callback, /sign_out) go straight to
+      # Authentik, with no forward auth (it would loop) but still behind the allowlist. The callback sets the session
+      # cookie on traefik.${DOMAIN} only: per-app login with a host-only cookie, never a domain-wide one.
+      traefik.http.routers.dashboard-outpost.rule: Host(`traefik.${DOMAIN}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      traefik.http.routers.dashboard-outpost.entrypoints: websecure
+      traefik.http.routers.dashboard-outpost.priority: "100"
+      traefik.http.routers.dashboard-outpost.service: authentik
+      traefik.http.routers.dashboard-outpost.middlewares: lan-allowlist@file
       traefik.http.middlewares.breakglass-auth.basicauth.usersfile: /run/secrets/breakglass_users
       traefik.http.middlewares.breakglass-auth.basicauth.removeheader: "true"
     logging: *default-logging
@@ -184,8 +195,9 @@ services:
 
   breakglass:
     # Break-glass holder (profile, not started by default): carries the bg-traefik router so the dashboard stays
-    # reachable (allowlist plus basic auth) once M4 puts Authentik in front of the main dashboard router. Start with
-    #   docker compose --profile breakglass up -d breakglass
+    # reachable (allowlist plus basic auth, no Authentik involved) when Authentik is down or locked. Start with
+    #   docker compose -p home-lab -f compose.yaml --env-file config/lab.env --env-file /apps/secrets/runtime.env --profile breakglass up -d breakglass
+    # and stop it again when done (docs/runbooks/m4-authentik.md).
     profiles:
       - breakglass
     image: traefik/whoami:v1.12.0

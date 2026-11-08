@@ -1,0 +1,147 @@
+---
+# Authentik blueprint for the home lab (plan 6.4, milestone M4): everything below is configuration as code.
+# Mounted read-only at /blueprints/custom in the worker (and server); Authentik discovers it at start and re-applies it when
+# the file changes (and periodically). Apply status: Admin interface -> Customization -> Blueprints -> "Home lab ...".
+#
+# What it does
+#   1. MFA is ENFORCED for every login: the stock authentication flow's validation stage is changed from "skip when no device"
+#      to "configure" (TOTP or WebAuthn; the user is walked through enrolment in the same login) and "deny" is not an option
+#      for a user without a device. The stock flow is patched rather than replaced on purpose: a second, unpatched flow
+#      (default-authentication-flow) would remain reachable at /if/flow/default-authentication-flow/ and bypass MFA.
+#   2. Group homelab-admins (created once, akadmin is its first member; later membership is managed in the UI, this file
+#      never overwrites it). Every application below is bound to that group, so it is fail-closed: a user who is not in the
+#      group is denied even with a valid password and MFA.
+#   3. One forward_single proxy provider + application per protected host: traefik.${DOMAIN} (Traefik dashboard) and
+#      dashboard.${DOMAIN} (Homepage, milestone M5). forward_single => each app gets its OWN host-only session cookie; there
+#      is no cookie_domain, so no cookie is ever shared across *.${DOMAIN}.
+#   4. The embedded outpost (inside authentik-server) serves both providers. No separate outpost container, no docker.sock.
+#
+# ${DOMAIN} comes from the DOMAIN environment variable that compose sets on the worker (runtime.env); nothing identifying
+# is committed. Adding an app (for example Home Assistant): copy a provider + application + binding triple, add the provider to
+# the outpost list, and give its Traefik router the labels shown for the dashboard in traefik/compose.yaml.
+version: 1
+metadata:
+  name: Home lab - SSO apps, MFA and embedded outpost
+  labels:
+    blueprints.goauthentik.io/description: Forward-auth providers and applications, MFA enforcement and the embedded outpost for the home lab.
+context: {}
+entries:
+  # --- Order: these stock blueprints must have been applied first (flows, stages, akadmin) -------------------------------
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        name: Default - Authentication flow
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        name: Default - TOTP MFA setup flow
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        name: Default - WebAuthn MFA setup flow
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        name: Default - Provider authorization flow (implicit consent)
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        name: Default - Provider invalidation flow
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        name: authentik Bootstrap
+
+  # --- 1. MFA enforced ------------------------------------------------------------------------------------------------
+  - model: authentik_stages_authenticator_validate.authenticatorvalidatestage
+    id: mfa-validation
+    identifiers:
+      name: default-authentication-mfa-validation
+    attrs:
+      not_configured_action: configure
+      device_classes:
+        - totp
+        - webauthn
+      configuration_stages:
+        - !Find [authentik_stages_authenticator_totp.authenticatortotpstage, [name, default-authenticator-totp-setup]]
+        - !Find [authentik_stages_authenticator_webauthn.authenticatorwebauthnstage, [name, default-authenticator-webauthn-setup]]
+      webauthn_user_verification: preferred
+
+  # --- 2. Admin group (membership is only seeded) -----------------------------------------------------------------------
+  - model: authentik_core.group
+    id: group-admins
+    state: created
+    identifiers:
+      name: homelab-admins
+    attrs:
+      is_superuser: false
+      users:
+        - !If
+          - !Find [authentik_core.user, [username, akadmin]]
+          - !Find [authentik_core.user, [username, akadmin]]
+          - []
+
+  # --- 3. Providers and applications -----------------------------------------------------------------------------------
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-traefik
+    identifiers:
+      name: homelab-traefik
+    attrs:
+      mode: forward_single
+      external_host: !Format ["https://traefik.%s", !Env DOMAIN]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      access_token_validity: hours=12
+  - model: authentik_core.application
+    id: app-traefik
+    identifiers:
+      slug: traefik
+    attrs:
+      name: Traefik dashboard
+      provider: !KeyOf provider-traefik
+      policy_engine_mode: any
+      meta_launch_url: !Format ["https://traefik.%s/", !Env DOMAIN]
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-traefik
+      group: !KeyOf group-admins
+      order: 0
+
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-dashboard
+    identifiers:
+      name: homelab-dashboard
+    attrs:
+      mode: forward_single
+      external_host: !Format ["https://dashboard.%s", !Env DOMAIN]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      access_token_validity: hours=12
+  - model: authentik_core.application
+    id: app-dashboard
+    identifiers:
+      slug: dashboard
+    attrs:
+      name: Home lab dashboard (Homepage)
+      provider: !KeyOf provider-dashboard
+      policy_engine_mode: any
+      meta_launch_url: !Format ["https://dashboard.%s/", !Env DOMAIN]
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-dashboard
+      group: !KeyOf group-admins
+      order: 0
+
+  # --- 4. Embedded outpost ---------------------------------------------------------------------------------------------
+  - model: authentik_outposts.outpost
+    id: embedded-outpost
+    identifiers:
+      managed: goauthentik.io/outposts/embedded
+    attrs:
+      name: authentik Embedded Outpost
+      type: proxy
+      providers:
+        - !KeyOf provider-traefik
+        - !KeyOf provider-dashboard
+      config:
+        authentik_host: !Format ["https://auth.%s", !Env DOMAIN]

@@ -1,9 +1,10 @@
 ---
 # Root compose project for the Pi (plan section 5). scripts/deploy.sh runs it as
 #   docker compose --env-file config/lab.env --env-file ${APPS_ROOT}/secrets/runtime.env up -d
-# Each stack keeps its own directory and compose file; add Authentik (M4) and Homepage (M5) here as they arrive.
+# Each stack keeps its own directory and compose file; add Homepage (M5) here when it arrives.
 name: home-lab
 
 include:
   - path: traefik/compose.yaml
+  - path: authentik/compose.yaml
   - path: tailscale/compose.yaml

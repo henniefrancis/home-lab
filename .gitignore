@@ -43,3 +43,4 @@ Thumbs.db
 *.crt
 *.srl
 *.p12
+.authentik-test.*/

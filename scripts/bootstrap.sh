@@ -6,7 +6,8 @@
 # What it does (safe to re-run; each step skips when already satisfied):
 #   1. Refuses to continue if scripts/preflight.sh reports a FAIL.
 #   2. apt: curl, unzip, gnupg, jq, openssl, ca-certificates, git (only the missing ones).
-#   3. Directory layout: $APPS_ROOT/{traefik,authentik,homepage,tailscale,secrets}, /etc/home-lab, /etc/home-lab/pki.
+#   3. Directory layout: $APPS_ROOT/{traefik,authentik,homepage,tailscale,secrets}, /etc/home-lab, /etc/home-lab/pki; the Authentik
+#      data and Postgres directories owned by the service uids from config/lab.env (never the login user).
 #   4. Docker networks (plan 6.1): proxy, socket-proxy (internal), authentik-internal (internal).
 #   5. Loads and persists the tun kernel module and sets net.ipv4.conf.all.src_valid_mark=1 on the host (Tailscale; the
 #      container cannot write /proc/sys, so this is done here instead of adding capabilities).
@@ -70,6 +71,17 @@ for d in traefik authentik homepage tailscale; do
   install -d -m 0755 -o root -g root "$APPS_ROOT/$d"
 done
 install -d -m 0700 -o root -g root "$APPS_ROOT/traefik/letsencrypt" "$APPS_ROOT/tailscale/state"
+# Authentik (M4, F02): service ids from config/lab.env, never the login user (1000). The server/worker own their data directory;
+# PostgreSQL owns its data directory (its image-native 70:70). Both 0700; /apps/authentik itself stays root 0755.
+AK_UID="$(lab_env_get "$LAB_ENV" AUTHENTIK_UID 10002)"
+AK_GID="$(lab_env_get "$LAB_ENV" AUTHENTIK_GID 10002)"
+PG_UID="$(lab_env_get "$LAB_ENV" AUTHENTIK_PG_UID 70)"
+PG_GID="$(lab_env_get "$LAB_ENV" AUTHENTIK_PG_GID 70)"
+for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID"; do
+  [[ "$id" =~ ^[0-9]+$ ]] && [ "$id" -ne 0 ] && [ "$id" -ne 1000 ] || die "service uid/gid '$id' in $LAB_ENV must be numeric, not 0 and not 1000 (the login user)"
+done
+install -d -m 0700 -o "$AK_UID" -g "$AK_GID" "$APPS_ROOT/authentik/data"
+install -d -m 0700 -o "$PG_UID" -g "$PG_GID" "$APPS_ROOT/authentik/postgres"
 # fetch-secrets.sh publishes releases under .secrets.d and points $APPS_ROOT/secrets at the current one (atomic swap).
 install -d -m 0700 -o root -g root "$APPS_ROOT/.secrets.d"
 if [ ! -L "$APPS_ROOT/secrets" ]; then

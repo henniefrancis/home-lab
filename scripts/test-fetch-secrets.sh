@@ -120,11 +120,13 @@ mkjson "$T/params.json"
 run
 check "happy path exits 0" test "$rc" -eq 0
 check "secrets became a symlink to a release" test -L "$AR/secrets"
-check "authentik/secret-key 1000:1000 0400" test "$(attrs authentik/secret-key)" = "1000:1000 400"
-check "authentik/postgres-password 1000:1000 0400" test "$(attrs authentik/postgres-password)" = "1000:1000 400"
+check "authentik/secret-key 10002:10002 0400 (F02: not the login uid 1000)" test "$(attrs authentik/secret-key)" = "10002:10002 400"
+check "authentik/postgres-password 10002:10002 0440 (Postgres reads it through the group)" test "$(attrs authentik/postgres-password)" = "10002:10002 440"
+# shellcheck disable=SC2016 # the bash -c snippet is single-quoted on purpose: $1 expands in the child shell
+check "no secret file is owned by uid or gid 1000" bash -c '! find "$1/secrets/" -type f \( -uid 1000 -o -gid 1000 \) | grep -q .' _ "$AR"
 check "breakglass-htpasswd 0:0 0400" test "$(attrs traefik/breakglass-htpasswd)" = "0:0 400"
 check "secret-key content exact (no trailing newline)" test "$(cat "$AR/secrets/authentik/secret-key"; echo x)" = "${V_SK}x"
-check "optional placeholder omitted (bootstrap-password)" test ! -e "$AR/secrets/authentik/bootstrap-password"
+check "bootstrap-password is an EMPTY 10002:10002 0400 file while UNSET (compose secret needs it to exist)" test "$(attrs authentik/bootstrap-password)" = "10002:10002 400" -a ! -s "$AR/secrets/authentik/bootstrap-password"
 check "optional placeholder omitted (homepage token)" test ! -e "$AR/secrets/homepage/authentik-token"
 check "tailscale.env is an empty 0:0 0600 file while UNSET" test "$(attrs tailscale/tailscale.env)" = "0:0 600" -a ! -s "$AR/secrets/tailscale/tailscale.env"
 check "runtime.env 0:0 0600" test "$(attrs runtime.env)" = "0:0 600"

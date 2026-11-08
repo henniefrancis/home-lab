@@ -348,6 +348,26 @@ check_layout() {
   for d in proxy socket-proxy authentik-internal; do
     if docker network inspect "$d" > /dev/null 2>&1; then pass "net-$d" "docker network exists"; else fail "net-$d" "docker network missing (run bootstrap.sh)"; fi
   done
+  # F02: the service uids must not be real host users (a file owned by the login user is readable by whoever logs in).
+  local k id
+  for k in AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID; do
+    id="$(lab_env_get "$LAB_ENV" "$k")"
+    if ! [[ "$id" =~ ^[0-9]+$ ]]; then
+      fail "svc-id:$k" "$k missing or not numeric in $LAB_ENV"
+    elif [ "$id" -eq 0 ] || [ "$id" -eq 1000 ]; then
+      fail "svc-id:$k" "$k=$id must not be 0 or the login uid 1000"
+    elif getent passwd "$id" > /dev/null 2>&1 || getent group "$id" > /dev/null 2>&1; then
+      fail "svc-id:$k" "$k=$id is a real host user or group; choose an unused id"
+    else
+      pass "svc-id:$k" "$k=$id is not a host user or group"
+    fi
+  done
+  if [ -d "$APPS_ROOT/authentik/data" ]; then
+    check_dir "$APPS_ROOT/authentik/data" "$(lab_env_get "$LAB_ENV" AUTHENTIK_UID):$(lab_env_get "$LAB_ENV" AUTHENTIK_GID)" 700 authentik-data
+    check_dir "$APPS_ROOT/authentik/postgres" "$(lab_env_get "$LAB_ENV" AUTHENTIK_PG_UID):$(lab_env_get "$LAB_ENV" AUTHENTIK_PG_GID)" 700 authentik-postgres
+  else
+    fail authentik-data "$APPS_ROOT/authentik/data missing (re-run bootstrap.sh)"
+  fi
   if lsmod 2> /dev/null | grep -q '^tun'; then pass tun "tun module loaded"; else warnx tun "tun module not loaded (Tailscale needs /dev/net/tun)"; fi
 }
 

@@ -122,7 +122,7 @@ jobs:
         run: |
           set -eu
           d="$(mktemp -d)"
-          mkdir -p "$d/secrets/tailscale"
+          mkdir -p "$d/secrets/tailscale" "$d/secrets/authentik"
           : > "$d/secrets/tailscale/tailscale.env"
           {
             echo "APPS_ROOT=$d"
@@ -136,6 +136,9 @@ jobs:
 
       - name: Self-test - Traefik stack (flags, dynamic files, redirect, TLS options, hardening; dummy values, no ACME)
         run: bash scripts/test-traefik-config.sh
+
+      - name: Self-test - Authentik stack definition (static checks without containers - pinned images, hardening, file secrets, service ids, blueprint, labels)
+        run: bash scripts/test-authentik-config.sh --static
 
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |

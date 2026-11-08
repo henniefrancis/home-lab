@@ -1,0 +1,172 @@
+---
+# Authentik SSO: server + worker + PostgreSQL 16 (plan 6.4, milestone M4). Forward auth for Traefik through the EMBEDDED
+# outpost (no separate outpost container). Based on the official 2026.8 compose (https://goauthentik.io/docker-compose.yml:
+# postgresql + server + worker, no Redis since 2025.10), hardened for the Pi: no published ports, no docker.sock, no root,
+# internal networks, memory limits, every secret read from a file.
+#
+# Start (Pi):  sudo scripts/deploy.sh          (fetch-secrets, then `docker compose up -d` for the root compose.yaml)
+# Needs:       config/lab.env + ${APPS_ROOT}/secrets/runtime.env (DOMAIN, PROXY_SUBNET), the networks from scripts/bootstrap.sh
+#              (proxy, authentik-internal), the data directories from scripts/bootstrap.sh (owned by the uids in config/lab.env),
+#              ${APPS_ROOT}/secrets/authentik/{secret-key,postgres-password,bootstrap-password} (SSM /home-lab/authentik/*).
+# Runbook:     docs/runbooks/m4-authentik.md
+#
+# Identities (F02): Authentik runs as AUTHENTIK_UID:AUTHENTIK_GID (10002, NOT the image default 1000, which is the Pi's login
+# user), Postgres as its image-native 70:70. Neither id is a real host user (preflight.sh checks). The secret files are owned
+# by 10002:10002; Postgres reads postgres-password through the extra group (mode 0440, group_add), so no file is readable by
+# the login user. Keep config/lab.env, config/secrets-manifest.tsv and scripts/bootstrap.sh in step (test-authentik-config.sh checks).
+#
+# Trust: Authentik believes X-Forwarded-* headers ONLY from the proxy network (PROXY_SUBNET: Traefik lives there); the Authentik
+# default would also trust all of 10/8, 172.16/12 and 192.168/16. No AUTHENTIK_COOKIE_DOMAIN: every app gets a host-only cookie.
+#
+# The worker is internal-only (no egress, no docker.sock, no root). The official compose gives it root and the Docker socket
+# for managed outposts; we run only the embedded outpost, so it needs neither (the "Local Docker Integration" shown in the UI
+# stays unused; do not enable it).
+x-authentik-env: &authentik-env
+  AUTHENTIK_POSTGRESQL__HOST: authentik-postgresql
+  AUTHENTIK_POSTGRESQL__NAME: authentik
+  AUTHENTIK_POSTGRESQL__USER: authentik
+  AUTHENTIK_POSTGRESQL__PASSWORD: file:///run/secrets/pg_password
+  AUTHENTIK_SECRET_KEY: file:///run/secrets/authentik_secret_key
+  AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: ${PROXY_SUBNET:?set PROXY_SUBNET in config/lab.env}
+  AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+  AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+  AUTHENTIK_DISABLE_STARTUP_ANALYTICS: "true"
+  # Initials instead of Gravatar lookups (no outbound request leaking user e-mail hashes).
+  AUTHENTIK_AVATARS: initials
+  # The uid has no /etc/passwd entry: Python's getpass.getuser() (used by `ak create_recovery_key`, `ak shell`, ...) first reads
+  # USER and only then asks passwd, so without this the recovery command crashes with KeyError: getpwuid(): uid not found.
+  USER: authentik
+  # Read by the blueprint (blueprints/homelab-apps.yaml) to build https://auth.${DOMAIN} and the per-app hosts.
+  DOMAIN: ${DOMAIN:?set DOMAIN (runtime.env)}
+
+x-authentik-common: &authentik-common
+  image: ghcr.io/goauthentik/server:2026.8.5
+  restart: unless-stopped
+  user: "${AUTHENTIK_UID:?set AUTHENTIK_UID in config/lab.env}:${AUTHENTIK_GID:?set AUTHENTIK_GID in config/lab.env}"
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  shm_size: 512mb
+  depends_on:
+    authentik-postgresql:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  authentik-postgresql:
+    image: postgres:16.15-alpine3.24
+    container_name: authentik-postgresql
+    restart: unless-stopped
+    # Non-root from the start (the entrypoint then skips chown and gosu): the data directory must be owned by 70:70 (bootstrap.sh).
+    user: "${AUTHENTIK_PG_UID:?set AUTHENTIK_PG_UID in config/lab.env}:${AUTHENTIK_PG_GID:?set AUTHENTIK_PG_GID in config/lab.env}"
+    # Group that owns the secret files (10002): lets uid 70 read postgres-password (0440) without owning it.
+    group_add:
+      - "${AUTHENTIK_GID}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    networks:
+      - authentik-internal
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets:
+      - pg_password
+    volumes:
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/authentik/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  authentik-server:
+    <<: *authentik-common
+    container_name: authentik-server
+    command: server
+    mem_limit: 1g
+    networks:
+      - proxy
+      - authentik-internal
+    environment: *authentik-env
+    secrets:
+      - pg_password
+      - authentik_secret_key
+    volumes:
+      - ${APPS_ROOT}/authentik/data:/data
+      - ./templates:/templates:ro
+      - ./blueprints:/blueprints/custom:ro
+    labels:
+      traefik.enable: "true"
+      # The login UI and the OAuth endpoints. Reachable from the LAN and the tailnet only, like every lab host.
+      traefik.http.routers.authentik.rule: Host(`auth.${DOMAIN}`)
+      traefik.http.routers.authentik.entrypoints: websecure
+      traefik.http.routers.authentik.middlewares: lan-allowlist@file
+      traefik.http.routers.authentik.service: authentik
+      # Shared with the per-app "<app>-outpost" routers (path /outpost.goauthentik.io/ on each app host), which finish the
+      # login redirect so the session cookie is set on the APP host (host-only), and with the forward-auth middleware
+      # authentik@file (traefik/dynamic/middlewares.yml, which calls this container directly on port 9000).
+      traefik.http.services.authentik.loadbalancer.server.port: "9000"
+
+  authentik-worker:
+    <<: *authentik-common
+    container_name: authentik-worker
+    command: worker
+    # Authentik reads AUTHENTIK_BOOTSTRAP_PASSWORD with a plain environment lookup (the bootstrap blueprint's !Env tag), so
+    # the file:// syntax does NOT work for it (the password would literally be the string "file:///..."). This wrapper
+    # exports it from the secret file, when the file is non-empty, and then starts the image's normal entrypoint
+    # (dumb-init -- ak). The file is empty while /home-lab/authentik/bootstrap-password is UNSET. Only the worker applies
+    # the bootstrap blueprint, so only the worker gets the value. After the first login, set the parameter back to UNSET.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -s /run/secrets/authentik_bootstrap_password ]; then
+          AUTHENTIK_BOOTSTRAP_PASSWORD="$$(cat /run/secrets/authentik_bootstrap_password)"
+          export AUTHENTIK_BOOTSTRAP_PASSWORD
+        fi
+        exec dumb-init -- ak "$$@"
+      - ak-worker
+    mem_limit: 768m
+    networks:
+      - authentik-internal
+    environment: *authentik-env
+    secrets:
+      - pg_password
+      - authentik_secret_key
+      - authentik_bootstrap_password
+    volumes:
+      - ${APPS_ROOT}/authentik/data:/data
+      - ./templates:/templates:ro
+      - ./blueprints:/blueprints/custom:ro
+
+networks:
+  proxy:
+    external: true
+  authentik-internal:
+    external: true
+
+secrets:
+  pg_password:
+    file: ${APPS_ROOT}/secrets/authentik/postgres-password
+  authentik_secret_key:
+    file: ${APPS_ROOT}/secrets/authentik/secret-key
+  authentik_bootstrap_password:
+    file: ${APPS_ROOT}/secrets/authentik/bootstrap-password
