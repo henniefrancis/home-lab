@@ -1,10 +1,8 @@
 ---
 # Weekly and grouped (one PR per ecosystem) to conserve CI minutes while the repo is private.
 #
-# Ecosystems whose manifests do not exist yet are NOT listed (dependabot errors on a directory with no
-# matching manifest). Add each in the milestone that introduces it, using the same shape as below:
-#   (M1 terraform is listed below.)
-#   M3 (added below): docker-compose /traefik and /tailscale (M4 adds /authentik; /homepage arrives in M5); docker /traefik/ra-helper
+# Ecosystems whose manifests do not exist yet are NOT listed (dependabot errors on a directory with no matching manifest).
+# Add each in the milestone that introduces it, using the same shape as below.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -25,21 +23,25 @@ updates:
       terraform:
         patterns: ["*"]
 
-  # M3. Image bumps for Traefik, the socket proxy, whoami and Tailscale arrive as one weekly PR. The pinned
-  # aws_signing_helper release in traefik/ra-helper/Dockerfile and scripts/lib/pins.sh is NOT tracked here; bump it by hand
-  # from the AWS user guide (CI fails if the two files disagree).
+  # Image bumps for Traefik, Authentik, PostgreSQL, Tailscale and Homepage arrive as one weekly PR; every reference is tag@sha256
+  # and Dependabot rewrites tag and digest together. The pinned aws_signing_helper release in traefik/ra-helper/Dockerfile and
+  # scripts/lib/pins.sh is NOT tracked here; bump it by hand from the AWS user guide (CI fails if the two files disagree).
+  # QA-M-2: home-lab/ra-helper is built locally from /traefik/ra-helper and does not exist in any registry. Dependabot tried to
+  # resolve it, got UNAUTHORIZED and failed the whole docker_compose job, so no image PR was ever opened. It is ignored here.
   - package-ecosystem: docker-compose
     directories:
       - /traefik
       - /tailscale
       - /authentik
+      - /homepage
     schedule:
       interval: weekly
     groups:
       compose-images:
         patterns: ["*"]
-    # PostgreSQL stays on 16 (the major Authentik documents and tests); a major upgrade is a planned dump/restore, not a bot PR.
     ignore:
+      - dependency-name: home-lab/ra-helper
+      # PostgreSQL stays on 16 (the major Authentik documents and tests); a major upgrade is a planned dump/restore, not a bot PR.
       - dependency-name: postgres
         update-types: ["version-update:semver-major"]
 
@@ -49,4 +51,31 @@ updates:
       interval: weekly
     groups:
       ra-helper-base:
+        patterns: ["*"]
+
+  # The images CI runs with `docker run` (gitleaks, terraform, tflint, trivy) are listed in this Dockerfile (see its header).
+  - package-ecosystem: docker
+    directory: /.github/ci-images
+    schedule:
+      interval: weekly
+    groups:
+      ci-images:
+        patterns: ["*"]
+
+  # CI Python tooling (yamllint).
+  - package-ecosystem: pip
+    directory: /.github
+    schedule:
+      interval: weekly
+    groups:
+      ci-python:
+        patterns: ["*"]
+
+  # The pre-commit hook revisions in .pre-commit-config.yaml.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      pre-commit-hooks:
         patterns: ["*"]

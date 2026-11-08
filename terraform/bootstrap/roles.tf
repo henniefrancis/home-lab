@@ -5,7 +5,6 @@ locals {
 
   # The two lab roles are defined in identity.tf (this stack). The HCP roles below have NO write access to any role,
   # trust policy, Roles Anywhere resource or IAM policy (SEC-H1).
-  acme_role_arn = "arn:${local.partition}:iam::${local.account_id}:role/home-lab-traefik-dns01"
   host_role_arn = "arn:${local.partition}:iam::${local.account_id}:role/home-lab-pi-host"
   budget_arn    = "arn:${local.partition}:budgets::${local.account_id}:budget/home-lab-monthly"
   ssm_region    = "af-south-1"
@@ -131,7 +130,7 @@ data "aws_iam_policy_document" "read" {
 data "aws_iam_policy_document" "write" {
   source_policy_documents = [data.aws_iam_policy_document.read.json]
 
-  # SEC-M1: only the home-lab zone (and duplicates awaiting deletion), never "hostedzone/*". The account also holds other
+  # SEC-M1: only the home-lab zone (and duplicates awaiting deletion), never a wildcard over all hosted zones. The account also holds other
   # zones. CreateHostedZone is not granted: the zone is adopted, never created, by this stack.
   statement {
     sid    = "Route53ZoneWrite"

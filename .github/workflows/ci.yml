@@ -1,6 +1,8 @@
 ---
 # One lean job (target < 5 minutes) to stay inside the 100 minutes/month cap while the repo is private.
 # No credentials, no HCP token, no cloud access: Terraform checks use `init -backend=false` only.
+# Markdown-only changes skip this workflow, NOT the secret scan: that runs in .github/workflows/secret-scan.yml on every push
+# and pull request (SEC-M6). Third-party tool images come pinned by digest from .github/ci-images/Dockerfile (SEC-M5).
 name: ci
 
 on:
@@ -72,11 +74,6 @@ jobs:
             echo "config/ must stay free of DOMAIN=, ARNs and account IDs."; exit 1
           fi
 
-      - name: gitleaks (full history)
-        run: |
-          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 \
-            git /repo --config /repo/.gitleaks.toml --redact --no-banner
-
       - name: Set up Python (pip cache)
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
@@ -106,8 +103,47 @@ jobs:
       - name: Self-test - PKI scripts (offline CA, CSR, sign, install)
         run: bash scripts/pki/test-pki.sh
 
-      - name: Self-test - fetch-secrets.sh with a mock aws (runs as root on the runner, temp dirs only)
-        run: sudo -E bash scripts/test-fetch-secrets.sh
+      - name: Self-test - fetch-secrets.sh with a mock aws (runs as root on the runner, temp dirs only; a non-root skip is a failure)
+        run: |
+          set -eu
+          [ "$(sudo id -u)" = 0 ] || { echo "sudo does not give root"; exit 1; }
+          sudo -E env REQUIRE_ROOT=1 bash scripts/test-fetch-secrets.sh
+
+      - name: Self-test - set-secret.sh with a mock aws (the mock is proven before use)
+        run: bash scripts/test-set-secret.sh
+
+      - name: Self-test - ops scripts (deploy args, signed-deploy check, cert expiry, break-glass, preflight args, pki)
+        run: bash scripts/test-ops-scripts.sh
+
+      - name: Guard - identity stays out of the HCP stack (SEC-H1, SEC-M1)
+        run: |
+          set -eu
+          # terraform/edge must hold no IAM or Roles Anywhere resource (only the removed blocks that forget the old state).
+          if git grep -nE '^(resource|data)[[:space:]]+"(aws_iam_(role|policy|user|group)|aws_rolesanywhere_[a-z_]+)"' -- terraform/edge; then
+            echo "terraform/edge must not define IAM or Roles Anywhere resources: they live in terraform/bootstrap."; exit 1
+          fi
+          # The apply role must not be able to rewrite a role: none of these exact actions may appear in roles.tf.
+          iam_re='"iam:(CreateRole|PutRolePolicy|UpdateAssumeRolePolicy|AttachRolePolicy|DeleteRolePolicy)"'
+          ra_re='"rolesanywhere:(CreateTrustAnchor|CreateProfile|UpdateProfile|UpdateTrustAnchor)"'
+          if git grep -nE "$iam_re|$ra_re" -- terraform/bootstrap/roles.tf; then
+            echo "roles.tf must not grant identity-changing actions to the HCP roles."; exit 1
+          fi
+          # The apply role's Route 53 write actions are scoped to the zone, never to every hosted zone.
+          if git grep -nF 'hostedzone/*' -- terraform/bootstrap/roles.tf; then
+            echo "roles.tf must not use hostedzone/* (scope it to the home-lab zone)."; exit 1
+          fi
+
+      - name: Guard - no Docker socket, no Docker provider, images pinned by digest (SEC-H2, SEC-M5)
+        run: |
+          set -eu
+          sock_re='docker[.]sock|providers[.]docker|docker-socket-proxy|tecnativa'
+          if git grep -nE "$sock_re" -- traefik authentik homepage tailscale compose.yaml | grep -v ':[0-9]*:[[:space:]]*#'; then
+            echo "No Docker socket or Docker provider anywhere in the stacks."; exit 1
+          fi
+          files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml'
+          # shellcheck disable=SC2086
+          bad="$(git grep -hE '^[[:space:]]+image:[[:space:]]' -- $files | grep -v 'home-lab/ra-helper' | grep -Ev '@sha256:[0-9a-f]{64}' || true)"
+          if [ -n "$bad" ]; then echo "Images must be pinned tag@sha256:"; echo "$bad"; exit 1; fi
 
       - name: Guard - ra-helper version and checksum match scripts/lib/pins.sh
         run: |
@@ -146,16 +182,35 @@ jobs:
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |
           set -eu
-          tf() { docker run --rm -v "$PWD:/w" -w "/w/$1" hashicorp/terraform:1.17.1 "${@:2}"; }
-          docker run --rm -v "$PWD:/w" -w /w hashicorp/terraform:1.17.1 fmt -check -recursive -diff
+          img="$(awk '$1=="FROM" && $4=="terraform" {print $2}' .github/ci-images/Dockerfile)"
+          tf() { docker run --rm -v "$PWD:/w" -w "/w/$1" "$img" "${@:2}"; }
+          docker run --rm -v "$PWD:/w" -w /w "$img" fmt -check -recursive -diff
           for d in bootstrap edge; do
             tf "terraform/$d" init -backend=false -input=false -no-color > /dev/null
             tf "terraform/$d" validate -no-color
           done
 
+      - name: Self-test - bootstrap IAM and KMS policies (terraform test; stub provider, dead proxy, nothing reaches AWS)
+        run: |
+          set -eu
+          IMG="$(awk '$1=="FROM" && $4=="terraform" {print $2}' .github/ci-images/Dockerfile)"
+          export IMG
+          cat > "$RUNNER_TEMP/tf" << 'WRAP'
+          #!/bin/sh
+          e=""
+          for v in HTTPS_PROXY HTTP_PROXY NO_PROXY TF_IN_AUTOMATION TF_INPUT AWS_CONFIG_FILE AWS_SHARED_CREDENTIALS_FILE AWS_EC2_METADATA_DISABLED; do
+            e="$e -e $v"
+          done
+          # shellcheck disable=SC2086
+          exec docker run --rm -v "$PWD:$PWD" -w "$PWD" $e "$IMG" "$@"
+          WRAP
+          chmod +x "$RUNNER_TEMP/tf"
+          TERRAFORM="$RUNNER_TEMP/tf" bash scripts/test-terraform-policies.sh
+
       - name: tflint
         run: |
-          docker run --rm -v "$PWD:/data" -w /data --entrypoint sh ghcr.io/terraform-linters/tflint:v0.65.0 -c '
+          img="$(awk '$1=="FROM" && $4=="tflint" {print $2}' .github/ci-images/Dockerfile)"
+          docker run --rm -v "$PWD:/data" -w /data --entrypoint sh "$img" -c '
             tflint --init --config=/data/.tflint.hcl > /dev/null
             for d in bootstrap edge; do
               tflint --chdir="terraform/$d" --config=/data/.tflint.hcl
@@ -163,5 +218,6 @@ jobs:
 
       - name: trivy config
         run: |
-          docker run --rm -v "$PWD:/w" -w /w ghcr.io/aquasecurity/trivy:0.76.2 \
+          img="$(awk '$1=="FROM" && $4=="trivy" {print $2}' .github/ci-images/Dockerfile)"
+          docker run --rm -v "$PWD:/w" -w /w "$img" \
             config --exit-code 1 --severity HIGH,CRITICAL --skip-dirs '**/.terraform' terraform
