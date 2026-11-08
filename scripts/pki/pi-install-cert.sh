@@ -10,6 +10,12 @@
 set -euo pipefail
 umask 077
 
+case "${1:-}" in
+  -h | --help)
+    sed -n '2,9p' "$0"
+    exit 0
+    ;;
+esac
 ROLE="${1:-}"
 [ $# -eq 0 ] || shift
 SRC="-"
@@ -79,6 +85,9 @@ text="$(openssl x509 -in "$tmp/cert.pem" -noout -text)"
 printf '%s' "$text" | grep -q 'CA:FALSE' || die "certificate is not CA:FALSE"
 printf '%s' "$text" | grep -q 'Digital Signature' || die "certificate lacks the digitalSignature key usage"
 openssl x509 -in "$tmp/cert.pem" -noout -checkend 0 > /dev/null || die "certificate is expired"
+# -checkend does not detect a certificate that is not yet valid. The Pi has no RTC: a wrong clock after a power cut lands here.
+not_before="$(date -d "$(openssl x509 -in "$tmp/cert.pem" -noout -startdate | cut -d= -f2)" +%s)" || die "cannot read the certificate start date"
+[ "$not_before" -le "$(date +%s)" ] || die "certificate is not valid yet (notBefore is in the future): check the Pi clock with timedatectl"
 cert_pub="$(openssl x509 -in "$tmp/cert.pem" -noout -pubkey | openssl sha256 | awk '{print $NF}')"
 key_pub="$(openssl pkey -in "$KEY" -pubout | openssl sha256 | awk '{print $NF}')"
 [ "$cert_pub" = "$key_pub" ] || die "certificate public key does not match $KEY (wrong CSR, or the key was rotated)"

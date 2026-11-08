@@ -21,10 +21,14 @@ def val($t): if ($t == "TXT" or $t == "SPF") then unq else . end;
 [ .ResourceRecordSets[]
   | select(((.Name == $apex) and (.Type == "NS" or .Type == "SOA")) | not) ]
 | sort_by(.Name, .Type, (.SetIdentifier // ""))
+# Two records that map to the same key would silently overwrite each other in HCL (QA-L-10): abort instead. The key scheme
+# itself never changes, so existing state addresses stay valid.
+| map(. + {_key: ((nm + "_" + .Type + (if .SetIdentifier then "_" + .SetIdentifier else "" end)) | ascii_downcase | gsub("[^a-z0-9]+"; "-"))})
+| (group_by(._key) | map(select(length > 1) | .[0]._key)) as $dups
+| if ($dups | length) > 0 then error("duplicate existing_records keys (records collide after normalisation): " + ($dups | join(", "))) else . end
 | .[]
 | .Type as $t
-| ( (nm + "_" + .Type + (if .SetIdentifier then "_" + .SetIdentifier else "" end))
-    | ascii_downcase | gsub("[^a-z0-9]+"; "-") ) as $key
+| ._key as $key
 | "  " + ($key | hcl) + " = {\n"
   + "    name = " + (nm | hcl) + "\n"
   + "    type = " + (.Type | hcl) + "\n"

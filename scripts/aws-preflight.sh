@@ -45,6 +45,10 @@ jq() { command jq "$@" | tr -d '\r'; }
 # MSYS_NO_PATHCONV stops Git Bash rewriting arguments such as /home-lab into a Windows path (scoped to aws only).
 aws_() { MSYS_NO_PATHCONV=1 aws --profile "$PROFILE" --no-cli-pager "$@" | tr -d '\r'; }
 # HCL list of duplicate zone IDs; an empty list prints [] (never [""]).
+# hcl_str: stdin text -> an HCL double-quoted string; the HCL-significant sequences dollar-brace and percent-brace are
+# escaped (QA-L-11), like the record values in inventory.jq.
+hcl_str() { jq -rR 'gsub("\\$\\{"; "$${") | gsub("%\\{"; "%%{") | tojson'; }
+
 dup_ids_hcl() {
   local out="" id
   for id in ${DUP_IDS[@]+"${DUP_IDS[@]}"}; do out="${out:+$out, }\"$id\""; done
@@ -286,7 +290,7 @@ $inv
   echo
   info "Suggested workspace variable values (LOCAL ONLY):"
   info "  existing_zone_id        = \"$DELEGATED_ID\""
-  info "  existing_zone_comment   = $(jq -r '.HostedZone.Config.Comment // ""' <<< "$zinfo" | jq -R .)"
+  info "  existing_zone_comment   = $(jq -r '.HostedZone.Config.Comment // ""' <<< "$zinfo" | hcl_str)"
   if [ -n "$REG_NS" ]; then
     info "  registered_name_servers = [$(printf '%s\n' "$REG_NS" | jq -R . | paste -sd, - | sed 's/,/, /g')]"
   fi
@@ -303,7 +307,7 @@ $inv
     printf '%s\n' "$INVENTORY_HCL" > "$SNAPSHOT_DIR/existing_records.hcl"
     {
       echo "existing_zone_id        = \"$DELEGATED_ID\""
-      echo "existing_zone_comment   = $(jq -r '.HostedZone.Config.Comment // ""' <<< "$zinfo" | jq -R .)"
+      echo "existing_zone_comment   = $(jq -r '.HostedZone.Config.Comment // ""' <<< "$zinfo" | hcl_str)"
       echo "registered_name_servers = [$(printf '%s\n' "$REG_NS" | jq -R . | paste -sd, - | sed 's/,/, /g')]"
       echo "domain_auto_renew       = $(printf '%s' "${AUTORENEW:-}")"
       echo "domain_transfer_lock    = $(printf '%s' "${TLOCK:-}")"
@@ -352,9 +356,7 @@ if ssm_out="$(aws_ ssm describe-parameters --region af-south-1   --parameter-fil
     pass "No existing /home-lab/* parameters (names only are ever listed, never values)"
   else
     warn "Existing /home-lab/* parameters (must be imported into terraform/edge before it can manage them):"
-    printf '%s
-' "$ssm_out" | tr '	' '
-' | sed 's/^/        /'
+    printf '%s\n' "$ssm_out" | tr '\t' '\n' | sed 's/^/        /'
   fi
 else
   warn "Could not list SSM parameters in af-south-1 (missing ssm:DescribeParameters?)"
