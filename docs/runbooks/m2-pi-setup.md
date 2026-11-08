@@ -354,10 +354,11 @@ scripts/set-secret.sh traefik/breakglass-htpasswd   # a bcrypt htpasswd line, se
 To make the htpasswd line without putting the password in argv or history (the password manager keeps the plaintext):
 
 ```bash
-docker run --rm -i httpd:2.4-alpine htpasswd -nBi admin
+read -rsp 'Break-glass password: ' P && echo && printf '%s\n' "$P" | docker run --rm -i httpd:2.4-alpine htpasswd -nBi admin; unset P
 ```
 
-Type the password and press Enter; paste the printed `admin:$2y$...` line into the `set-secret.sh` prompt. Optional parameters
+Type the password at the prompt (nothing is shown) and press Enter; paste the printed `admin:$2y$...` line into the `set-secret.sh` prompt.
+`htpasswd -i` on its own shows no prompt and, in Git Bash, may echo what you type, which is why the password is read by the shell first. Optional parameters
 (`authentik/bootstrap-password`, `homepage/authentik-token`) can stay UNSET for now.
 
 ## 12. Tailscale console: policy, tag and auth key (U8) [Laptop]
