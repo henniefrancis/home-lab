@@ -14,7 +14,7 @@ All AWS infrastructure is Terraform.
 
 | Layer | Component |
 |-------|-----------|
-| Reverse proxy | Traefik v3 on ports 80/443 only, talking to Docker through a read-only socket proxy |
+| Reverse proxy | Traefik v3 on ports 80/443 only, non-root, all routes defined in files (no Docker provider, no Docker socket anywhere) |
 | TLS | Let's Encrypt wildcard certificate for `*.${DOMAIN}` via DNS-01 on Route 53 |
 | Identity | Authentik SSO with MFA and per-app forward auth (host-only cookies) |
 | Networking | Tailscale for remote access, no router port-forwards |
@@ -34,7 +34,7 @@ are never served from the Pi.
 | M0 | Repo reset: hygiene files, README, CI, gitleaks, Dependabot, placeholders |
 | M1 | HCP Terraform and AWS foundation; adopt the existing Route 53 zone, records and registered-domain nameservers into Terraform |
 | M2 | Pi preflight, bootstrap, Tailscale, private CA for Roles Anywhere, wildcard DNS record |
-| M3 | Traefik, socket proxy and Roles Anywhere helper (Let's Encrypt staging) |
+| M3 | Traefik and Roles Anywhere helper (Let's Encrypt staging; the socket proxy of the first design was removed in the 2026-11 security remediation) |
 | M4 | Authentik SSO with enforced MFA; forward auth in front of the Traefik dashboard (blueprint as code, break-glass kept) |
 | M5 | Homepage on `dashboard.${DOMAIN}` |
 | M6 | Production certificate, hardening, repo made public |
