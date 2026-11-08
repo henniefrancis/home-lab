@@ -8,7 +8,9 @@ locals {
   host_role_arn = "arn:${local.partition}:iam::${local.account_id}:role/home-lab-pi-host"
   budget_arn    = "arn:${local.partition}:budgets::${local.account_id}:budget/home-lab-monthly"
   ssm_region    = "af-south-1"
-  ssm_params    = "arn:${local.partition}:ssm:${local.ssm_region}:${local.account_id}:parameter/home-lab/*"
+  # Only the Terraform-owned String parameters (decision 2026-11-08, ADR-013). The six SecureStrings are set by the owner with
+  # scripts/set-secret.sh and are outside the reach of both HCP roles.
+  ssm_params = "arn:${local.partition}:ssm:${local.ssm_region}:${local.account_id}:parameter/home-lab/config/*"
 
   # SEC-M1: Route 53 write actions are limited to the home-lab zone (plus the duplicates still to be deleted).
   zone_arn        = "arn:${local.partition}:route53:::hostedzone/${var.home_lab_zone_id}"
@@ -84,8 +86,7 @@ data "aws_iam_policy_document" "read" {
     resources = ["*"]
   }
 
-  # Metadata and ListTags only. Values are never read by the plan role, so no kms:Decrypt here: add it only if
-  # the refresh-only verification (docs/runbooks/secrets-ssm.md) proves the provider needs it.
+  # The /home-lab/config/* String parameters only: no SecureString is readable by the plan role, and there is no kms permission.
   statement {
     sid    = "SsmRead"
     effect = "Allow"
@@ -101,13 +102,6 @@ data "aws_iam_policy_document" "read" {
     sid       = "SsmDescribe"
     effect    = "Allow"
     actions   = ["ssm:DescribeParameters"]
-    resources = ["*"]
-  }
-
-  statement {
-    sid       = "KmsAliasLookup"
-    effect    = "Allow"
-    actions   = ["kms:ListAliases", "kms:DescribeKey"]
     resources = ["*"]
   }
 
@@ -240,7 +234,7 @@ data "aws_iam_policy_document" "write" {
   }
 
   statement {
-    sid    = "SsmHomeLab"
+    sid    = "SsmHomeLabConfig"
     effect = "Allow"
     actions = [
       "ssm:PutParameter",
@@ -254,21 +248,7 @@ data "aws_iam_policy_document" "write" {
     resources = [local.ssm_params]
   }
 
-  # SEC-M2: writing the placeholder needs encrypt-side permissions on the home-lab key only. The role cannot decrypt a
-  # secret value (the key policy denies Decrypt to everyone except the Pi host role, see kms.tf).
-  statement {
-    sid       = "KmsEncryptViaSsm"
-    effect    = "Allow"
-    actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-    resources = [aws_kms_key.ssm.arn]
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["ssm.${local.ssm_region}.amazonaws.com"]
-    }
-  }
-
+  # SEC-M2: no kms permission at all (the config parameters are plain String) and an explicit deny on decrypting anything.
   statement {
     sid       = "DenyKmsDecrypt"
     effect    = "Deny"

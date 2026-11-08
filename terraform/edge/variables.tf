@@ -185,7 +185,7 @@ variable "budget_email" {
 }
 
 variable "create_ssm_parameters" {
-  description = "Create the SSM parameters under /home-lab/. Leave false during the adoption apply so that it is imports only."
+  description = "Create the Terraform-owned String parameters under /home-lab/config/ (the SecureStrings are owner-managed, ADR-013). Leave false during the adoption apply so that it is imports only."
   type        = bool
   default     = false
 }

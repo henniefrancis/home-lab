@@ -111,7 +111,7 @@ variable "pki_generation" {
 }
 
 variable "owner_role_arn_pattern" {
-  description = "ARN pattern of the owner's admin role (an IAM Identity Center permission set role), allowed to ENCRYPT secrets with the home-lab key via SSM (scripts/set-secret.sh). It never gets Decrypt. Example: arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess_*"
+  description = "ARN pattern of the owner's admin role (an IAM Identity Center permission set role), allowed to ENCRYPT secrets with the home-lab key via SSM (scripts/set-secret.sh). It never gets Decrypt. The SSO role path has NO region segment: arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdministratorAccess_* (wildcards allowed; ArnLike)"
   type        = string
 
   validation {

@@ -1,7 +1,7 @@
 # Customer-managed key for the /home-lab SecureStrings (SEC-M2). The previous key, the account-wide AWS-managed alias/aws/ssm,
 # has a key policy that lets any principal with an IAM allow decrypt through SSM. This key's policy names its users:
 #   - the owner's admin role may ENCRYPT through SSM (set-secret.sh) but never decrypt,
-#   - the HCP apply role may encrypt (placeholders), never decrypt,
+#   - the HCP roles have no access at all (Terraform no longer manages the SecureStrings, ADR-013),
 #   - only the Pi host role may DECRYPT, only through SSM and only for parameters under /home-lab/ (encryption context),
 #   - everything else is denied Decrypt, and the account root keeps key MANAGEMENT only (no cryptographic use), so an
 #     administrator can always fix the policy but needs one deliberate step to read a secret.
@@ -60,23 +60,6 @@ data "aws_iam_policy_document" "ssm_key" {
       test     = "ArnLike"
       variable = "aws:PrincipalArn"
       values   = [var.owner_role_arn_pattern]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = [local.ssm_via_service]
-    }
-  }
-
-  statement {
-    sid       = "ApplyRoleEncryptViaSsm"
-    effect    = "Allow"
-    actions   = ["kms:Encrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
-    resources = ["*"]
-
-    principals {
-      type        = "AWS"
-      identifiers = [aws_iam_role.apply.arn]
     }
     condition {
       test     = "StringEquals"

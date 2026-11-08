@@ -109,7 +109,7 @@ variables {
   domain                 = "example.com"
   home_lab_zone_id       = "ZTESTZONE0000000001"
   duplicate_zone_ids     = []
-  owner_role_arn_pattern = "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_Admin_*"
+  owner_role_arn_pattern = "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_Admin_*"
   ca_cert_pem            = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
 }
 
@@ -160,6 +160,21 @@ run "apply_role_cannot_change_identity" {
     condition     = can(regex("DenyKmsDecrypt", data.aws_iam_policy_document.write.json))
     error_message = "the apply role must carry an explicit kms:Decrypt deny (SEC-M2)"
   }
+
+  assert {
+    condition     = can(regex("parameter/home-lab/config/", data.aws_iam_policy_document.write.json)) && !can(regex("parameter/home-lab/[*]", data.aws_iam_policy_document.write.json))
+    error_message = "the apply role touches only /home-lab/config/* in SSM, never the SecureStrings (ADR-013)"
+  }
+
+  assert {
+    condition     = !can(regex("\"kms:(Encrypt|GenerateDataKey)", data.aws_iam_policy_document.write.json))
+    error_message = "the apply role has no KMS permission other than the deny (ADR-013)"
+  }
+
+  assert {
+    condition     = can(regex("parameter/home-lab/config/", data.aws_iam_policy_document.read.json)) && !can(regex("parameter/home-lab/[*]", data.aws_iam_policy_document.read.json)) && !can(regex("kms:", data.aws_iam_policy_document.read.json))
+    error_message = "the plan role reads only /home-lab/config/* and has no kms permission (ADR-013)"
+  }
 }
 
 run "key_policy_least_privilege" {
@@ -173,6 +188,11 @@ run "key_policy_least_privilege" {
   assert {
     condition     = can(regex("DenyDecryptExceptPiHost", data.aws_iam_policy_document.ssm_key.json))
     error_message = "everyone else is denied Decrypt in the key policy (SEC-M2)"
+  }
+
+  assert {
+    condition     = !can(regex("ApplyRoleEncrypt", data.aws_iam_policy_document.ssm_key.json)) && can(regex("OwnerEncryptViaSsm", data.aws_iam_policy_document.ssm_key.json))
+    error_message = "the HCP roles are not key users; the owner role may encrypt (ADR-013)"
   }
 
   assert {

@@ -55,19 +55,17 @@ jobs:
             exit 1
           fi
 
-      - name: Guard - SSM write-only secrets and public-safe config
+      - name: Guard - SecureStrings are not Terraform-managed, public-safe config
         run: |
           set -eu
-          f=terraform/edge/ssm.tf
-          if [ -f "$f" ]; then
-            # value_wo_version must stay 1: bumping it re-sends the placeholder over the real secret.
-            if [ "$(grep -cE '^\s*value_wo_version\s*=' "$f")" -lt 1 ] || grep -E '^\s*value_wo_version\s*=' "$f" | grep -vqE '=\s*1\s*(#.*)?$'; then
-              echo "value_wo_version in $f must be exactly 1 and present."; exit 1
-            fi
-            # A SecureString must never use `value =` (it would land in state in plaintext).
-            if grep -nE '^\s*value\s*=' "$f"; then
-              echo "No aws_ssm_parameter may use value = ; use value_wo for SecureString and insecure_value for String."; exit 1
-            fi
+          # ADR-013: the six SecureStrings are owner-managed (scripts/set-secret.sh). No Terraform resource may create or read one:
+          # the provider reads a SecureString WithDecryption, and the home-lab key denies Decrypt to the HCP roles.
+          re='value_wo|aws_ssm_parameter"[[:space:]]+"secret"|data[[:space:]]+"aws_ssm_parameter"'
+          if git grep -nE "$re" -- 'terraform/*.tf' 'terraform/**/*.tf' | grep -v ':[0-9]*:[[:space:]]*#'; then
+            echo "No value_wo, secret SSM resource or SSM data source in terraform/ (ADR-013)."; exit 1
+          fi
+          if git grep -nE '^[[:space:]]*type[[:space:]]*=[[:space:]]*"SecureString"' -- terraform; then
+            echo "No aws_ssm_parameter of type SecureString may exist in terraform/."; exit 1
           fi
           # config/ is public: no domain assignment, no ARNs, no 12-digit account IDs.
           if [ -d config ] && grep -rnE '(^|[^A-Z_])DOMAIN=|arn:aws:|(^|[^0-9])[0-9]{12}([^0-9]|$)' config; then

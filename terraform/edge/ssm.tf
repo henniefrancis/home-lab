@@ -1,17 +1,18 @@
-# SSM Parameter Store. SecureString values are WRITE-ONLY: Terraform sends a placeholder (value_wo) that is never
-# stored in state, and the owner sets the real value out of band with scripts/set-secret.sh. That is the one
-# documented exception to the Terraform-only rule; the parameter resources themselves are Terraform-managed.
-# Plan: docs/plan/phase-1-traefik.md section 6.7.3; verification: docs/runbooks/secrets-ssm.md.
-locals {
-  secure_params = var.create_ssm_parameters ? {
-    "authentik/secret-key"         = "Authentik secret key"
-    "authentik/postgres-password"  = "Authentik PostgreSQL password"
-    "authentik/bootstrap-password" = "Authentik akadmin bootstrap password - first start only"
-    "traefik/breakglass-htpasswd"  = "Traefik break-glass basic auth htpasswd line"
-    "tailscale/auth-key"           = "Tailscale one-off auth key - UNSET after join"
-    "homepage/authentik-token"     = "Homepage Authentik widget API token - optional"
-  } : {}
+# SSM Parameter Store, Terraform side: ONLY the non-secret /home-lab/config/* String parameters.
+#
+# The six SecureStrings (authentik/secret-key, authentik/postgres-password, authentik/bootstrap-password, traefik/breakglass-htpasswd,
+# tailscale/auth-key, homepage/authentik-token) are NOT Terraform-managed (decision 2026-11-08, ADR-013): the provider reads a
+# SecureString WithDecryption even for a write-only value, and the customer-managed key correctly denies Decrypt to the HCP roles.
+# They are created and set by the owner with scripts/set-secret.sh (--create, then set; --check verifies them), and the list in
+# config/secrets-manifest.tsv is the source of truth. The removed block only forgets them in state; nothing is deleted in AWS.
+removed {
+  from = aws_ssm_parameter.secret
+  lifecycle {
+    destroy = false
+  }
+}
 
+locals {
   config_params = var.create_ssm_parameters ? merge(
     {
       "config/domain"          = var.domain
@@ -23,26 +24,6 @@ locals {
     var.ra_acme_profile_arn == null ? {} : { "config/ra-acme-profile-arn" = var.ra_acme_profile_arn },
     var.ra_acme_role_arn == null ? {} : { "config/ra-acme-role-arn" = var.ra_acme_role_arn }
   ) : {}
-}
-
-resource "aws_ssm_parameter" "secret" {
-  for_each = local.secure_params
-
-  name        = "/home-lab/${each.key}"
-  description = each.value
-  type        = "SecureString"
-  tier        = "Standard"
-  # SEC-M2: the customer-managed key from terraform/bootstrap (key policy: only the Pi host role may decrypt). A key change
-  # cannot re-encrypt a write-only value: migrate with scripts/set-secret.sh BEFORE applying this (see the apply order).
-  key_id = "alias/home-lab-ssm"
-
-  value_wo = "UNSET-set-via-set-secret"
-  # NEVER bump this: a new version re-sends the placeholder and overwrites the real value. CI enforces it stays 1.
-  value_wo_version = 1
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 # Non-secret configuration owned by Terraform, rendered into runtime.env on the Pi.
