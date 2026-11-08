@@ -77,10 +77,12 @@ if [ ! -f "$COMPOSE_FILE" ]; then
   echo "No $COMPOSE_FILE; secrets are refreshed, nothing to start."
 else
   dc() { docker compose -p home-lab -f "$COMPOSE_FILE" --env-file "$LAB_ENV" --env-file "$APPS_ROOT/secrets/runtime.env" "$@"; }
-  # Images that are built locally (ra-helper) are skipped by pull; --build rebuilds them when their Dockerfile changed
-  # (cached otherwise). A build needs the network, so --offline starts without --build and uses the existing images.
+  # Locally built images (ra-helper) are built first: Compose v5 only skips a buildable image on pull once it exists
+  # locally, so on a fresh Pi `pull --ignore-buildable` alone tries to download home-lab/ra-helper and fails. The build is
+  # cached when the Dockerfile is unchanged. A build needs the network, so --offline uses the existing images.
   up_args=(-d)
   if [ "$OFFLINE" -eq 0 ]; then
+    dc build
     dc pull --ignore-buildable
     up_args+=(--build)
   fi
