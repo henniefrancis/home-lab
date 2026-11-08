@@ -412,7 +412,7 @@ docker exec tailscale tailscale --socket=/tmp/tailscaled.sock ip -4
 ```
 
 `deploy.sh --only tailscale` pulls the repo (`git pull --ff-only`), refreshes the secrets, then runs
-`docker compose -f tailscale/compose.yaml --env-file config/lab.env --env-file /apps/secrets/runtime.env up -d`. The container uses host networking, state in
+`docker compose -p home-lab -f tailscale/compose.yaml --env-file config/lab.env --env-file /apps/secrets/runtime.env up -d` (from M3 on the root `compose.yaml` includes this stack too; see `m3-traefik-staging.md`). The container uses host networking, state in
 `/apps/tailscale/state`, `tag:homelab`, `TS_AUTH_ONCE=true`. If the `--socket` path is rejected, drop the flag (the image default socket differs between
 releases). Look for `Running` and a `100.x.y.z` address. In the Tailscale admin console the machine `homelab-pi` should appear tagged `tag:homelab`.
 

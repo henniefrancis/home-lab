@@ -217,7 +217,7 @@ flowchart LR
 | Tailscale | `tailscale/tailscale:v1.104.4` | Docker Hub (28 Oct 2026) |
 | Homepage | `ghcr.io/gethomepage/homepage:v2.7.0` | GitHub releases (23 Oct 2026) |
 | Break-glass holder | `traefik/whoami:v1.12.0` | Docker Hub (29 Jul 2026) |
-| Roles Anywhere helper | `aws_signing_helper` 1.8.5 Linux Aarch64, SHA256 `3d131aa888cd56da446f9c6bb460b1f0569f6c7edc74eae6193a2fe3928883ba` | AWS Roles Anywhere user guide (24 Aug 2026). Used in the ra-helper image **and** installed on the Pi host |
+| Roles Anywhere helper | `aws_signing_helper` 1.8.6 Linux Aarch64, SHA256 `b8a1800a9f483674a376170e1eabc0796a4ad3b7ac048670de9346975e9925dc` | AWS Roles Anywhere user guide (4 Nov 2026). Used in the ra-helper image **and** installed on the Pi host |
 | ra-helper base | `debian:trixie-slim` @digest | Debian 13, glibc 2.41 |
 | AWS CLI v2 (Pi host) | latest v2 aarch64 from the official installer, GPG-signature verified by `bootstrap.sh`; version recorded | AWS CLI install guide |
 | Terraform | 1.17.1 (`~> 1.17`); write-only arguments need >= 1.11 | GitHub releases (28 Oct 2026) |
@@ -380,7 +380,7 @@ Every service uses json-file logging with 10m x 3 rotation.
 - During M3 the dashboard uses `lan-allowlist@file,breakglass-auth@docker`.
 
 **ra-helper**
-- `home-lab/ra-helper:1.8.5`, built from `debian:trixie-slim@digest` + `ca-certificates` + `ADD --checksum=sha256:3d131aa8...` of the official binary; `USER 10001`.
+- `home-lab/ra-helper:1.8.6`, built from `debian:trixie-slim@digest` + `ca-certificates` + `ADD --checksum=sha256:b8a1800a...` of the official binary; `USER 10001`.
 - `network_mode: service:traefik`.
 - `command: serve --certificate /run/secrets/ra_acme_crt --private-key /run/secrets/ra_acme_key --trust-anchor-arn ${RA_TRUST_ANCHOR_ARN} --profile-arn ${RA_ACME_PROFILE_ARN} --role-arn ${RA_ACME_ROLE_ARN} --session-duration 3600 --port 9911 --hop-limit 1`
 - Secrets come from `/etc/home-lab/pki/traefik.crt` and `traefik.key`. **The traefik key only, never the host key.**
@@ -647,7 +647,7 @@ If the provider **does** read the decrypted value into state, stop and switch to
 - Creates `/apps/{traefik,authentik,homepage,tailscale}`, `/apps/secrets` (0700 root) and `/etc/home-lab/pki` (0700 root).
 - Creates the Docker networks and loads `tun`.
 - Installs AWS CLI v2 (aarch64 official installer, signature verified).
-- Installs `aws_signing_helper` 1.8.5 aarch64 to `/usr/local/bin` (SHA256 verified, 0555).
+- Installs `aws_signing_helper` 1.8.6 aarch64 to `/usr/local/bin` (SHA256 verified, 0555).
 - Refuses to run if `preflight.sh` FAILs.
 
 **`fetch-secrets.sh`** (root; called by `deploy.sh`):
@@ -901,3 +901,20 @@ Apply these in the M1 code (terraform/, scripts/, ci.yml, docs/runbooks):
    - no `value =` on SecureString parameters
    - no `DOMAIN=`, `arn:aws:` or 12-digit numbers in `config/`
 7. **Docs and runbooks:** replace any `.env` / repo `secrets/` references with `config/lab.env`, SSM and `/apps/secrets`. Update `workspace-variables.example.md` with `pki_generation`. The M1 acceptance now includes SSM parameters, the pi-host identity, and U12.
+
+---
+
+## M3 implementation notes (2026-11-08, from building and testing milestone M3)
+
+These record where the built M3 differs from the text above; the files in the repo are authoritative.
+
+1. `aws_signing_helper` is 1.8.6 (see section 4). 1.8.6 makes `serve` reject a mismatched `Host` header and exit if it cannot get credentials at start.
+2. Redirect: Traefik v3.7 gives **301 for GET/HEAD and 308 for other methods** (no status option on entrypoint redirections).
+3. Added static flags: `--global.aliasHeadersStrategy=delete`, `--certificatesresolvers.le.acme.keyType=EC256`, and a loopback-only ping entrypoint
+   (`--ping.entryPoint=ping`, `--entrypoints.ping.address=127.0.0.1:8082`) so the default `:8080` entrypoint never exists.
+4. `tls.yml` defines the `default` option as well as `modern` (identical), otherwise unmatched names (apex, no SNI) are not subject to `sniStrict`.
+5. A10 closed: the ACME email is optional in Traefik v3.7.17; no `acme-email` parameter.
+6. `authentik@file` is added to `middlewares.yml` in M4, not M3 (nothing to point it at yet). M3 dashboard protection = `lan-allowlist@file` + `breakglass-auth@docker`.
+7. `compose.yaml` at the root includes `traefik/` and `tailscale/` (project name `home-lab`); `deploy.sh` always uses `-p home-lab`, builds local images (`--build`, `pull --ignore-buildable`)
+   and passes `--remove-orphans` only for a full deploy.
+8. Tailscale F01: `TS_DEBUG_FIREWALL_MODE=nftables` (no capability, mount or host change).
