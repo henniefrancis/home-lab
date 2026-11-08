@@ -152,6 +152,7 @@ if command -v openssl > /dev/null; then
   # --- routers from files (SEC-H2) ---------------------------------------------------------------------------------
   code() { curl -sk -o /dev/null -w '%{http_code}' --resolve "$2:$1:127.0.0.1" "https://$2:$1/" 2> /dev/null; }
   export -f code
+  check "a spoofed X-Forwarded-For from a LAN address does not pass the allowlist (S21): still 403" bash -c 'c="$(curl -sk -o /dev/null -w "%{http_code}" --resolve "x.$2:$1:127.0.0.1" -H "X-Forwarded-For: 10.0.0.5" -H "X-Real-Ip: 10.0.0.5" "https://x.$2:$1/")"; [ "$c" = 403 ]' _ "$port" "$DOMAIN"
   check "traefik runs as uid 10004, not root (SEC-L9)" test "$(docker exec "$cid" id -u)" = "10004"
   check "ports 80 and 443 are bound by the non-root process (sysctl, no capability)" bash -c '[ "$(docker exec "$1" cat /proc/sys/net/ipv4/ip_unprivileged_port_start)" = 80 ]' _ "$cid"
   for h in traefik auth dashboard; do
