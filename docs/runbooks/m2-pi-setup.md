@@ -394,7 +394,9 @@ What it does: writes `/etc/home-lab/aws-config` (root 0600) with a `credential_p
 
 | File | Owner and mode | Content |
 |------|----------------|---------|
-| `authentik/secret-key`, `authentik/postgres-password` | `1000:1000` 0400 | the secrets |
+| `authentik/secret-key` | `10002:10002` 0400 | the secret (F02, M4: the Authentik service id, not the login user 1000) |
+| `authentik/postgres-password` | `10002:10002` 0440 | the secret (PostgreSQL reads it through the group) |
+| `authentik/bootstrap-password` | `10002:10002` 0400 | `akadmin` bootstrap password, or an empty file while UNSET (M4) |
 | `traefik/breakglass-htpasswd` | `0:0` 0400 | the htpasswd line |
 | `tailscale/tailscale.env` | `0:0` 0600 | `TS_AUTHKEY=...` (empty file once the parameter is UNSET) |
 | `runtime.env` | `0:0` 0600 | `DOMAIN`, `ROUTE53_ZONE_ID`, `RA_TRUST_ANCHOR_ARN`, `RA_ACME_PROFILE_ARN`, `RA_ACME_ROLE_ARN` |

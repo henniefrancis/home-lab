@@ -925,3 +925,65 @@ These record where the built M3 differs from the text above; the files in the re
     preference). Detection: `nsenter -t <traefik pid> -n ss -tnH '( sport = :443 )'` must show `100.x` or `10.0.0.x` peers. Troubleshooting: `docs/runbooks/m3-traefik-staging.md`, F02.
 11. Tailscale in a container: `TS_DEBUG_FIREWALL_MODE=nftables` (F01) and the host sysctl `net.ipv4.conf.all.src_valid_mark=1` from `scripts/bootstrap.sh` via
     `/etc/sysctl.d/99-home-lab.conf` (F05); no added capabilities.
+
+---
+
+## M4 implementation notes (2026-11-08, from building and testing milestone M4)
+
+The files in the repo are authoritative; this records where the built M4 differs from or adds to the text above.
+
+1. **Versions (verified 2026-11-08).** Authentik `ghcr.io/goauthentik/server:2026.8.5` is the latest 2026.8 patch (GitHub releases, published 2026-10-21; it is also the default tag in the
+   official compose at goauthentik.io/docker-compose.yml, which has PostgreSQL + server + worker and **no Redis**; the image index has amd64 and arm64). PostgreSQL
+   `postgres:16.15-alpine3.24` is the newest 16.x alpine tag on Docker Hub (16.15; arm64 present). Tags are pinned, not digests (the M3 convention); Dependabot tracks both.
+2. **F02 closed.** Service ids live in `config/lab.env`: `AUTHENTIK_UID/GID=10002`, `AUTHENTIK_PG_UID/GID=70` (the PostgreSQL image's own user), `HOMEPAGE_UID/GID=10003` (reserved for M5);
+   `PUID/PGID=1000` is gone. Authentik runs with `user: 10002:10002` (the image default is 1000); PostgreSQL with `user: 70:70` plus `group_add: [10002]`. Manifest owners: `secret-key` 10002:10002 0400,
+   `postgres-password` 10002:10002 **0440** (PostgreSQL reads it via the group), `bootstrap-password` 10002:10002 0400, `homepage/authentik-token` 10003:10003. `bootstrap.sh` creates
+   `/apps/authentik/data` (10002) and `/apps/authentik/postgres` (70) 0700 and refuses ids 0 or 1000; `preflight.sh` fails if those ids are real host users or groups. An arbitrary uid has no passwd entry,
+   which crashed `ak create_recovery_key` (`getpass.getuser()` KeyError): `USER=authentik` is set in the environment (found by the self-test).
+3. **Bootstrap password is NOT file-sourced by Authentik.** The bootstrap blueprint reads it with the `!Env` tag (plain `os.getenv`), so `AUTHENTIK_BOOTSTRAP_PASSWORD=file://...` would make the password the literal text
+   `file://...` (verified in the 2026.8.5 image). Resolution: the worker's entrypoint is a short `sh -c` wrapper that exports the variable from `/run/secrets/authentik_bootstrap_password` when that file is non-empty,
+   then `exec dumb-init -- ak`. The manifest row is `required=empty` (an empty file while UNSET) because a compose `file:` secret must exist. Worker only; the server never sees it. The owner sets the parameter before the
+   first deploy, and back to UNSET after the first login (U10). Changing it later changes nothing (the user is created once).
+4. **Worker without docker.sock and without root** (the official compose gives it both for managed outposts; M4 uses only the embedded outpost). The worker is on `authentik-internal` only (no egress; update check, analytics,
+   error reporting and Gravatar are off). Server and worker: `read_only`, `tmpfs /tmp`, `cap_drop ALL`, `no-new-privileges`, `shm_size 512mb` (official value); memory limits postgres 512M, server 1G, worker 768M
+   (idle on amd64: 178M, 404M, 280M). Authentik only believes forwarded headers from `PROXY_SUBNET` (`AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS`, instead of its 10/8 + 172.16/12 + 192.168/16 default).
+5. **MFA enforcement patches the stock flow instead of replacing it.** The blueprint sets the existing `default-authentication-mfa-validation` stage to `not_configured_action: configure` with TOTP and WebAuthn
+   configuration stages (WebAuthn user verification "preferred"), so the first login walks the user through enrolment. A custom flow would leave `default-authentication-flow` reachable and bypass MFA. The stock
+   blueprint declares that stage without attributes, so it does not fight ours when it is re-applied. Passwordless WebAuthn is not offered, static recovery codes are not enabled (recovery is `ak create_recovery_key`).
+6. **Blueprint** `authentik/blueprints/homelab-apps.yaml`: `metaapplyblueprint` ordering after the stock flows and `authentik Bootstrap`; group `homelab-admins` (`state: created`, seeded with `akadmin`,
+   membership is never overwritten afterwards); `forward_single` providers `homelab-traefik` and `homelab-dashboard` (`external_host` from the `DOMAIN` variable, no `cookie_domain`, access token validity 12 h);
+   applications `traefik` and `dashboard` bound to `homelab-admins` (policy engine `any`, so a user outside the group is denied: fail-closed); the embedded outpost (`managed: goauthentik.io/outposts/embedded`)
+   with both providers and `authentik_host=https://auth.${DOMAIN}`. New apps: copy the provider/application/binding triple, add the provider to the outpost, add the `-outpost` router.
+7. **Traefik.** `authentik@file` is in `middlewares.yml` (embedded outpost address, `trustForwardHeader`, the 12 headers of the official Traefik guide for 2026.8, `authorization` omitted). The `dashboard` router is
+   `lan-allowlist@file,authentik@file`; `dashboard-outpost` (host + `/outpost.goauthentik.io/`, service `authentik`, priority 100, allowlist only) completes the login on the app host so the cookie is host-only.
+   The Authentik router (`auth.${DOMAIN}`) is on the server's own labels. `breakglass-auth` and the `bg-traefik` router (profile `breakglass`) are unchanged: break-glass has no Authentik dependency.
+   Observed cookie: `authentik_proxy_<hash>=...; HttpOnly; SameSite=Lax; Secure; Path=/; Max-Age=43201`, no `Domain`.
+8. **Behaviour to know.** Forward auth fails closed (Authentik down: 5xx, never the app). The outpost matches the `Host` including a non-standard port, so tests must use port 443. Containers keep the secret file they
+   were created with (the symlink swap does not recreate them): after rotating a secret, `up -d --force-recreate` the service. The embedded outpost needs a minute after first start to serve the providers.
+9. **CI.** The full self-test needs several minutes (first database migration) and would break the 5-minute budget of the single job, so CI runs `scripts/test-authentik-config.sh --static` (seconds: pinned images,
+   hardening, secrets, ids, blueprint and label checks) and the fetch-secrets test; the full boot + forward-auth run is the developer/QA gate before changing `authentik/`, `traefik/` or the manifest.
+
+### M4 acceptance criteria
+
+| # | Criterion | Evidence |
+|---|-----------|----------|
+| M4-1 | PostgreSQL, server and worker healthy; images as pinned; no Redis; no published port; no docker.sock; worker not root and internal only | self-test; runbook 3.1-3.3 |
+| M4-2 | Secrets via `file://` / `_FILE`; none in the environment; owners 10002/70, nothing owned by 1000 | self-test (static; owners on a Linux root run); runbook 3.2 |
+| M4-3 | Blueprint `Home lab - SSO apps, MFA and embedded outpost` applies successfully; `akadmin` is in `homelab-admins` | self-test; runbook 3.4 |
+| M4-4 | First login as `akadmin` with the bootstrap password forces MFA enrolment (no skip) and then succeeds | self-test (TOTP); runbook 4 (owner, with a real authenticator) |
+| M4-5 | Unauthenticated `traefik.${DOMAIN}` redirects to the login flow; after login and MFA the dashboard loads; `/api/rawdata` without a session is also redirected | self-test; runbook 5.1-5.3 |
+| M4-6 | Cookies are host-only and per app: no Domain attribute, HttpOnly, Secure, SameSite Lax; a second app does not accept the first app's cookie | self-test; runbook 5.2 |
+| M4-7 | A user outside `homelab-admins` is denied after a valid login; forged `X-authentik-*` request headers are replaced by the real ones | self-test (stand-in app); runbook 5.6-5.7 |
+| M4-8 | Authentik stopped: the dashboard is not served; `bg-traefik` (basic auth) still works; Authentik started again: forward auth answers | self-test; runbook 5.5 (owner, real htpasswd) |
+| M4-9 | Recovery key works under the non-default uid; the recovery drill is in the runbook | self-test; runbook 6 |
+| M4-10 | `authentik/bootstrap-password` is UNSET again after the first login and the worker recreated | runbook 4 step 5 (owner) |
+
+### M4 test and security hooks
+
+- **Q21 (forward-auth chain):** `scripts/test-authentik-config.sh` (full) and `scripts/testdata/authentik-e2e.py`: boots the real definition, runs the real Traefik flags, labels and middleware files against it, and drives login, MFA enrolment, SSO, cookie flags and headers.
+- **Q22 (MFA cannot be skipped):** a password-only session has no API session and does not open the dashboard; a user without a device is sent to configure one. QA to add: a user who deletes their last device is re-prompted; WebAuthn on the production certificate (after M6).
+- **Q23 (fail-closed):** the group binding denies outsiders; Authentik down gives 5xx; break-glass is independent. QA to add: stop `authentik-postgresql` while a session exists; restart order after a power cut (`depends_on: service_healthy`).
+- **Q24 (recovery drill):** run section 6 of the runbook once on the Pi, including the lost-MFA row, and record the date.
+- **S20 (Authentik hardening):** no docker.sock, non-root, read-only, caps dropped, internal worker and database, no ports, trusted proxies = proxy subnet only, no cookie domain, error reporting off (static checks, M4-1). Security to add: an image scan of the pinned tags (trivy), and a review that nothing else can reach `authentik-server:9000` (only Traefik shares the `proxy` network).
+- **S21 (session and header integrity):** cookies host-only per app; `aliasHeadersStrategy=delete` is on; identity headers are overwritten by the forward-auth response (self-test). Security to add: confirm `lan-allowlist` still returns 403 for a spoofed `X-Forwarded-For` on the dashboard.
+- **S22 (F02 on the Pi):** `sudo find /apps/secrets /apps/authentik \( -uid 1000 -o -gid 1000 \)` is empty; the login user cannot read the secret files or the data directories; `getent passwd 10002 70` is empty (runbook 3.2, `preflight.sh`).

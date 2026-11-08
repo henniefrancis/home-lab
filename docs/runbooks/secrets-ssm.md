@@ -59,7 +59,7 @@ Afterwards put the placeholder back with `--unset`, or overwrite the dummy with 
 |-----------|---------|
 | `/home-lab/authentik/secret-key` | Authentik secret key |
 | `/home-lab/authentik/postgres-password` | Authentik PostgreSQL password |
-| `/home-lab/authentik/bootstrap-password` | `akadmin` bootstrap password, first start only (optional) |
+| `/home-lab/authentik/bootstrap-password` | `akadmin` bootstrap password, first start only (optional; an empty file while UNSET; set it BEFORE the first M4 deploy, set it back to UNSET after the first login, see `m4-authentik.md`) |
 | `/home-lab/traefik/breakglass-htpasswd` | break-glass basic-auth htpasswd line |
 | `/home-lab/tailscale/auth-key` | one-off auth key, set back to UNSET after joining |
 | `/home-lab/homepage/authentik-token` | optional Authentik API token for Homepage |

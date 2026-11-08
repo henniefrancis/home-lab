@@ -35,7 +35,7 @@ are never served from the Pi.
 | M1 | HCP Terraform and AWS foundation; adopt the existing Route 53 zone, records and registered-domain nameservers into Terraform |
 | M2 | Pi preflight, bootstrap, Tailscale, private CA for Roles Anywhere, wildcard DNS record |
 | M3 | Traefik, socket proxy and Roles Anywhere helper (Let's Encrypt staging) |
-| M4 | Authentik SSO |
+| M4 | Authentik SSO with enforced MFA; forward auth in front of the Traefik dashboard (blueprint as code, break-glass kept) |
 | M5 | Homepage on `dashboard.${DOMAIN}` |
 | M6 | Production certificate, hardening, repo made public |
 
