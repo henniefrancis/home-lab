@@ -1,0 +1,28 @@
+---
+# OPTIONAL, OFF by default: container-status dots on the Traefik and Authentik tiles, read through the Docker socket proxy.
+#
+# Why it is off: tecnativa/docker-socket-proxy v0.5.0 with CONTAINERS=1 also lets any client with proxy access read
+# GET /containers/{id}/archive, /export, /logs and /top (reported as CVE-2026-78122, no fixed release at the time of writing),
+# i.e. files and logs of every container, secrets included. Homepage works without it: the tiles are links; only the status
+# dot is lost. Enable only after the proxy is replaced by a stricter allow-list, or if you accept that exposure.
+#
+# Everything the integration needs is in this file and homepage/docker-status/: remove the file to remove the integration.
+# Enable (root project): in compose.yaml replace the homepage include by
+#     - path:
+#         - homepage/compose.yaml
+#         - homepage/compose.docker-status.yaml
+# Standalone: docker compose -p home-lab -f homepage/compose.yaml -f homepage/compose.docker-status.yaml \
+#     --env-file config/lab.env --env-file /apps/secrets/runtime.env up -d homepage
+services:
+  homepage:
+    networks:
+      - socket-proxy
+    environment:
+      # Tiles use `server: "{{HOMEPAGE_VAR_DOCKER_SERVER}}"`; empty (the default) means no status lookup for that tile.
+      HOMEPAGE_VAR_DOCKER_SERVER: socket-proxy
+    volumes:
+      - ./docker-status/docker.yaml:/app/config/docker.yaml:ro
+
+networks:
+  socket-proxy:
+    external: true

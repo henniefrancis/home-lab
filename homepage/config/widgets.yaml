@@ -1,0 +1,12 @@
+---
+# Information widgets (no external requests: local clock and the Homepage container's own view of CPU and memory).
+- resources:
+    label: Dashboard container
+    cpu: true
+    memory: true
+
+- datetime:
+    text_size: xl
+    format:
+      timeStyle: short
+      hourCycle: h23

@@ -1,0 +1,12 @@
+---
+# Documentation links only (public vendor sites); nothing lab-specific or identifying.
+- Docs:
+    - Homepage:
+        - abbr: HP
+          href: https://gethomepage.dev/
+    - Traefik:
+        - abbr: TR
+          href: https://doc.traefik.io/traefik/
+    - Authentik:
+        - abbr: AK
+          href: https://docs.goauthentik.io/

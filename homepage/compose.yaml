@@ -1,0 +1,78 @@
+---
+# Homepage dashboard at https://dashboard.${DOMAIN} (plan 6.6, milestone M5), behind Authentik forward auth like the Traefik dashboard.
+#
+# Start (Pi):  sudo scripts/deploy.sh --only homepage      (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       config/lab.env + ${APPS_ROOT}/secrets/runtime.env (DOMAIN), the networks from scripts/bootstrap.sh (proxy),
+#              Traefik and Authentik running (the dashboard provider and application are in
+#              authentik/blueprints/homelab-apps.yaml).
+# Runbook:     docs/runbooks/m5-homepage.md        Self-test: scripts/test-homepage-config.sh
+#
+# Identity (F02): uid:gid HOMEPAGE_UID:HOMEPAGE_GID (10003, NOT 1000, the Pi's login user, and not root, the image default).
+# The image entrypoint only drops privileges when PUID is set; with `user:` and no PUID it just execs node as that uid, which is
+# what we want (no chown of anything, no su-exec).
+#
+# Hardening: read-only root file system (the only writable paths are two tmpfs, owned by the service uid), config mounted
+# read-only from the repo checkout (all nine files the app looks for are committed, so it never tries to copy its skeleton),
+# logs to stdout only (LOG_TARGETS=stdout: nothing is written into the checkout), cap_drop ALL, no-new-privileges, memory
+# limit, no published port. There is NO Docker integration by default (no
+# socket-proxy network, no docker.sock): the optional container-status dots are in compose.docker-status.yaml, which explains
+# why they are off (socket proxy CVE-2026-78122). docker.sock is never mounted here.
+#
+# Homepage has no telemetry; its update check is switched off in config/settings.yaml (disableUpdateCheck, hideVersion).
+services:
+  homepage:
+    image: ghcr.io/gethomepage/homepage:v2.7.0
+    container_name: homepage
+    restart: unless-stopped
+    user: "${HOMEPAGE_UID:?set HOMEPAGE_UID in config/lab.env}:${HOMEPAGE_GID:?set HOMEPAGE_GID in config/lab.env}"
+    read_only: true
+    tmpfs:
+      # Next.js image/response cache and scratch files. uid/gid are set so the unprivileged service can write.
+      - /tmp:uid=${HOMEPAGE_UID},gid=${HOMEPAGE_GID},mode=0700
+      - /app/.next/cache:uid=${HOMEPAGE_UID},gid=${HOMEPAGE_GID},mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
+    networks:
+      - proxy
+    environment:
+      # Host header allow-list: any other Host (a request that bypasses Traefik, DNS rebinding) is refused by Homepage itself.
+      HOMEPAGE_ALLOWED_HOSTS: dashboard.${DOMAIN:?set DOMAIN (runtime.env)}
+      # Used as {{HOMEPAGE_VAR_DOMAIN}} in config/*.yaml, so no domain is committed.
+      HOMEPAGE_VAR_DOMAIN: ${DOMAIN}
+      # Empty = tiles show no container status. compose.docker-status.yaml (optional) sets it to the socket-proxy server name.
+      HOMEPAGE_VAR_DOCKER_SERVER: ""
+      LOG_TARGETS: stdout
+      LOG_LEVEL: info
+      TZ: ${TZ:-UTC}
+      PORT: "3000"
+    volumes:
+      - ./config:/app/config:ro
+    labels:
+      traefik.enable: "true"
+      # Same pattern as the Traefik dashboard (traefik/compose.yaml): LAN/tailnet allowlist, then Authentik forward auth
+      # (SSO + enforced MFA, group homelab-admins). Security headers come from the websecure entrypoint. Only this host is
+      # routed: the apex and www are NOT served by this lab (the 404 comes from Traefik's catch-all).
+      traefik.http.routers.homepage.rule: Host(`dashboard.${DOMAIN}`)
+      traefik.http.routers.homepage.entrypoints: websecure
+      traefik.http.routers.homepage.middlewares: lan-allowlist@file,authentik@file
+      traefik.http.routers.homepage.service: homepage
+      traefik.http.services.homepage.loadbalancer.server.port: "3000"
+      # The outpost's own endpoints on THIS host go straight to Authentik (no forward auth: it would loop), behind the
+      # allowlist. The callback sets the session cookie on dashboard.${DOMAIN} only (host-only, per-app login).
+      traefik.http.routers.homepage-outpost.rule: Host(`dashboard.${DOMAIN}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      traefik.http.routers.homepage-outpost.entrypoints: websecure
+      traefik.http.routers.homepage-outpost.priority: "100"
+      traefik.http.routers.homepage-outpost.service: authentik
+      traefik.http.routers.homepage-outpost.middlewares: lan-allowlist@file
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  proxy:
+    external: true

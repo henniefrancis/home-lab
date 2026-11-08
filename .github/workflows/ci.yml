@@ -140,6 +140,9 @@ jobs:
       - name: Self-test - Authentik stack definition (static checks without containers - pinned images, hardening, file secrets, service ids, blueprint, labels)
         run: bash scripts/test-authentik-config.sh --static
 
+      - name: Self-test - Homepage stack definition (static checks, no containers)
+        run: bash scripts/test-homepage-config.sh --static
+
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |
           set -eu

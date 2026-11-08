@@ -1,0 +1,6 @@
+---
+# OPTIONAL container-status integration (mounted over config/docker.yaml by homepage/compose.docker-status.yaml): ONLY through
+# the socket proxy on the internal socket-proxy network. Never mount docker.sock into Homepage.
+socket-proxy:
+  host: socket-proxy
+  port: 2375

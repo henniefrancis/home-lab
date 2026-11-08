@@ -1,0 +1,48 @@
+---
+# Tiles (plan 6.6). The live tiles can show the container state, but that is OPTIONAL and OFF by default:
+# {{HOMEPAGE_VAR_DOCKER_SERVER}} is empty (no Docker integration, no socket-proxy network) unless
+# homepage/compose.docker-status.yaml is included (it sets it to the server name defined in homepage/docker-status/docker.yaml).
+# See that file for why it is off.
+# "Coming soon" tiles are placeholders for the planned hosts: no container, no status; the link works once
+# the service exists. {{HOMEPAGE_VAR_DOMAIN}} is the lab domain, injected from compose.
+#
+# Optional Authentik widget (needs the SSM parameter homepage/authentik-token): see docs/runbooks/m5-homepage.md.
+- Platform:
+    - Traefik:
+        icon: traefik.png
+        href: https://traefik.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Reverse proxy and certificates
+        server: "{{HOMEPAGE_VAR_DOCKER_SERVER}}"
+        container: traefik
+    - Authentik:
+        icon: authentik.png
+        href: https://auth.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Single sign-on and MFA
+        server: "{{HOMEPAGE_VAR_DOCKER_SERVER}}"
+        container: authentik-server
+
+- Coming soon:
+    - Home Assistant:
+        icon: home-assistant.png
+        href: https://ha.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Home automation
+    - IT Tools:
+        icon: it-tools.png
+        href: https://tools.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Handy developer utilities
+    - Linkwarden:
+        icon: linkwarden.png
+        href: https://links.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Bookmarks and archive
+    - Netdata:
+        icon: netdata.png
+        href: https://netdata.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Host monitoring
+    - Pi-hole:
+        icon: pi-hole.png
+        href: https://pihole.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: DNS filtering
+    - Portainer:
+        icon: portainer.png
+        href: https://portainer.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Container management

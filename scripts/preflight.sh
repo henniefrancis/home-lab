@@ -350,7 +350,7 @@ check_layout() {
   done
   # F02: the service uids must not be real host users (a file owned by the login user is readable by whoever logs in).
   local k id
-  for k in AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID; do
+  for k in AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID; do
     id="$(lab_env_get "$LAB_ENV" "$k")"
     if ! [[ "$id" =~ ^[0-9]+$ ]]; then
       fail "svc-id:$k" "$k missing or not numeric in $LAB_ENV"

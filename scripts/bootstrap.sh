@@ -77,7 +77,11 @@ AK_UID="$(lab_env_get "$LAB_ENV" AUTHENTIK_UID 10002)"
 AK_GID="$(lab_env_get "$LAB_ENV" AUTHENTIK_GID 10002)"
 PG_UID="$(lab_env_get "$LAB_ENV" AUTHENTIK_PG_UID 70)"
 PG_GID="$(lab_env_get "$LAB_ENV" AUTHENTIK_PG_GID 70)"
-for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID"; do
+# Homepage (M5) runs as HOMEPAGE_UID:HOMEPAGE_GID with a read-only root file system and its config mounted read-only from the
+# checkout: it owns no directory under $APPS_ROOT, so nothing is created for it beyond $APPS_ROOT/homepage (root 0755, above).
+HP_UID="$(lab_env_get "$LAB_ENV" HOMEPAGE_UID 10003)"
+HP_GID="$(lab_env_get "$LAB_ENV" HOMEPAGE_GID 10003)"
+for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID" "$HP_UID" "$HP_GID"; do
   [[ "$id" =~ ^[0-9]+$ ]] && [ "$id" -ne 0 ] && [ "$id" -ne 1000 ] || die "service uid/gid '$id' in $LAB_ENV must be numeric, not 0 and not 1000 (the login user)"
 done
 install -d -m 0700 -o "$AK_UID" -g "$AK_GID" "$APPS_ROOT/authentik/data"

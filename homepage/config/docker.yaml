@@ -1,0 +1,4 @@
+---
+# No Docker integration by default: Homepage discovers and polls EVERY server listed here, so the optional socket-proxy server
+# is defined in homepage/docker-status/docker.yaml and only mounted over this file by homepage/compose.docker-status.yaml.
+# Never mount docker.sock into Homepage.

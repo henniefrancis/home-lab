@@ -44,3 +44,4 @@ Thumbs.db
 *.srl
 *.p12
 .authentik-test.*/
+.homepage-test.*/
