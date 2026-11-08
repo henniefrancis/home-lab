@@ -47,7 +47,8 @@ resource "aws_route53_record" "www_reserved" {
 
 # SEC-L5: only Let's Encrypt, only through dns-01 (the method Traefik uses), and, once the production account exists
 # (acme_account_uri), only for that account, so a stolen _acme-challenge role cannot be used with another LE account.
-# amazon.com is dropped (no ACM certificate is planned).
+# amazon.com stays allowed for non-wildcard names (owner decision 2026-11-08): the future public website on the apex/www may
+# use a free ACM certificate behind an ALB or CloudFront. Wildcards remain Let's Encrypt only.
 locals {
   caa_params = join(";", compact(["validationmethods=dns-01", var.acme_account_uri == null ? "" : "accounturi=${var.acme_account_uri}"]))
 }
@@ -60,6 +61,7 @@ resource "aws_route53_record" "caa" {
   type    = "CAA"
   ttl     = 3600
   records = [
+    "0 issue \"amazon.com\"",
     "0 issue \"letsencrypt.org;${local.caa_params}\"",
     "0 issuewild \"letsencrypt.org;${local.caa_params}\"",
   ]
