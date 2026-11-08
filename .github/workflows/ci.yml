@@ -109,22 +109,33 @@ jobs:
       - name: Self-test - fetch-secrets.sh with a mock aws (runs as root on the runner, temp dirs only)
         run: sudo -E bash scripts/test-fetch-secrets.sh
 
-      - name: docker compose config
+      - name: Guard - ra-helper version and checksum match scripts/lib/pins.sh
         run: |
-          if [ -f compose.yaml ]; then
-            docker compose --env-file config/lab.env config -q
-          else
-            echo "No compose.yaml yet (added in M3)."
-          fi
+          set -eu
+          . scripts/lib/pins.sh
+          grep -qx "ARG HELPER_VERSION=${HELPER_VERSION}" traefik/ra-helper/Dockerfile || { echo "Dockerfile HELPER_VERSION differs from pins.sh"; exit 1; }
+          grep -qx "ARG HELPER_SHA256=${HELPER_SHA256}" traefik/ra-helper/Dockerfile || { echo "Dockerfile HELPER_SHA256 differs from pins.sh"; exit 1; }
+          grep -q "image: home-lab/ra-helper:${HELPER_VERSION}\$" traefik/compose.yaml ||
+            { echo "traefik/compose.yaml ra-helper tag differs from pins.sh"; exit 1; }
 
-      - name: docker compose config - tailscale (dummy env, no secrets)
+      - name: docker compose config - root project (dummy env, no secrets)
         run: |
           set -eu
           d="$(mktemp -d)"
           mkdir -p "$d/secrets/tailscale"
           : > "$d/secrets/tailscale/tailscale.env"
-          { echo "APPS_ROOT=$d"; echo "TS_HOSTNAME=ci-dummy"; } > "$d/ci.env"
-          docker compose -f tailscale/compose.yaml --env-file "$d/ci.env" config -q
+          {
+            echo "APPS_ROOT=$d"
+            echo "DOMAIN=lab.example.test"
+            echo "ROUTE53_ZONE_ID=Z0000000000000000000"
+            echo "RA_TRUST_ANCHOR_ARN=dummy-trust-anchor"
+            echo "RA_ACME_PROFILE_ARN=dummy-profile"
+            echo "RA_ACME_ROLE_ARN=dummy-role"
+          } > "$d/ci.env"
+          docker compose --env-file config/lab.env --env-file "$d/ci.env" config -q
+
+      - name: Self-test - Traefik stack (flags, dynamic files, redirect, TLS options, hardening; dummy values, no ACME)
+        run: bash scripts/test-traefik-config.sh
 
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |

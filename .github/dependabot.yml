@@ -4,8 +4,7 @@
 # Ecosystems whose manifests do not exist yet are NOT listed (dependabot errors on a directory with no
 # matching manifest). Add each in the milestone that introduces it, using the same shape as below:
 #   (M1 terraform is listed below.)
-#   M3: docker-compose  directories /traefik (then /authentik, /tailscale, /homepage as they arrive)
-#   M3: docker          directory /traefik/ra-helper (the Dockerfile base image)
+#   M3 (added below): docker-compose /traefik and /tailscale (then /authentik, /homepage as they arrive); docker /traefik/ra-helper
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -24,4 +23,25 @@ updates:
       interval: weekly
     groups:
       terraform:
+        patterns: ["*"]
+
+  # M3. Image bumps for Traefik, the socket proxy, whoami and Tailscale arrive as one weekly PR. The pinned
+  # aws_signing_helper release in traefik/ra-helper/Dockerfile and scripts/lib/pins.sh is NOT tracked here; bump it by hand
+  # from the AWS user guide (CI fails if the two files disagree).
+  - package-ecosystem: docker-compose
+    directories:
+      - /traefik
+      - /tailscale
+    schedule:
+      interval: weekly
+    groups:
+      compose-images:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /traefik/ra-helper
+    schedule:
+      interval: weekly
+    groups:
+      ra-helper-base:
         patterns: ["*"]
