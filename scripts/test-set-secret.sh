@@ -2,9 +2,10 @@
 # test-set-secret.sh - offline self-test of scripts/set-secret.sh against a MOCK aws (QA-L-7, QA-L-8, SEC-M2, SEC-L7).
 # Needs jq. Never contacts AWS: the mock is placed first on PATH, the AWS config and credentials are disabled, and the test
 # PROVES the mock is the aws that will run (marker call) before any case runs; it aborts otherwise.
+# shellcheck disable=SC2016 # the bash -c snippets are single-quoted on purpose: $1, $2 expand in the child shell
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 command -v jq > /dev/null || {
   echo "jq is required" >&2
   exit 2

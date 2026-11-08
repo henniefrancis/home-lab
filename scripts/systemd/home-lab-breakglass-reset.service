@@ -1,0 +1,13 @@
+# Installed by scripts/bootstrap.sh (paths rewritten). SEC-L3: the Traefik break-glass login (Basic auth, no MFA) must never
+# survive a reboot. This runs before Docker starts Traefik and deletes the drop-in file that scripts/breakglass.sh creates.
+[Unit]
+Description=home-lab: disable the Traefik break-glass login at boot
+Before=docker.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/rm -f @APPS_ROOT@/traefik/dynamic/bg-traefik.yml
+
+[Install]
+WantedBy=multi-user.target

@@ -30,8 +30,8 @@ Rules for the whole runbook:
 | 5 | Pi | Generate the two keys and CSRs |
 | 6 | Laptop | Sign both CSRs |
 | 7 | Pi | Install both certificates |
-| 8 | HCP | Set `ca_cert_pem` |
-| 9 | Lead | Plan and apply Roles Anywhere (and the `ra-*` config parameters) |
+| 8 | Owner | Put `ca_cert_pem` into the gitignored `terraform/bootstrap/terraform.tfvars` |
+| 9 | Owner (admin SSO) | `terraform apply` of `terraform/bootstrap`: the identity stack (trust anchor, profiles, the two lab roles, the KMS key). See `sec-remediation-apply-order.md` for the order when migrating from the old layout |
 | 10 | Laptop and Pi | Write `/etc/home-lab/aws.env` (U13) |
 | 11 | Laptop | Set the required secrets (U12) |
 | 12 | Laptop | Tailscale console: policy, tag, one-off auth key; store the key (U8) |
@@ -40,6 +40,7 @@ Rules for the whole runbook:
 | 15 | Laptop | Set the Tailscale key back to UNSET |
 | 16 | Lead | Set `pi_tailnet_ipv4`, plan and apply the wildcard record |
 | 17 | Pi | Verify (preflight full, S17 identity tests, S19 permissions) |
+| 18 | Laptop and Pi | Signed deploys: signing key, `allowed_signers`, root-owned checkout, no docker group (section 3.1) |
 
 Steps 4 to 8 do not depend on steps 1 to 3 finishing, so the CA can be created while the Pi is being prepared.
 
@@ -56,8 +57,8 @@ grep -E '^(PRETTY_NAME|VERSION_CODENAME)=' /etc/os-release
 uname -m; dpkg --print-architecture
 tr -d '\0' < /proc/device-tree/model; echo
 findmnt -no SOURCE /
-docker version --format 'docker engine {{.Server.Version}}' 2>&1 | tail -1
-docker compose version 2>&1
+sudo docker version --format 'docker engine {{.Server.Version}}' 2>&1 | tail -1
+sudo docker compose version 2>&1
 dpkg -l | awk '/docker|containerd/ {print $2, $3}'
 ip -4 -br addr | grep -v '^lo'
 ip route show default
@@ -106,13 +107,15 @@ Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-sudo usermod -aG docker "$USER"   # log out and back in (or reboot) for this to take effect
+# Do NOT add your login user to the docker group (SEC-M3): that group is root-equivalent (docker run -v /:/h ...), so it would
+# undo the uid separation of the secret files. Use `sudo docker ...` everywhere on the Pi. If it is already the case:
+#   sudo gpasswd -d "$USER" docker      (then log out and back in)
 ```
 
 Removing Debian's packages keeps images and volumes in `/var/lib/docker`. Check afterwards:
 
 ```bash
-docker version --format '{{.Server.Version}}'; docker compose version; docker run --rm hello-world
+sudo docker version --format '{{.Server.Version}}'; sudo docker compose version; sudo docker run --rm hello-world
 ```
 
 ### 0.4 A fixed LAN address (U5)
@@ -164,16 +167,24 @@ gh repo deploy-key add - --repo <owner>/home-lab --title home-lab-pi <<< 'ssh-ed
 Back on the Pi:
 
 ```bash
-sudo mkdir -p /opt/home-lab && sudo chown "$USER": /opt/home-lab
-GIT_SSH_COMMAND='ssh -i ~/.ssh/home-lab-deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' \
+# The checkout is owned by ROOT (SEC-M3): root runs its scripts, so nobody who can log in may be able to change a file in it.
+# The deploy key therefore lives in root's home, not in the login user's.
+sudo install -d -m 0700 /root/.ssh
+sudo install -m 0600 -o root -g root ~/.ssh/home-lab-deploy /root/.ssh/home-lab-deploy
+shred -u ~/.ssh/home-lab-deploy ~/.ssh/home-lab-deploy.pub 2> /dev/null || rm -f ~/.ssh/home-lab-deploy ~/.ssh/home-lab-deploy.pub
+sudo mkdir -p /opt/home-lab
+sudo GIT_SSH_COMMAND='ssh -i /root/.ssh/home-lab-deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' \
   git clone git@github.com:<owner>/home-lab.git /opt/home-lab
-git -C /opt/home-lab config core.sshCommand 'ssh -i ~/.ssh/home-lab-deploy -o IdentitiesOnly=yes'
+sudo git -C /opt/home-lab config core.sshCommand 'ssh -i /root/.ssh/home-lab-deploy -o IdentitiesOnly=yes'
+sudo chown -R root:root /opt/home-lab
 ```
+
+From here on, git commands on the Pi are `sudo git -C /opt/home-lab ...`; `sudo scripts/deploy.sh` does the pulling itself.
 
 The deploy key is a credential on the Pi's disk: it is read-only, repo-scoped and revocable in GitHub. After M6 (public repo) it is not
 needed.
 
-All Pi commands below run from `cd /opt/home-lab`.
+All Pi commands below run from `cd /opt/home-lab` (read-only for you; use `sudo` for anything that changes it).
 
 ## 1. Preflight [Pi]
 
@@ -191,7 +202,7 @@ GHCR and GitHub. It ends with `Summary: N PASS, N WARN, N FAIL`. WARNs are decis
 | Finding | Fix |
 |---------|-----|
 | `arch` FAIL | Reflash Raspberry Pi OS (64-bit). A 32-bit userland cannot run the pinned arm64 binaries. |
-| `memory-cgroup` FAIL | Append `cgroup_memory=1 cgroup_enable=memory` to the single line of `/boot/firmware/cmdline.txt` (`/boot/cmdline.txt` on older images) unless already there, then reboot: `sudo sed -i '1 s/$/ cgroup_memory=1 cgroup_enable=memory/' /boot/firmware/cmdline.txt && sudo reboot`. Do not add a new line; the file must stay one line. |
+| `memory-cgroup` FAIL | Append `cgroup_memory=1 cgroup_enable=memory` to the single line of `/boot/firmware/cmdline.txt` (`/boot/cmdline.txt` on older images) unless already there, then reboot: `grep -q cgroup_memory=1 /boot/firmware/cmdline.txt || sudo sed -i '1 s/$/ cgroup_memory=1 cgroup_enable=memory/' /boot/firmware/cmdline.txt; sudo reboot` (the grep makes it safe to repeat: the flags are never appended twice). Do not add a new line; the file must stay one line. |
 | `docker` / `compose` FAIL | Install from Docker's apt repo (step 0). |
 | `time-sync` FAIL | `sudo timedatectl set-ntp true`. IAM Roles Anywhere rejects requests with a skewed clock. |
 | `lan-ip` FAIL | The Pi is outside `LAN_CIDR` (config/lab.env). Fix the network, not the config. |
@@ -211,16 +222,17 @@ sudo scripts/preflight.sh --stage bootstrap
 
 `bootstrap.sh` is idempotent. It refuses to run while the preflight has a FAIL, then:
 
-1. installs missing packages (`curl unzip gnupg jq openssl git`);
+1. installs missing packages (`curl unzip gnupg jq openssl git openssh-client util-linux`; `ssh-keygen` verifies commit signatures, `flock` serialises secret fetches);
 2. creates `/apps/{traefik,authentik,homepage,tailscale}` (root 0755; `traefik/letsencrypt` and `tailscale/state` 0700), `/apps/.secrets.d` and
-   `/apps/secrets` (0700 root), `/etc/home-lab` and `/etc/home-lab/pki` (0700 root);
-3. creates the Docker networks `proxy` (bridge, subnet `PROXY_SUBNET`), `socket-proxy` (internal) and `authentik-internal` (internal);
+   `/apps/secrets` (0700 root), `/etc/home-lab` and `/etc/home-lab/pki` (0700 root); `/apps/traefik/dynamic` (root 0755, the watched copy of `traefik/dynamic`) and `/apps/traefik/letsencrypt` (0700, owned by the Traefik service id 10004: Traefik runs non-root);
+3. creates the Docker networks `proxy` (bridge, subnet `PROXY_SUBNET`), `authentik-auth` (bridge, subnet `AUTHENTIK_AUTH_SUBNET`: shared by Traefik and `authentik-server` only) and `authentik-internal` (internal); there is no `socket-proxy` network any more (a leftover one is reported, remove it with `sudo docker network rm socket-proxy`);
 4. loads the `tun` module and persists it in `/etc/modules-load.d/home-lab.conf`;
 5. installs **AWS CLI v2** (aarch64): downloads the official installer and its detached signature, imports the AWS CLI team key from
    `scripts/pubkeys/awscli-team.asc`, requires fingerprint `FB5D B77F D5C1 18B8 0511 ADA8 A631 0ACC 4672 475C`, and installs only if gpg reports a
    valid signature by exactly that key;
 6. installs **`aws_signing_helper` 1.8.6** (aarch64) to `/usr/local/bin` (root, 0555) after a SHA256 check against the value in the AWS user guide;
-7. records the installed versions in `/etc/home-lab/installed-versions`.
+7. records the installed versions in `/etc/home-lab/installed-versions`;
+8. installs and enables `home-lab-cert-expiry.timer` (daily certificate expiry check) and `home-lab-breakglass-reset.service` (removes the break-glass login at every boot), and makes the checkout root-owned if it is not (SEC-M3, QA-M-4, SEC-L3).
 
 Where the pins come from (also written in `scripts/lib/pins.sh`):
 - helper download URL and SHA256: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/credential-helper.html (Linux, Aarch64 row);
@@ -228,6 +240,47 @@ Where the pins come from (also written in `scripts/lib/pins.sh`):
   update `scripts/pubkeys/awscli-team.asc` and `AWSCLI_KEY_FPR` from that page.
 
 The stage `bootstrap` preflight confirms the tools, the directory modes, the Docker networks and the `tun` module.
+
+### 3.1 Who can reach root, and signed deploys [Laptop, then Pi] (SEC-M3, SEC-M7)
+
+**Login user and docker.** `docker` group membership is root-equivalent, so the login user is not in it and uses `sudo docker`. Check and fix:
+
+```bash
+id -nG "$USER" | tr ' ' '\n' | grep -x docker && sudo gpasswd -d "$USER" docker   # then log out and in; no output means already clean
+sudo stat -c '%U:%G %a' /opt/home-lab                                              # expect root:root 755
+```
+
+The real boundary is the Raspberry Pi Connect account (a cloud-brokered shell) plus your sudo password: turn on 2FA with a passkey or security key on the Raspberry
+Pi ID, turn Pi Connect remote shell off when you do not need it, and confirm `sudo -l` asks for a password (`NOPASSWD` entries would void all of this).
+
+**Signed deploys.** `scripts/deploy.sh` merges and runs only a commit whose SSH signature verifies against `/etc/home-lab/allowed_signers`, a file OUTSIDE the
+checkout (so a pushed commit cannot change who is trusted). There is no bypass flag; with no or a bad file it refuses.
+
+On the laptop, once:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/home-lab-signing -C "home-lab commit signing"   # use a passphrase; or a hardware key: ssh-keygen -t ed25519-sk
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/home-lab-signing.pub
+git config --global commit.gpgsign true          # or set it only inside the repo with --local
+cat ~/.ssh/home-lab-signing.pub                  # one line: ssh-ed25519 AAAA... home-lab commit signing
+```
+
+Add the same public line to GitHub as a **signing key** (Settings, SSH and GPG keys, New SSH key, type "Signing Key"), so commits show as Verified, and turn on the
+ruleset "Require signed commits" for `main` when the repo goes public. The public key is not secret but the real one is not committed here
+(`config/allowed_signers.example` is only a template). On the Pi, install it (replace the key text):
+
+```bash
+sudo install -m 0644 -o root -g root /dev/null /etc/home-lab/allowed_signers
+sudo tee /etc/home-lab/allowed_signers > /dev/null <<'EOF'
+owner@example.invalid namespaces="git" ssh-ed25519 AAAA...your-public-key... home-lab commit signing
+EOF
+sudo scripts/preflight.sh --stage full | grep -E 'allowed-signers|ssh-keygen'      # both PASS
+```
+
+Make one signed commit, push it, and run `sudo scripts/deploy.sh`; step 1 prints `HEAD <sha>: signature verified against /etc/home-lab/allowed_signers`. An unsigned commit makes
+step 1 stop with `not signed by an allowed signer`; nothing is merged or started. Rotate the signing key by adding the new line, deploying once, then removing the old
+line. After M6, delete the Pi deploy key and clone over HTTPS (`sudo git remote set-url origin https://github.com/<owner>/home-lab.git`, `sudo rm /root/.ssh/home-lab-deploy`).
 
 ## 4. Create the offline CA [Laptop]
 
@@ -304,24 +357,34 @@ rm -f /tmp/host.crt /tmp/traefik.crt
 The installer refuses unless the subject, issuer (`CN=home-lab-offline-ca`), `CA:FALSE`, `digitalSignature`, validity and **the public key matching the
 Pi's own key** are all right, and it refuses input that contains a private key. It writes `/etc/home-lab/pki/{host,traefik}.crt` as root 0444.
 
-## 8. Give Terraform the CA certificate [HCP]
+## 8. Give Terraform the CA certificate [Owner]
 
-In the HCP Terraform workspace `home-lab`, set the **terraform** variable `ca_cert_pem` (not sensitive; it is a public certificate) to the full PEM of
-`~/home-lab-ca/ca.crt`, including the BEGIN and END lines. Confirm `pki_generation` is unset (default `gen-1`) or equals the generation used above.
-Tell the lead it is done and give the CA certificate's SHA-256 fingerprint (from step 4) so the lead can confirm the trust anchor matches. Do not add
-`pi_tailnet_ipv4` yet.
+The Roles Anywhere trust anchor, the profiles, the two lab roles and their policies are defined in `terraform/bootstrap` (SEC-H1), which only you apply with your
+admin SSO (local execution, state in the HCP workspace `home-lab-bootstrap`). The HCP apply role can no longer create or edit a role. In the gitignored
+`terraform/bootstrap/terraform.tfvars` set `ca_cert_pem` to the full PEM of `~/home-lab-ca/ca.crt` (public; BEGIN and END lines included) and, if not default,
+`pki_generation`. Also set `domain`, `home_lab_zone_id` and `owner_role_arn_pattern` (see `terraform.tfvars.example`). Do not add `pi_tailnet_ipv4` yet; that is an
+`terraform/edge` workspace variable.
 
-## 9. Roles Anywhere apply [Lead]
+## 9. Identity apply [Owner, admin SSO]
 
-The lead runs a remote plan and, after the owner approves, an apply for `terraform/edge`. With `ca_cert_pem` set, Terraform creates:
-the trust anchor `home-lab-offline-ca`, profiles `home-lab-traefik` and `home-lab-pi-host`, roles `home-lab-traefik-dns01` and `home-lab-pi-host`
-(trust pinned to the cert CN, the `pki_generation` OU and issuer `home-lab-offline-ca`), and the three `config/ra-*` String parameters in SSM. Expected
-plan: additions only, nothing destroyed or replaced. The lead tells the owner when the outputs exist.
+```bash
+cd terraform/bootstrap
+aws sso login --profile henniefrancis
+terraform init && terraform plan -out tfplan     # read it; apply only if it matches the list below
+terraform apply tfplan
+```
+
+On a fresh account with the `ca_cert_pem` set, the plan adds: the trust anchor `home-lab-offline-ca`, profiles `home-lab-traefik` and `home-lab-pi-host`, roles
+`home-lab-traefik-dns01` and `home-lab-pi-host` (trust pinned to the trust anchor ARN, the cert CN, the `pki_generation` OU and issuer `home-lab-offline-ca`), their
+inline policies, the customer-managed KMS key `alias/home-lab-ssm`, and the apply and plan roles. Nothing is destroyed or replaced. If these objects already exist
+(created by the old `terraform/edge` layout) do NOT apply this plan: follow `sec-remediation-apply-order.md`, which imports them so no live role is recreated.
+Then set the three edge workspace variables `ra_trust_anchor_arn`, `ra_acme_profile_arn`, `ra_acme_role_arn` from the outputs (`terraform output`) and let the lead apply
+`terraform/edge` (it mirrors them into the `config/ra-*` String parameters).
 
 ## 10. Write `/etc/home-lab/aws.env` (U13) [Laptop, then Pi]
 
 On the laptop, print the file contents from the Terraform outputs (needs `terraform login` and `TF_CLOUD_ORGANIZATION`; see
-`docs/runbooks/hcp-terraform-bootstrap.md`; run `terraform -chdir=terraform/edge init` once if you have not):
+`docs/runbooks/hcp-terraform-bootstrap.md`; run `terraform -chdir=terraform/bootstrap init` once if you have not; the outputs now come from the bootstrap stack):
 
 ```bash
 scripts/render-aws-env.sh --generation gen-1
@@ -354,12 +417,13 @@ scripts/set-secret.sh traefik/breakglass-htpasswd   # a bcrypt htpasswd line, se
 To make the htpasswd line without putting the password in argv or history (the password manager keeps the plaintext):
 
 ```bash
-read -rsp 'Break-glass password: ' P && echo && printf '%s\n' "$P" | docker run --rm -i httpd:2.4-alpine htpasswd -nBi admin; unset P
+read -rsp 'Break-glass password: ' P && echo && printf '%s\n' "$P" | docker run --rm -i httpd:2.4-alpine htpasswd -nBi -C 12 admin; unset P
 ```
 
 Type the password at the prompt (nothing is shown) and press Enter; paste the printed `admin:$2y$...` line into the `set-secret.sh` prompt.
 `htpasswd -i` on its own shows no prompt and, in Git Bash, may echo what you type, which is why the password is read by the shell first. Optional parameters
-(`authentik/bootstrap-password`, `homepage/authentik-token`) can stay UNSET for now.
+(`authentik/bootstrap-password`, `homepage/authentik-token`) can stay UNSET for now. `-C 12` is the bcrypt cost (the default 5 is too cheap to brute-force against); every `set-secret.sh` write
+uses the customer-managed key `alias/home-lab-ssm` (`--key-id`), so a value that was stored under the old key is re-encrypted by simply setting it again.
 
 ## 12. Tailscale console: policy, tag and auth key (U8) [Laptop]
 
@@ -397,7 +461,7 @@ What it does: writes `/etc/home-lab/aws-config` (root 0600) with a `credential_p
 | `authentik/secret-key` | `10002:10002` 0400 | the secret (F02, M4: the Authentik service id, not the login user 1000) |
 | `authentik/postgres-password` | `10002:10002` 0440 | the secret (PostgreSQL reads it through the group) |
 | `authentik/bootstrap-password` | `10002:10002` 0400 | `akadmin` bootstrap password, or an empty file while UNSET (M4) |
-| `traefik/breakglass-htpasswd` | `0:0` 0400 | the htpasswd line |
+| `traefik/breakglass-htpasswd` | `10004:10004` 0400 | the htpasswd line (read by non-root Traefik) |
 | `tailscale/tailscale.env` | `0:0` 0600 | `TS_AUTHKEY=...` (empty file once the parameter is UNSET) |
 | `runtime.env` | `0:0` 0600 | `DOMAIN`, `ROUTE53_ZONE_ID`, `RA_TRUST_ANCHOR_ARN`, `RA_ACME_PROFILE_ARN`, `RA_ACME_ROLE_ARN` |
 | optional files | | omitted while their parameter is UNSET |
@@ -408,12 +472,12 @@ Exit codes: 3 = AWS unreachable or access denied (existing secrets untouched), 4
 
 ```bash
 sudo scripts/deploy.sh --only tailscale
-docker logs --tail 30 tailscale
-docker exec tailscale tailscale --socket=/tmp/tailscaled.sock status
-docker exec tailscale tailscale --socket=/tmp/tailscaled.sock ip -4
+sudo docker logs --tail 30 tailscale
+sudo docker exec tailscale tailscale --socket=/tmp/tailscaled.sock status
+sudo docker exec tailscale tailscale --socket=/tmp/tailscaled.sock ip -4
 ```
 
-`deploy.sh --only tailscale` pulls the repo (`git pull --ff-only`), refreshes the secrets, then runs
+`deploy.sh --only tailscale` fetches the repo, **verifies the commit signature** (section 3.1), merges fast-forward only, refreshes the secrets, then runs
 `docker compose -p home-lab -f tailscale/compose.yaml --env-file config/lab.env --env-file /apps/secrets/runtime.env up -d` (from M3 on the root `compose.yaml` includes this stack too; see `m3-traefik-staging.md`). The container uses host networking, state in
 `/apps/tailscale/state`, `tag:homelab`, `TS_AUTH_ONCE=true`. If the `--socket` path is rejected, drop the flag (the image default socket differs between
 releases). Look for `Running` and a `100.x.y.z` address. In the Tailscale admin console the machine `homelab-pi` should appear tagged `tag:homelab`.
@@ -433,7 +497,7 @@ Then on the Pi refresh the secrets and confirm Tailscale stays connected without
 ```bash
 sudo scripts/fetch-secrets.sh                  # tailscale.env becomes an empty file ("empty" in the manifest)
 sudo docker restart tailscale && sleep 10
-docker exec tailscale tailscale --socket=/tmp/tailscaled.sock status | head -3
+sudo docker exec tailscale tailscale --socket=/tmp/tailscaled.sock status | head -3
 ```
 
 ## 16. Wildcard record [Lead]
@@ -467,14 +531,14 @@ git -C /opt/home-lab status --ignored --short        # expect nothing secret-loo
 
 Expected: `host.key` root:root 400, `traefik.key` 10001:10001 400, `/etc/home-lab`, `/etc/home-lab/pki`, `/apps/.secrets.d` and `/apps/secrets` 700 root, `aws.env` and `aws-config` 600.
 
-**Revocation test (manual, with the lead):** the lead bumps `pki_generation` to `gen-2` in a test apply; on the Pi `sudo scripts/fetch-secrets.sh --dry-run` must now fail with
+**Revocation test (manual, with the lead):** the owner bumps `pki_generation` to `gen-2` in a test apply of `terraform/bootstrap`; on the Pi `sudo scripts/fetch-secrets.sh --dry-run` must now fail with
 exit 3 (the old certificates no longer match the trust policy); the lead reverts to `gen-1` and confirms the fetch works again. Automated placeholder, interruption and
 no-leak checks for `fetch-secrets.sh` run in CI (`scripts/test-fetch-secrets.sh`).
 
 ## Renewal and maintenance
 
-- Certificates last 365 days. `scripts/cert-expiry.sh` (also run by `deploy.sh` and the full preflight) WARNs under 30 days. To renew, repeat steps 5 to 7: `pi-csr.sh` reuses the
-  existing keys, you sign on the laptop and install. After a lost or stolen Pi: reissue with a new generation (bump `pki_generation`, use `--generation gen-2` in
+- Certificates last 365 days. `scripts/cert-expiry.sh` (also run by `deploy.sh` and the full preflight) WARNs under 30 days and fails under 14; the daily `home-lab-cert-expiry.timer` runs it too (a failing run shows in `systemctl --failed`, `systemctl status home-lab-cert-expiry` and `journalctl -t home-lab-cert-expiry`). **Put a calendar reminder at about day 300** (about 65 days before expiry), because ACME renewal fails first. To renew, repeat steps 5 to 7: `pi-csr.sh` reuses the
+  existing keys, you sign on the laptop and install. After a lost or stolen Pi: reissue with a new generation (bump `pki_generation` in `terraform/bootstrap`, apply it with admin SSO, use `--generation gen-2` in
   steps 5 to 7, write `PKI_GENERATION=gen-2` into `aws.env`).
 - After any secret changes: `scripts/set-secret.sh <name>` on the laptop, `sudo scripts/deploy.sh` on the Pi, then recreate the consuming service
   (`docker compose ... up -d --force-recreate <service>`); files are replaced, not edited in place.
@@ -487,15 +551,15 @@ no-leak checks for `fetch-secrets.sh` run in CI (`scripts/test-fetch-secrets.sh`
 |---------|----------------------|
 | `fetch-secrets.sh` exit 3, AWS says `AccessDeniedException` on `CreateSession` or similar | The certificate subject/OU does not match the trust policy, the CA in the trust anchor is not the one that signed the cert (compare fingerprints), or `PKI_GENERATION` and `pki_generation` differ. |
 | exit 3 with a clock or signature error | Time sync (preflight `time-sync`). |
-| exit 3 `AccessDenied` on `GetParametersByPath` | The pi-host policy needs the path-root ARN (`parameter/home-lab`); verify `iam-pi-host.tf` was applied. First real test of this is step 13. |
+| exit 3 `AccessDenied` on `GetParametersByPath` | The pi-host policy needs the path-root ARN (`parameter/home-lab`); verify `terraform/bootstrap` (identity.tf) was applied. First real test of this is step 13. |
 | exit 4 `still holds the UNSET placeholder` | Run `scripts/set-secret.sh <name>` for the named parameter (step 11). |
 | exit 4 `type is String, expected SecureString` | The parameter was recreated outside Terraform; investigate before continuing. |
 | Tailscale `invalid key` or the machine is not tagged | Key expired, was reusable/ephemeral, or lacks `tag:homelab`, or the tag is missing in `tagOwners`. Create a new key, `set-secret.sh tailscale/auth-key`, `deploy.sh --only tailscale`, then unset. |
-| `docker: permission denied` | Run the script with `sudo`. |
+| `docker: permission denied` | Expected: your login user is not in the docker group (SEC-M3). Use `sudo docker ...`. |
 
 ## What was and was not verified when this runbook was written
 
 Automated (laptop, WSL and CI): shellcheck, yamllint, `docker compose config`, the PKI flow with its refusal cases, `fetch-secrets.sh` against a mock `aws`, and the
-preflight script's logic on a non-Pi host. **Only testable on the Pi, first run by the owner:** the real preflight findings, `bootstrap.sh` (apt, AWS CLI install,
+preflight script's logic on a non-Pi host, the signed-deploy check (good, unsigned, wrong key, missing trust file), `deploy.sh` argument handling and `set-secret.sh` against a mock. **Only testable on the Pi, first run by the owner:** the real preflight findings, `bootstrap.sh` (apt, AWS CLI install,
 helper download and checksum), `aws_signing_helper` credential-process against the real trust anchor, `GetParametersByPath` on the `/home-lab` path ARN, the Tailscale
 container (`/dev/net/tun`, capabilities, `tailscale` CLI socket path) and the S17 results.

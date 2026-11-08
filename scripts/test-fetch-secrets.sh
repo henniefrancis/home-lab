@@ -6,6 +6,7 @@
 #   files, owners, modes, placeholder fail-closed, AWS failure, interrupted run leaves no staging, atomic swap,
 #   release retention (current only), manifest edge cases, dry-run, and that no secret value ever reaches the output.
 # CI runs it as: sudo -E bash scripts/test-fetch-secrets.sh
+# shellcheck disable=SC2016 # the bash -c snippets are single-quoted on purpose: $1, $2 expand in the child shell
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,6 +32,10 @@ check "manifest config rows == ssm.tf config_params" test "$manifest_config" = "
 check "manifest has a tab-separated row per parameter" test "$(grep -vcE '^(#|$)' "$REPO/config/secrets-manifest.tsv")" -ge 11
 
 if [ "$(id -u)" -ne 0 ]; then
+  if [ "${REQUIRE_ROOT:-0}" = 1 ]; then
+    echo "FAIL - Part B needs root and REQUIRE_ROOT=1 is set (CI must not skip it)"
+    exit 1
+  fi
   echo "SKIP - Part B needs root (run: sudo -E bash $0)"
   [ "$fails" -eq 0 ] && exit 0 || exit 1
 fi

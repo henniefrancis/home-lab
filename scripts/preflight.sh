@@ -15,6 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=lib/pins.sh
 . "$SCRIPT_DIR/lib/pins.sh"
+# shellcheck source=lib/verify-commit.sh
+. "$SCRIPT_DIR/lib/verify-commit.sh"
 REPO_DIR="$(repo_dir "${BASH_SOURCE[0]}")"
 LAB_ENV="$REPO_DIR/config/lab.env"
 
@@ -22,8 +24,12 @@ STAGE="pre"
 while [ $# -gt 0 ]; do
   case "$1" in
     --stage)
-      STAGE="${2:-}"
-      shift 2 || true
+      [ $# -ge 2 ] || {
+        echo "--stage needs a value (pre, bootstrap or full)" >&2
+        exit 2
+      }
+      STAGE="$2"
+      shift 2
       ;;
     -h | --help)
       sed -n '2,10p' "$0"
@@ -174,7 +180,7 @@ check_docker() {
   if dv="$(docker version --format '{{.Server.Version}}' 2> /dev/null)" && [ -n "$dv" ]; then
     pass docker-engine "Engine $dv"
   else
-    fail docker-engine "docker daemon not reachable (is it running? run this script with sudo or join the docker group)"
+    fail docker-engine "docker daemon not reachable (is it running? the login user is deliberately NOT in the docker group: run this script with sudo)"
   fi
   cv="$(docker compose version --short 2> /dev/null || true)"
   cv="${cv#v}"
@@ -345,12 +351,12 @@ check_layout() {
   for d in traefik authentik homepage tailscale; do
     if [ -d "$APPS_ROOT/$d" ]; then pass "apps-$d" "$APPS_ROOT/$d"; else fail "apps-$d" "$APPS_ROOT/$d missing (run bootstrap.sh)"; fi
   done
-  for d in proxy socket-proxy authentik-internal; do
+  for d in proxy authentik-internal authentik-auth; do
     if docker network inspect "$d" > /dev/null 2>&1; then pass "net-$d" "docker network exists"; else fail "net-$d" "docker network missing (run bootstrap.sh)"; fi
   done
   # F02: the service uids must not be real host users (a file owned by the login user is readable by whoever logs in).
   local k id
-  for k in AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID; do
+  for k in AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID; do
     id="$(lab_env_get "$LAB_ENV" "$k")"
     if ! [[ "$id" =~ ^[0-9]+$ ]]; then
       fail "svc-id:$k" "$k missing or not numeric in $LAB_ENV"
@@ -429,6 +435,49 @@ check_pki() {
   fi
 }
 
+# SEC-M3, SEC-M7, SEC-L2, SEC-L3, QA-M-4: who can reach root, signed deploys, listeners, break-glass, expiry timer.
+check_hardening() {
+  local login="${SUDO_USER:-}" owner
+  if [ -n "$login" ] && [ "$login" != root ]; then
+    if id -nG "$login" 2> /dev/null | grep -qw docker; then
+      fail login-docker-group "$login is in the docker group, which is root-equivalent: sudo gpasswd -d $login docker, then log in again (use sudo docker)"
+    else
+      pass login-docker-group "$login is not in the docker group"
+    fi
+  else
+    warnx login-docker-group "no SUDO_USER: cannot tell which login user to check"
+  fi
+  owner="$(stat -c '%u:%a' "$REPO_DIR" 2> /dev/null)"
+  if [ "${owner%%:*}" = 0 ] && [ "$(( 8#${owner##*:} & 8#022 ))" -eq 0 ]; then
+    pass checkout-owner "$REPO_DIR is root-owned and not writable by others"
+  else
+    fail checkout-owner "$REPO_DIR must be root-owned and not group/world writable (root runs its scripts): sudo chown -R root:root $REPO_DIR"
+  fi
+  if allowed_signers_usable "${HOME_LAB_ALLOWED_SIGNERS:-$ETC_DIR/allowed_signers}"; then
+    pass allowed-signers "${HOME_LAB_ALLOWED_SIGNERS:-$ETC_DIR/allowed_signers} has a usable signing key (deploy.sh verifies commits)"
+  else
+    fail allowed-signers "${HOME_LAB_ALLOWED_SIGNERS:-$ETC_DIR/allowed_signers} missing, writable by others or placeholder-only: deploy.sh would refuse (runbook: signed deploys)"
+  fi
+  if command -v ssh-keygen > /dev/null 2>&1; then pass ssh-keygen "available (signature verification)"; else fail ssh-keygen "missing: apt-get install openssh-client"; fi
+  if [ -e "${BREAKGLASS_DIR:-$APPS_ROOT/traefik/dynamic}/bg-traefik.yml" ]; then
+    warnx break-glass "ENABLED: the Traefik dashboard accepts the Basic-auth login. Disable it: sudo scripts/breakglass.sh off"
+  else
+    pass break-glass "not enabled"
+  fi
+  if command -v ss > /dev/null 2>&1; then
+    if ss -H -tln 2> /dev/null | awk '{print $4}' | grep -qxF -e '[::]:80' -e '[::]:443'; then
+      fail ports-ipv6 "a listener on [::]:80 or [::]:443 exists: a global IPv6 address would expose Traefik (publish IPv4 only, see traefik/compose.yaml)"
+    else
+      pass ports-ipv6 "no wildcard IPv6 listener on 80/443"
+    fi
+  fi
+  if systemctl is-enabled home-lab-cert-expiry.timer > /dev/null 2>&1; then
+    pass cert-timer "home-lab-cert-expiry.timer is enabled (daily check)"
+  else
+    warnx cert-timer "home-lab-cert-expiry.timer is not enabled (re-run bootstrap.sh)"
+  fi
+}
+
 check_repo_hygiene() {
   local bad
   [ -d "$REPO_DIR/.git" ] || {
@@ -465,6 +514,7 @@ fi
 if [ "$STAGE" = full ]; then
   check_aws_env
   check_pki
+  check_hardening
   check_repo_hygiene
 fi
 

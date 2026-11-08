@@ -1,0 +1,16 @@
+# Installed by scripts/bootstrap.sh (the path below is rewritten to this checkout). QA-M-4.
+[Unit]
+Description=home-lab Pi certificate expiry check
+Documentation=file:@REPO_DIR@/docs/runbooks/m2-pi-setup.md
+
+[Service]
+Type=oneshot
+# Exit 1 = a certificate expires within 30 days, 2 = missing or expired or within 14 days. Either makes THIS UNIT FAIL, which
+# shows up in `systemctl --failed`, `systemctl status home-lab-cert-expiry` and the journal, with no external service needed.
+ExecStart=@REPO_DIR@/scripts/cert-expiry.sh
+ExecStartPost=/bin/sh -c 'logger -t home-lab-cert-expiry -p user.info "certificates checked: ok"'
+SyslogIdentifier=home-lab-cert-expiry
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true

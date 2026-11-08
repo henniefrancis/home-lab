@@ -5,10 +5,12 @@
 #
 # What it does (safe to re-run; each step skips when already satisfied):
 #   1. Refuses to continue if scripts/preflight.sh reports a FAIL.
-#   2. apt: curl, unzip, gnupg, jq, openssl, ca-certificates, git (only the missing ones).
+#   2. apt: curl, unzip, gnupg, jq, openssl, ca-certificates, git, openssh-client (ssh-keygen: commit signature check), util-linux
+#      (flock) - only the missing ones.
 #   3. Directory layout: $APPS_ROOT/{traefik,authentik,homepage,tailscale,secrets}, /etc/home-lab, /etc/home-lab/pki; the Authentik
 #      data and Postgres directories owned by the service uids from config/lab.env (never the login user).
-#   4. Docker networks (plan 6.1): proxy, socket-proxy (internal), authentik-internal (internal).
+#   4. Docker networks (plan 6.1): proxy, authentik-auth (Traefik <-> Authentik forward auth only), authentik-internal (internal).
+#      No docker socket proxy exists any more (SEC-H2).
 #   5. Loads and persists the tun kernel module and sets net.ipv4.conf.all.src_valid_mark=1 on the host (Tailscale; the
 #      container cannot write /proc/sys, so this is done here instead of adding capabilities).
 #   6. Installs AWS CLI v2 (aarch64): official installer, GPG signature verified against the AWS CLI team key.
@@ -41,6 +43,7 @@ require_root "$@"
 
 APPS_ROOT="$(lab_env_get "$LAB_ENV" APPS_ROOT /apps)"
 PROXY_SUBNET="$(lab_env_get "$LAB_ENV" PROXY_SUBNET 172.30.0.0/24)"
+AUTH_SUBNET="$(lab_env_get "$LAB_ENV" AUTHENTIK_AUTH_SUBNET 172.30.1.0/24)"
 ETC_DIR=/etc/home-lab
 
 TMP="$(mktemp -d)"
@@ -54,7 +57,7 @@ step "1/7 Preflight (system checks)"
 
 step "2/7 Required packages"
 missing=()
-for pair in curl:curl unzip:unzip gpg:gnupg jq:jq openssl:openssl git:git; do
+for pair in curl:curl unzip:unzip gpg:gnupg jq:jq openssl:openssl git:git ssh-keygen:openssh-client flock:util-linux; do
   command -v "${pair%%:*}" > /dev/null 2>&1 || missing+=("${pair##*:}")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -70,7 +73,11 @@ install -d -m 0755 -o root -g root "$APPS_ROOT"
 for d in traefik authentik homepage tailscale; do
   install -d -m 0755 -o root -g root "$APPS_ROOT/$d"
 done
-install -d -m 0700 -o root -g root "$APPS_ROOT/traefik/letsencrypt" "$APPS_ROOT/tailscale/state"
+install -d -m 0700 -o root -g root "$APPS_ROOT/tailscale/state"
+# Traefik runs as TRAEFIK_UID:TRAEFIK_GID (not root, SEC-L9) and owns its ACME storage; a directory created by an earlier
+# version (root-owned) is re-owned here, contents included.
+TR_UID="$(lab_env_get "$LAB_ENV" TRAEFIK_UID 10004)"
+TR_GID="$(lab_env_get "$LAB_ENV" TRAEFIK_GID 10004)"
 # Authentik (M4, F02): service ids from config/lab.env, never the login user (1000). The server/worker own their data directory;
 # PostgreSQL owns its data directory (its image-native 70:70). Both 0700; /apps/authentik itself stays root 0755.
 AK_UID="$(lab_env_get "$LAB_ENV" AUTHENTIK_UID 10002)"
@@ -81,9 +88,13 @@ PG_GID="$(lab_env_get "$LAB_ENV" AUTHENTIK_PG_GID 70)"
 # checkout: it owns no directory under $APPS_ROOT, so nothing is created for it beyond $APPS_ROOT/homepage (root 0755, above).
 HP_UID="$(lab_env_get "$LAB_ENV" HOMEPAGE_UID 10003)"
 HP_GID="$(lab_env_get "$LAB_ENV" HOMEPAGE_GID 10003)"
-for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID" "$HP_UID" "$HP_GID"; do
+for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID" "$HP_UID" "$HP_GID" "$TR_UID" "$TR_GID"; do
   [[ "$id" =~ ^[0-9]+$ ]] && [ "$id" -ne 0 ] && [ "$id" -ne 1000 ] || die "service uid/gid '$id' in $LAB_ENV must be numeric, not 0 and not 1000 (the login user)"
 done
+# Traefik's watched dynamic-configuration directory: root-owned copy of traefik/dynamic, filled by deploy.sh.
+install -d -m 0755 -o root -g root "$APPS_ROOT/traefik/dynamic"
+install -d -m 0700 -o "$TR_UID" -g "$TR_GID" "$APPS_ROOT/traefik/letsencrypt"
+chown -R "$TR_UID:$TR_GID" "$APPS_ROOT/traefik/letsencrypt"
 install -d -m 0700 -o "$AK_UID" -g "$AK_GID" "$APPS_ROOT/authentik/data"
 install -d -m 0700 -o "$PG_UID" -g "$PG_GID" "$APPS_ROOT/authentik/postgres"
 # fetch-secrets.sh publishes releases under .secrets.d and points $APPS_ROOT/secrets at the current one (atomic swap).
@@ -111,13 +122,15 @@ case " $have_subnet " in
   *" $PROXY_SUBNET "*) ;;
   *) warn "network proxy exists with subnet(s) '$have_subnet', not $PROXY_SUBNET; Traefik trusted-proxy settings assume PROXY_SUBNET" ;;
 esac
-ensure_network socket-proxy --internal
+ensure_network authentik-auth --subnet "$AUTH_SUBNET"
+if docker network inspect socket-proxy > /dev/null 2>&1; then
+  warn "the old docker network socket-proxy still exists; nothing uses it any more (SEC-H2): docker network rm socket-proxy"
+fi
 ensure_network authentik-internal --internal
 
 step "5/7 tun kernel module and Tailscale sysctl"
 if modprobe tun 2> /dev/null; then
-  printf 'tun
-' > /etc/modules-load.d/home-lab.conf
+  printf 'tun\n' > /etc/modules-load.d/home-lab.conf
   info "tun loaded and persisted in /etc/modules-load.d/home-lab.conf"
 else
   warn "could not load the tun module; Tailscale needs /dev/net/tun"
@@ -125,11 +138,8 @@ fi
 # Tailscale marks its packets and wants src_valid_mark=1 (reverse-path filtering with fwmark routing). The container
 # runs with host networking but a read-only /proc/sys, so it logs "failed to enable src_valid_mark"; the host sets it.
 SYSCTL_FILE=/etc/sysctl.d/99-home-lab.conf
-SYSCTL_WANT=$'# Managed by home-lab scripts/bootstrap.sh
-net.ipv4.conf.all.src_valid_mark = 1
-'
-if [ "$(cat "$SYSCTL_FILE" 2> /dev/null || true)" != "${SYSCTL_WANT%$'
-'}" ]; then
+SYSCTL_WANT=$'# Managed by home-lab scripts/bootstrap.sh\nnet.ipv4.conf.all.src_valid_mark = 1\n'
+if [ "$(cat "$SYSCTL_FILE" 2> /dev/null || true)" != "${SYSCTL_WANT%$'\n'}" ]; then
   printf '%s' "$SYSCTL_WANT" > "$SYSCTL_FILE"
   chmod 0644 "$SYSCTL_FILE"
   info "wrote $SYSCTL_FILE"
@@ -138,6 +148,27 @@ if sysctl -q -p "$SYSCTL_FILE" > /dev/null 2>&1; then
   info "net.ipv4.conf.all.src_valid_mark=$(sysctl -n net.ipv4.conf.all.src_valid_mark) (persisted)"
 else
   warn "could not apply $SYSCTL_FILE; Tailscale may log 'failed to enable src_valid_mark' (harmless once the value is 1)"
+fi
+
+# Daily certificate expiry check (QA-M-4): a systemd timer; a failing run shows in `systemctl --failed` and the journal.
+for u in home-lab-cert-expiry.service home-lab-cert-expiry.timer home-lab-breakglass-reset.service; do
+  sed "s#@REPO_DIR@#$REPO_DIR#g; s#@APPS_ROOT@#$APPS_ROOT#g" "$SCRIPT_DIR/systemd/$u" > "/etc/systemd/system/$u"
+  chmod 0644 "/etc/systemd/system/$u"
+done
+if systemctl daemon-reload 2> /dev/null && systemctl enable --now home-lab-cert-expiry.timer > /dev/null 2>&1 && systemctl enable home-lab-breakglass-reset.service > /dev/null 2>&1; then
+  info "home-lab-cert-expiry.timer enabled (daily); home-lab-breakglass-reset.service enabled (boot)"
+else
+  warn "could not enable home-lab-cert-expiry.timer (no systemd?)"
+fi
+
+# SEC-M3: root runs the scripts in this checkout, so nobody who can log in may be able to change them.
+if [ "$(stat -c '%u' "$REPO_DIR")" != 0 ]; then
+  chown -R root:root "$REPO_DIR"
+  info "checkout $REPO_DIR is now owned by root (use sudo git / sudo scripts/deploy.sh)"
+fi
+chmod -R go-w "$REPO_DIR"
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && id -nG "$SUDO_USER" | grep -qw docker; then
+  warn "$SUDO_USER is in the docker group (root-equivalent): sudo gpasswd -d $SUDO_USER docker"
 fi
 
 step "6/7 AWS CLI v2 (aarch64)"

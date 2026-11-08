@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # cert-expiry.sh - Pi: report the days left on the two Roles Anywhere certificates.
-# Exit 0 = both valid for more than 30 days, 1 = a cert expires within 30 days, 2 = missing, unreadable or expired.
+# Exit 0 = both valid for more than 30 days, 1 = a cert expires within 30 days, 2 = missing, unreadable, expired or within 14 days.
+# Run daily by the systemd timer scripts/systemd/home-lab-cert-expiry.timer (QA-M-4); also run by deploy.sh and preflight.sh.
 # Needs root to read /etc/home-lab/pki. Prints dates only, never key material.
 set -euo pipefail
 
 PKI_DIR="${HOME_LAB_PKI_DIR:-/etc/home-lab/pki}"
 WARN_DAYS=30
+CRIT_DAYS=14
 rc=0
 
 for name in traefik host; do
@@ -23,7 +25,10 @@ for name in traefik host; do
   end="$(openssl x509 -in "$crt" -noout -enddate | cut -d= -f2)"
   secs="$(( $(date -d "$end" +%s) - $(date +%s) ))"
   days="$((secs / 86400))"
-  if [ "$days" -lt "$WARN_DAYS" ]; then
+  if [ "$days" -lt "$CRIT_DAYS" ]; then
+    echo "[FAIL] $name.crt: expires in $days days ($end); reissue NOW (docs/runbooks/m2-pi-setup.md, renewal)"
+    rc=2
+  elif [ "$days" -lt "$WARN_DAYS" ]; then
     echo "[WARN] $name.crt: expires in $days days ($end); reissue (docs/runbooks/m2-pi-setup.md, renewal)"
     [ "$rc" -eq 2 ] || rc=1
   else

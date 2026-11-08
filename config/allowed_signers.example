@@ -1,0 +1,7 @@
+# Allowed signers for deploy.sh (SEC-M7). One line per trusted signing key, ssh-keygen "allowed signers" format:
+#   <principal> [namespaces="git"] <key type> <base64 public key>
+# This file is a TEMPLATE with a placeholder. The real file is installed on the Pi, outside the checkout, as
+#   /etc/home-lab/allowed_signers      (root:root, mode 0644, never writable by the login user)
+# and the matching PUBLIC key is also uploaded to GitHub as a "signing key". Never commit a private key. A public key is not
+# secret, but the real one stays out of this public repo by choice (it names the owner); see docs/runbooks/m2-pi-setup.md.
+owner@example.invalid namespaces="git" ssh-ed25519 REPLACE-WITH-YOUR-PUBLIC-KEY
