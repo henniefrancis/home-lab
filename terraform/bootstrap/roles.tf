@@ -3,20 +3,17 @@ locals {
   partition  = data.aws_partition.current.partition
   sub_prefix = "organization:${var.hcp_organization}:project:${var.hcp_project}:workspace:${var.hcp_workspace}:run_phase"
 
-  # The one role the apply role may manage (the DNS-01 role for Traefik, created by terraform/edge).
+  # The two lab roles are defined in identity.tf (this stack). The HCP roles below have NO write access to any role,
+  # trust policy, Roles Anywhere resource or IAM policy (SEC-H1).
   acme_role_arn = "arn:${local.partition}:iam::${local.account_id}:role/home-lab-traefik-dns01"
   host_role_arn = "arn:${local.partition}:iam::${local.account_id}:role/home-lab-pi-host"
-  lab_role_arns = [local.acme_role_arn, local.host_role_arn]
   budget_arn    = "arn:${local.partition}:budgets::${local.account_id}:budget/home-lab-monthly"
   ssm_region    = "af-south-1"
   ssm_params    = "arn:${local.partition}:ssm:${local.ssm_region}:${local.account_id}:parameter/home-lab/*"
-  ssm_key_arn   = data.aws_kms_alias.ssm.target_key_arn
-}
 
-# The AWS-managed key behind SecureStrings. It exists once SSM has been used in the region (preflight checks this).
-data "aws_kms_alias" "ssm" {
-  provider = aws.af_south_1
-  name     = "alias/aws/ssm"
+  # SEC-M1: Route 53 write actions are limited to the home-lab zone (plus the duplicates still to be deleted).
+  zone_arn        = "arn:${local.partition}:route53:::hostedzone/${var.home_lab_zone_id}"
+  duplicate_zones = [for z in var.duplicate_zone_ids : "arn:${local.partition}:route53:::hostedzone/${z}"]
 }
 
 # ---- Trust policies: exact audience and exact per-phase subject, no wildcards --------------------------------
@@ -134,23 +131,28 @@ data "aws_iam_policy_document" "read" {
 data "aws_iam_policy_document" "write" {
   source_policy_documents = [data.aws_iam_policy_document.read.json]
 
+  # SEC-M1: only the home-lab zone (and duplicates awaiting deletion), never "hostedzone/*". The account also holds other
+  # zones. CreateHostedZone is not granted: the zone is adopted, never created, by this stack.
   statement {
-    sid    = "Route53Write"
+    sid    = "Route53ZoneWrite"
     effect = "Allow"
     actions = [
-      "route53:DeleteHostedZone",
       "route53:ChangeTagsForResource",
       "route53:UpdateHostedZoneComment",
       "route53:ChangeResourceRecordSets",
     ]
-    resources = ["arn:${local.partition}:route53:::hostedzone/*"]
+    resources = concat([local.zone_arn], local.duplicate_zones)
   }
 
-  statement {
-    sid       = "Route53CreateZone"
-    effect    = "Allow"
-    actions   = ["route53:CreateHostedZone"]
-    resources = ["*"]
+  # DeleteHostedZone exists only for the duplicate zones; the real zone is also protected by prevent_destroy.
+  dynamic "statement" {
+    for_each = length(local.duplicate_zones) > 0 ? [1] : []
+    content {
+      sid       = "Route53DeleteDuplicateZones"
+      effect    = "Allow"
+      actions   = ["route53:DeleteHostedZone"]
+      resources = local.duplicate_zones
+    }
   }
 
   statement {
@@ -160,13 +162,15 @@ data "aws_iam_policy_document" "write" {
     resources = ["arn:${local.partition}:route53:::change/*"]
   }
 
+  # Route 53 Domains has NO resource-level permissions (the service authorization reference lists no resource types),
+  # so these cannot be limited to the lab domain; the account holds other registered domains. Only protective or
+  # metadata actions are allowed. Name server changes and DisableDomainAutoRenew are denied below and become an
+  # owner (admin SSO) operation: that is the tightest option IAM offers.
   statement {
     sid    = "Route53DomainsWrite"
     effect = "Allow"
     actions = [
-      "route53domains:UpdateDomainNameservers",
       "route53domains:EnableDomainAutoRenew",
-      "route53domains:DisableDomainAutoRenew",
       "route53domains:EnableDomainTransferLock",
       "route53domains:UpdateTagsForDomain",
     ]
@@ -198,34 +202,42 @@ data "aws_iam_policy_document" "write" {
       "route53domains:PushDomain",
       "route53domains:AssociateDelegationSignerToDomain",
       "route53domains:DisassociateDelegationSignerFromDomain",
+      "route53domains:UpdateDomainNameservers",
+      "route53domains:DisableDomainAutoRenew",
     ]
     resources = ["*"]
   }
 
+  # SEC-H1: explicit belt and braces. No identity (role, trust policy, inline policy, Roles Anywhere trust anchor or
+  # profile) can be created or changed by the HCP apply role, now or through a later policy edit.
   statement {
-    sid    = "RolesAnywhereWrite"
-    effect = "Allow"
+    sid    = "DenyIdentityChanges"
+    effect = "Deny"
     actions = [
-      "rolesanywhere:CreateTrustAnchor",
-      "rolesanywhere:UpdateTrustAnchor",
-      "rolesanywhere:EnableTrustAnchor",
-      "rolesanywhere:DisableTrustAnchor",
-      "rolesanywhere:CreateProfile",
-      "rolesanywhere:UpdateProfile",
-      "rolesanywhere:EnableProfile",
-      "rolesanywhere:DisableProfile",
-      "rolesanywhere:TagResource",
-      "rolesanywhere:UntagResource",
-      "rolesanywhere:PutNotificationSettings",
-      "rolesanywhere:ResetNotificationSettings",
+      "iam:Create*",
+      "iam:Update*",
+      "iam:Put*",
+      "iam:Attach*",
+      "iam:Detach*",
+      "iam:Delete*",
+      "iam:Add*",
+      "iam:Remove*",
+      "iam:Set*",
+      "iam:Tag*",
+      "iam:Untag*",
+      "iam:PassRole",
+      "sts:AssumeRole",
+      "rolesanywhere:Create*",
+      "rolesanywhere:Update*",
+      "rolesanywhere:Delete*",
+      "rolesanywhere:Put*",
+      "rolesanywhere:Enable*",
+      "rolesanywhere:Disable*",
+      "rolesanywhere:Import*",
+      "rolesanywhere:Tag*",
+      "rolesanywhere:Untag*",
     ]
     resources = ["*"]
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:RequestedRegion"
-      values   = ["af-south-1"]
-    }
   }
 
   statement {
@@ -243,11 +255,13 @@ data "aws_iam_policy_document" "write" {
     resources = [local.ssm_params]
   }
 
+  # SEC-M2: writing the placeholder needs encrypt-side permissions on the home-lab key only. The role cannot decrypt a
+  # secret value (the key policy denies Decrypt to everyone except the Pi host role, see kms.tf).
   statement {
-    sid       = "KmsViaSsm"
+    sid       = "KmsEncryptViaSsm"
     effect    = "Allow"
-    actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
-    resources = [local.ssm_key_arn]
+    actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
+    resources = [aws_kms_key.ssm.arn]
 
     condition {
       test     = "StringEquals"
@@ -257,32 +271,10 @@ data "aws_iam_policy_document" "write" {
   }
 
   statement {
-    sid    = "LabRolesOnly"
-    effect = "Allow"
-    actions = [
-      "iam:CreateRole",
-      "iam:UpdateRole",
-      "iam:UpdateAssumeRolePolicy",
-      "iam:PutRolePolicy",
-      "iam:DeleteRolePolicy",
-      "iam:TagRole",
-      "iam:UntagRole",
-      "iam:DeleteRole",
-    ]
-    resources = local.lab_role_arns
-  }
-
-  statement {
-    sid       = "PassLabRoles"
-    effect    = "Allow"
-    actions   = ["iam:PassRole"]
-    resources = local.lab_role_arns
-
-    condition {
-      test     = "StringEquals"
-      variable = "iam:PassedToService"
-      values   = ["rolesanywhere.amazonaws.com"]
-    }
+    sid       = "DenyKmsDecrypt"
+    effect    = "Deny"
+    actions   = ["kms:Decrypt", "kms:ReEncrypt*", "kms:CreateGrant"]
+    resources = ["*"]
   }
 
   statement {

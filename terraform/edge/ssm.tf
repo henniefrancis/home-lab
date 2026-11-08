@@ -17,11 +17,11 @@ locals {
       "config/domain"          = var.domain
       "config/route53-zone-id" = aws_route53_zone.primary.zone_id
     },
-    local.enable_roles_anywhere ? {
-      "config/ra-trust-anchor-arn" = aws_rolesanywhere_trust_anchor.ca[0].arn
-      "config/ra-acme-profile-arn" = aws_rolesanywhere_profile.traefik[0].arn
-      "config/ra-acme-role-arn"    = aws_iam_role.traefik_dns01[0].arn
-    } : {}
+    # The Roles Anywhere identity lives in terraform/bootstrap (SEC-H1); its ARNs arrive as workspace variables
+    # (bootstrap outputs) and are only mirrored into SSM here for the Pi.
+    var.ra_trust_anchor_arn == null ? {} : { "config/ra-trust-anchor-arn" = var.ra_trust_anchor_arn },
+    var.ra_acme_profile_arn == null ? {} : { "config/ra-acme-profile-arn" = var.ra_acme_profile_arn },
+    var.ra_acme_role_arn == null ? {} : { "config/ra-acme-role-arn" = var.ra_acme_role_arn }
   ) : {}
 }
 
@@ -32,7 +32,9 @@ resource "aws_ssm_parameter" "secret" {
   description = each.value
   type        = "SecureString"
   tier        = "Standard"
-  # key_id omitted: the AWS-managed key alias/aws/ssm is used.
+  # SEC-M2: the customer-managed key from terraform/bootstrap (key policy: only the Pi host role may decrypt). A key change
+  # cannot re-encrypt a write-only value: migrate with scripts/set-secret.sh BEFORE applying this (see the apply order).
+  key_id = "alias/home-lab-ssm"
 
   value_wo = "UNSET-set-via-set-secret"
   # NEVER bump this: a new version re-sends the placeholder and overwrites the real value. CI enforces it stays 1.

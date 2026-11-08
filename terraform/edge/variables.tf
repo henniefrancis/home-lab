@@ -117,14 +117,47 @@ variable "pi_tailnet_ipv4" {
   }
 }
 
-variable "ca_cert_pem" {
-  description = "PEM of the offline CA certificate (public). null until M2; Roles Anywhere and the DNS-01 role exist only when set."
+variable "ra_trust_anchor_arn" {
+  description = "Roles Anywhere trust anchor ARN (bootstrap output trust_anchor_arn). Mirrored into SSM only."
   type        = string
   default     = null
 
   validation {
-    condition     = var.ca_cert_pem == null || can(regex("-----BEGIN CERTIFICATE-----", coalesce(var.ca_cert_pem, "")))
-    error_message = "ca_cert_pem must be a PEM-encoded certificate."
+    condition     = var.ra_trust_anchor_arn == null || can(regex("^arn:aws[a-z-]*:rolesanywhere:[a-z0-9-]+:[0-9]{12}:trust-anchor/[0-9a-f-]+$", coalesce(var.ra_trust_anchor_arn, "")))
+    error_message = "ra_trust_anchor_arn must be a Roles Anywhere trust anchor ARN."
+  }
+}
+
+variable "ra_acme_profile_arn" {
+  description = "Roles Anywhere profile ARN for Traefik (bootstrap output traefik_profile_arn). Mirrored into SSM only."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.ra_acme_profile_arn == null || can(regex("^arn:aws[a-z-]*:rolesanywhere:[a-z0-9-]+:[0-9]{12}:profile/[0-9a-f-]+$", coalesce(var.ra_acme_profile_arn, "")))
+    error_message = "ra_acme_profile_arn must be a Roles Anywhere profile ARN."
+  }
+}
+
+variable "ra_acme_role_arn" {
+  description = "DNS-01 role ARN (bootstrap output dns01_role_arn). Mirrored into SSM only."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.ra_acme_role_arn == null || can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$", coalesce(var.ra_acme_role_arn, "")))
+    error_message = "ra_acme_role_arn must be an IAM role ARN."
+  }
+}
+
+variable "acme_account_uri" {
+  description = "Let's Encrypt PRODUCTION account URI (from the Traefik acme-prod.json after M6). When set, the CAA records pin issuance to that account (SEC-L5). Leave null on the staging CA."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.acme_account_uri == null || can(regex("^https://acme-v02\\.api\\.letsencrypt\\.org/acme/acct/[0-9]+$", coalesce(var.acme_account_uri, "")))
+    error_message = "acme_account_uri must look like https://acme-v02.api.letsencrypt.org/acme/acct/<number>."
   }
 }
 
@@ -148,17 +181,6 @@ variable "budget_email" {
   validation {
     condition     = var.budget_email == null || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", coalesce(var.budget_email, "")))
     error_message = "budget_email must look like an email address."
-  }
-}
-
-variable "pki_generation" {
-  description = "Certificate generation, pinned as the OU of both Pi certificates. Bump it (and reissue the certs) to revoke a lost Pi."
-  type        = string
-  default     = "gen-1"
-
-  validation {
-    condition     = can(regex("^[A-Za-z0-9-]{1,32}$", var.pki_generation))
-    error_message = "pki_generation must be 1-32 letters, digits or hyphens."
   }
 }
 

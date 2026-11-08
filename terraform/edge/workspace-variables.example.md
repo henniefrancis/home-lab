@@ -21,9 +21,11 @@ gitignored `adopt-snapshot/`) and from `terraform output` of the bootstrap stack
 | `adopt_planned_records` | terraform, HCL | no | `{}` (set a flag true only for a collision, see the runbook) |
 | `create_planned_records` | terraform, HCL | no | `false` during adoption, `true` in the follow-up apply |
 | `create_ssm_parameters` | terraform, HCL | no | `false` during adoption, `true` in a follow-up apply (then run the verification in `docs/runbooks/secrets-ssm.md`) |
-| `pki_generation` | terraform | no | `gen-1` (default; bump to revoke a lost Pi) |
 | `pi_tailnet_ipv4` | terraform | no | omit until M2, then `100.x.y.z` |
-| `ca_cert_pem` | terraform | no | omit until M2, then the public CA certificate PEM |
+| `ra_trust_anchor_arn` | terraform | no | bootstrap output `trust_anchor_arn` (mirrored into SSM only; the identity lives in `terraform/bootstrap`) |
+| `ra_acme_profile_arn` | terraform | no | bootstrap output `traefik_profile_arn` |
+| `ra_acme_role_arn` | terraform | no | bootstrap output `dns01_role_arn` |
+| `acme_account_uri` | terraform | no | omit on the staging CA; after M6 the production Let's Encrypt account URI, which pins the CAA records to that account |
 | `budget_usd` | terraform, HCL | no | `5` |
 | `budget_email` | terraform | **yes** | omit until the budget apply, then the owner's own address |
 
@@ -41,3 +43,5 @@ gitignored `adopt-snapshot/`) and from `terraform output` of the bootstrap stack
 ```
 
 Alias records use `alias = { name, zone_id, evaluate_target_health }` instead of `ttl` and `records`.
+
+Removed (SEC-H1): `ca_cert_pem` and `pki_generation` now belong to `terraform/bootstrap` (owner admin SSO). Delete them from this workspace after the migration.

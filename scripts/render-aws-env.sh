@@ -3,7 +3,7 @@
 #
 # Usage: scripts/render-aws-env.sh [--generation gen-1]
 #
-# Prints five KEY=VALUE lines to stdout (nothing is written to disk). The values identify the AWS account, so they are
+# Reads the outputs of terraform/bootstrap (the identity stack, SEC-H1). Prints five KEY=VALUE lines to stdout (nothing is written to disk). The values identify the AWS account, so they are
 # never committed: paste them into the Pi shell as shown in docs/runbooks/m2-pi-setup.md. Needs `terraform login` and
 # TF_CLOUD_ORGANIZATION (see docs/runbooks/hcp-terraform-bootstrap.md); it only reads outputs from HCP state.
 set -euo pipefail
@@ -31,14 +31,14 @@ done
 }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TF_DIR="$HERE/../terraform/edge"
+TF_DIR="$HERE/../terraform/bootstrap"
 out() { terraform -chdir="$TF_DIR" output -raw "$1" 2> /dev/null | tr -d '\r'; }
 
 ta="$(out trust_anchor_arn || true)"
 profile="$(out host_profile_arn || true)"
 role="$(out host_role_arn || true)"
 [[ "$ta" =~ ^arn:aws[a-z-]*:rolesanywhere:[a-z0-9-]+:[0-9]+:trust-anchor/[0-9a-f-]+$ ]] || {
-  echo "trust_anchor_arn output missing: has the lead applied Roles Anywhere (after ca_cert_pem was set)? Is 'terraform init' done in terraform/edge?" >&2
+  echo "trust_anchor_arn output missing: has the owner applied terraform/bootstrap with ca_cert_pem set? Is 'terraform init' done there?" >&2
   exit 1
 }
 [[ "$profile" =~ ^arn:aws[a-z-]*:rolesanywhere:[a-z0-9-]+:[0-9]+:profile/[0-9a-f-]+$ ]] || {

@@ -45,6 +45,13 @@ resource "aws_route53_record" "www_reserved" {
   records = ["reserved for public website"] # the provider adds the TXT wire quotes
 }
 
+# SEC-L5: only Let's Encrypt, only through dns-01 (the method Traefik uses), and, once the production account exists
+# (acme_account_uri), only for that account, so a stolen _acme-challenge role cannot be used with another LE account.
+# amazon.com is dropped (no ACM certificate is planned).
+locals {
+  caa_params = join(";", compact(["validationmethods=dns-01", var.acme_account_uri == null ? "" : "accounturi=${var.acme_account_uri}"]))
+}
+
 resource "aws_route53_record" "caa" {
   count = var.create_planned_records ? 1 : 0
 
@@ -53,9 +60,8 @@ resource "aws_route53_record" "caa" {
   type    = "CAA"
   ttl     = 3600
   records = [
-    "0 issue \"letsencrypt.org\"",
-    "0 issuewild \"letsencrypt.org\"",
-    "0 issue \"amazon.com\"",
+    "0 issue \"letsencrypt.org;${local.caa_params}\"",
+    "0 issuewild \"letsencrypt.org;${local.caa_params}\"",
   ]
 }
 

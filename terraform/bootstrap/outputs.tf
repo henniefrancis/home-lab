@@ -12,3 +12,33 @@ output "oidc_provider_arn" {
   description = "ARN of the app.terraform.io OIDC provider."
   value       = local.oidc_arn
 }
+
+output "trust_anchor_arn" {
+  description = "Roles Anywhere trust anchor ARN (null until ca_cert_pem is set). Feeds scripts/render-aws-env.sh and the edge workspace variable ra_trust_anchor_arn."
+  value       = one(aws_rolesanywhere_trust_anchor.ca[*].arn)
+}
+
+output "traefik_profile_arn" {
+  description = "Roles Anywhere profile ARN for Traefik. Edge workspace variable ra_acme_profile_arn."
+  value       = one(aws_rolesanywhere_profile.traefik[*].arn)
+}
+
+output "dns01_role_arn" {
+  description = "DNS-01 role ARN. Edge workspace variable ra_acme_role_arn."
+  value       = one(aws_iam_role.traefik_dns01[*].arn)
+}
+
+output "host_profile_arn" {
+  description = "Roles Anywhere profile ARN for the Pi host identity (scripts/render-aws-env.sh)."
+  value       = one(aws_rolesanywhere_profile.pi_host[*].arn)
+}
+
+output "host_role_arn" {
+  description = "Pi host role ARN (scripts/render-aws-env.sh)."
+  value       = one(aws_iam_role.pi_host[*].arn)
+}
+
+output "ssm_kms_key_alias" {
+  description = "Alias of the customer-managed key for the /home-lab SecureStrings (used by terraform/edge and scripts/set-secret.sh)."
+  value       = aws_kms_alias.ssm.name
+}

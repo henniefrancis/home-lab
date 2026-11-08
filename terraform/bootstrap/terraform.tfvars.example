@@ -5,3 +5,19 @@ hcp_project      = "home-lab"
 hcp_workspace    = "home-lab"
 # create | import | existing. aws-preflight.sh warns when the provider already exists; "existing" manages nothing.
 oidc_provider_mode = "create"
+
+# Identity stack (SEC-H1/M1/M2). Real values stay in the gitignored terraform.tfvars.
+domain                 = "example.com"
+home_lab_zone_id       = "Z0000000000000000000"
+duplicate_zone_ids     = []
+owner_role_arn_pattern = "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess_*"
+# ca_cert_pem          = "-----BEGIN CERTIFICATE-----..."   # public CA certificate (omit until M2)
+# pki_generation       = "gen-1"
+# allow_legacy_ssm_key = true    # only during the key migration window, then remove
+# adopt_from_edge      = true    # only for the one-off migration from terraform/edge, then remove
+# adopt_ids = {
+#   trust_anchor_id    = "00000000-0000-0000-0000-000000000000"
+#   traefik_profile_id = "00000000-0000-0000-0000-000000000000"
+#   pi_host_profile_id = "00000000-0000-0000-0000-000000000000"
+# }
+# enable_audit_logging = false
