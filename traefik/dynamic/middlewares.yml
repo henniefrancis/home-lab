@@ -1,0 +1,33 @@
+---
+# Traefik dynamic configuration: shared middlewares (plan 6.3). Watched by the file provider, no restart needed.
+#
+# lan-allowlist: only the LAN and the tailnet may reach lab hosts. The ranges must equal LAN_CIDR and TAILNET_CIDR in
+#   config/lab.env (the file provider cannot read env vars); scripts/preflight.sh checks that they match.
+#   No ipStrategy is set, so the TCP peer address is used and X-Forwarded-For is never trusted.
+# security-headers: applied to every response of a router on the websecure entrypoint (entrypoint-level middleware),
+#   including the 401/403 answers of the allowlist and basic auth; unmatched hosts get a bare 404.
+#   HSTS is short (300 s) while on the Let's Encrypt staging CA; M6 raises it to 31536000.
+#   No preload: this domain also hosts a separate public website on the apex.
+#
+# The authentik forward-auth middleware is added in milestone M4, together with the Authentik stack it points to.
+http:
+  middlewares:
+    lan-allowlist:
+      ipAllowList:
+        sourceRange:
+          - 10.0.0.0/24
+          - 100.64.0.0/10
+
+    security-headers:
+      headers:
+        stsSeconds: 300
+        stsIncludeSubdomains: true
+        stsPreload: false
+        forceSTSHeader: true
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: strict-origin-when-cross-origin
+        permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
+        customResponseHeaders:
+          X-Robots-Tag: "noindex, nofollow"
+          Server: ""

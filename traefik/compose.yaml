@@ -1,0 +1,221 @@
+---
+# Traefik ingress + Roles Anywhere helper sidecar + read-only Docker socket proxy (plan 6.2, milestone M3).
+# M3 runs on the Let's Encrypt STAGING CA (ACME_CA_SERVER / ACME_ENV in config/lab.env); M6 switches to production.
+#
+# Start (Pi):  sudo scripts/deploy.sh          (fetches secrets, then `docker compose up -d` for the root compose.yaml)
+# Needs:       config/lab.env + ${APPS_ROOT}/secrets/runtime.env (DOMAIN, ROUTE53_ZONE_ID, RA_*), the networks created by
+#              scripts/bootstrap.sh (proxy, socket-proxy), the Pi certificates under /etc/home-lab/pki (M2),
+#              ${APPS_ROOT}/secrets/traefik/breakglass-htpasswd (SSM /home-lab/traefik/breakglass-htpasswd).
+# Runbook:     docs/runbooks/m3-traefik-staging.md
+#
+# Rules kept here: no published port besides 80 and 443; the Docker socket is only ever mounted (read-only) into the
+# socket proxy; the Traefik certificate key is mounted ONLY into ra-helper; no static AWS keys anywhere.
+services:
+  socket-proxy:
+    # Read-only view of the Docker API for Traefik's docker provider: containers, events, version, ping. Everything
+    # else (POST, exec, images, networks, ...) is refused by the proxy. It sits on an internal network only.
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: socket-proxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      EVENTS: "1"
+      VERSION: "1"
+      PING: "1"
+      POST: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-proxy
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  traefik:
+    image: traefik:v3.7.17
+    container_name: traefik
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    depends_on:
+      - socket-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - proxy
+      - socket-proxy
+    environment:
+      # lego's Route 53 provider (AWS SDK) takes its credentials from the IMDS-compatible endpoint served by ra-helper
+      # in this same network namespace. Route 53 is global; us-east-1 is its signing region.
+      AWS_REGION: us-east-1
+      AWS_HOSTED_ZONE_ID: ${ROUTE53_ZONE_ID:?set ROUTE53_ZONE_ID (runtime.env)}
+      AWS_EC2_METADATA_SERVICE_ENDPOINT: http://127.0.0.1:9911
+    volumes:
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/traefik/letsencrypt:/letsencrypt
+      - ${APPS_ROOT}/traefik/logs:/logs
+    secrets:
+      - breakglass_users
+    command:
+      - --global.checkNewVersion=false
+      - --global.sendAnonymousUsage=false
+      # Drop request headers that merely alias another header name (X_Auth_User for X-Auth-User): required before any
+      # forward-auth (M4) relies on headers set by Traefik.
+      - --global.aliasHeadersStrategy=delete
+      - --log.level=INFO
+      - --log.format=json
+      - --accesslog=true
+      - --accesslog.format=json
+      - --accesslog.filepath=/logs/access.log
+      # /ping for the container healthcheck lives on its own loopback-only entrypoint, so the default "traefik"
+      # entrypoint (:8080) is never created and no API/ping surface is reachable from the network.
+      - --ping=true
+      - --ping.entryPoint=ping
+      - --entrypoints.ping.address=127.0.0.1:8082
+      # The dashboard is served only through the "dashboard" router below (allowlist plus break-glass basic auth);
+      # the insecure API and the debug endpoints stay off.
+      - --api.dashboard=true
+      - --api.insecure=false
+      - --providers.docker.endpoint=tcp://socket-proxy:2375
+      - --providers.docker.exposedByDefault=false
+      - --providers.docker.network=proxy
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entryPoint.to=websecure
+      - --entrypoints.web.http.redirections.entryPoint.scheme=https
+      - --entrypoints.web.http.redirections.entryPoint.permanent=true
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.asDefault=true
+      - --entrypoints.websecure.http.tls.certResolver=le
+      - --entrypoints.websecure.http.tls.options=modern@file
+      # One wildcard certificate only. The apex is NOT ours (reserved for a future public website), so it is no SAN.
+      - --entrypoints.websecure.http.tls.domains[0].main=*.${DOMAIN:?set DOMAIN (runtime.env)}
+      - --entrypoints.websecure.http.middlewares=security-headers@file
+      # Staging or production CA and its own storage file, both switched in config/lab.env, so a staging
+      # account and certificate are never mixed with production ones.
+      - --certificatesresolvers.le.acme.caServer=${ACME_CA_SERVER:?set ACME_CA_SERVER in config/lab.env}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme-${ACME_ENV:?set ACME_ENV in config/lab.env}.json
+      # EC P-256 certificate key (the Traefik default is RSA 4096, slow to generate on a Pi); Let's Encrypt supports it.
+      - --certificatesresolvers.le.acme.keyType=EC256
+      - --certificatesresolvers.le.acme.dnsChallenge.provider=route53
+      - --certificatesresolvers.le.acme.dnsChallenge.resolvers=1.1.1.1:53,8.8.8.8:53
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping", "--ping.entryPoint=ping", "--entrypoints.ping.address=127.0.0.1:8082"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      traefik.enable: "true"
+      # Dashboard. M3 interim protection (Authentik arrives in M4): LAN/tailnet allowlist plus HTTP basic auth with the
+      # break-glass htpasswd line from SSM. M4 swaps breakglass-auth for authentik@file.
+      traefik.http.routers.dashboard.rule: Host(`traefik.${DOMAIN}`)
+      traefik.http.routers.dashboard.entrypoints: websecure
+      traefik.http.routers.dashboard.service: api@internal
+      traefik.http.routers.dashboard.middlewares: lan-allowlist@file,breakglass-auth@docker
+      traefik.http.middlewares.breakglass-auth.basicauth.usersfile: /run/secrets/breakglass_users
+      traefik.http.middlewares.breakglass-auth.basicauth.removeheader: "true"
+    logging: *default-logging
+
+  ra-helper:
+    # Roles Anywhere credential helper (serve). Joins Traefik's network namespace so 127.0.0.1:9911 is Traefik's own
+    # loopback and is not reachable from any other container. If traefik is recreated, recreate ra-helper too
+    # (`docker compose up -d` in scripts/deploy.sh always does). It exits when it cannot get credentials at start
+    # (offline, expired certificate, revoked generation) and restart: unless-stopped retries.
+    image: home-lab/ra-helper:1.8.6
+    build:
+      context: ./ra-helper
+    container_name: ra-helper
+    restart: unless-stopped
+    network_mode: service:traefik
+    depends_on:
+      - traefik
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    command:
+      - serve
+      - --certificate
+      - /run/secrets/ra_acme_crt
+      - --private-key
+      - /run/secrets/ra_acme_key
+      - --trust-anchor-arn
+      - ${RA_TRUST_ANCHOR_ARN:?set RA_TRUST_ANCHOR_ARN (runtime.env)}
+      - --profile-arn
+      - ${RA_ACME_PROFILE_ARN:?set RA_ACME_PROFILE_ARN (runtime.env)}
+      - --role-arn
+      - ${RA_ACME_ROLE_ARN:?set RA_ACME_ROLE_ARN (runtime.env)}
+      - --session-duration
+      - "3600"
+      - --port
+      - "9911"
+      - --hop-limit
+      - "1"
+    secrets:
+      - ra_acme_crt
+      - ra_acme_key
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9911"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *default-logging
+
+  breakglass:
+    # Break-glass holder (profile, not started by default): carries the bg-traefik router so the dashboard stays
+    # reachable (allowlist plus basic auth) once M4 puts Authentik in front of the main dashboard router. Start with
+    #   docker compose --profile breakglass up -d breakglass
+    profiles:
+      - breakglass
+    image: traefik/whoami:v1.12.0
+    container_name: breakglass
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 32m
+    networks:
+      - proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.bg-traefik.rule: Host(`bg-traefik.${DOMAIN}`)
+      traefik.http.routers.bg-traefik.entrypoints: websecure
+      traefik.http.routers.bg-traefik.service: api@internal
+      traefik.http.routers.bg-traefik.middlewares: lan-allowlist@file,breakglass-auth@docker
+    logging: *default-logging
+
+networks:
+  proxy:
+    external: true
+  socket-proxy:
+    external: true
+
+secrets:
+  breakglass_users:
+    file: ${APPS_ROOT}/secrets/traefik/breakglass-htpasswd
+  # The Traefik Roles Anywhere identity (M2). The key is mounted into ra-helper only; the host key is never mounted.
+  ra_acme_crt:
+    file: ${PKI_DIR:-/etc/home-lab/pki}/traefik.crt
+  ra_acme_key:
+    file: ${PKI_DIR:-/etc/home-lab/pki}/traefik.key

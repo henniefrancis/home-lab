@@ -1,0 +1,16 @@
+---
+# Traefik dynamic configuration: TLS options (plan 6.3). TLS 1.2 or newer with Traefik's default (secure) cipher
+# suites; sniStrict rejects any handshake whose server name is not covered by a configured certificate, so the apex
+# (reserved for the public website) and unknown names never get an answer from the Pi.
+#
+# Traefik picks TLS options per SNI: names matched by a router use that router's options (modern@file, set on the
+# websecure entrypoint), every OTHER name (apex, typos, bare IPs, no SNI) falls back to the option named "default".
+# Both are therefore defined identically; defining only "modern" would leave unknown names on the lenient built-in default.
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: true
+    modern:
+      minVersion: VersionTLS12
+      sniStrict: true

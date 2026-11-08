@@ -6,10 +6,11 @@
 #                  Without this flag a failed fetch aborts the deploy (the existing secrets stay in place).
 #   --no-git       do not run git pull.
 #   --only <stack> deploy one stack directory only, e.g. --only tailscale (uses <stack>/compose.yaml).
-#                  Without it, the root compose.yaml is used once it exists (milestone M3 onwards).
+#                  Without it, the root compose.yaml (all stacks) is used. Both run as the same compose project
+#                  ("home-lab"), so --only never removes the containers of the other stacks (no --remove-orphans).
 #
-# Skeleton for milestone M2 (plan 6.10): git pull --ff-only, fetch-secrets, compose pull and up, health summary,
-# certificate expiry. It never writes inside the repo checkout except through git.
+# Plan 6.10: git pull --ff-only, fetch-secrets, compose pull and up (building local images such as ra-helper),
+# health summary, certificate expiry. It never writes inside the repo checkout except through git.
 set -euo pipefail
 set +x
 
@@ -38,7 +39,7 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     -h | --help)
-      sed -n '2,13p' "$0"
+      sed -n '2,12p' "$0"
       exit 0
       ;;
     *) die "unknown argument: $1" ;;
@@ -73,11 +74,18 @@ else
   COMPOSE_FILE="$REPO_DIR/compose.yaml"
 fi
 if [ ! -f "$COMPOSE_FILE" ]; then
-  echo "No $COMPOSE_FILE yet (the root compose.yaml arrives with milestone M3); secrets are refreshed, nothing to start."
+  echo "No $COMPOSE_FILE; secrets are refreshed, nothing to start."
 else
-  dc() { docker compose -f "$COMPOSE_FILE" --env-file "$LAB_ENV" --env-file "$APPS_ROOT/secrets/runtime.env" "$@"; }
-  [ "$OFFLINE" -eq 1 ] || dc pull
-  dc up -d --remove-orphans
+  dc() { docker compose -p home-lab -f "$COMPOSE_FILE" --env-file "$LAB_ENV" --env-file "$APPS_ROOT/secrets/runtime.env" "$@"; }
+  # Images that are built locally (ra-helper) are skipped by pull; --build rebuilds them when their Dockerfile changed
+  # (cached otherwise). A build needs the network, so --offline starts without --build and uses the existing images.
+  up_args=(-d)
+  if [ "$OFFLINE" -eq 0 ]; then
+    dc pull --ignore-buildable
+    up_args+=(--build)
+  fi
+  [ -n "$ONLY" ] || up_args+=(--remove-orphans)
+  dc up "${up_args[@]}"
   echo
   dc ps --format 'table {{.Name}}\t{{.Status}}'
 fi
