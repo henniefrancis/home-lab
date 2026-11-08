@@ -2,16 +2,21 @@
 # fetch-secrets.sh - Pi, root: fetch the lab's secrets and config from SSM Parameter Store into /apps/secrets.
 #
 # Usage: sudo scripts/fetch-secrets.sh [--dry-run] [--manifest FILE] [--apps-root DIR] [--etc-dir DIR]
-#   --dry-run   do everything except publish (checks AWS access, placeholders, manifest); changes nothing on disk after exit.
+#   --dry-run   do everything except publish (checks AWS access, placeholders, manifest); writes nothing under $APPS_ROOT or
+#               $ETC_DIR (the AWS profile and the staging area live in a temporary tmpfs directory that is removed on exit).
 #
 # How it works (plan 3.3 and 6.10):
 #   - Identity: AWS CLI v2 with a credential_process profile that runs aws_signing_helper with the pi-host cert/key
 #     (IAM Roles Anywhere role home-lab-pi-host). ARNs come from /etc/home-lab/aws.env. No long-lived keys.
 #   - One call: ssm get-parameters-by-path /home-lab --recursive --with-decryption. The JSON lives only in a tmpfs
-#     directory (/run) and is shredded on exit. Values go straight from jq into files: never argv, never echoed.
+#     directory (/run) that is removed on exit (tmpfs: nothing reaches the flash). Values go straight from jq into files:
+#     never argv, never echoed.
 #   - config/secrets-manifest.tsv maps parameters to files (owner, mode, required, format).
 #   - A release dir is built under $APPS_ROOT/.secrets.d/.staging-*, validated, then published by atomically re-pointing
-#     the symlink $APPS_ROOT/secrets at it (rename(2) over the old symlink). The last two releases are kept.
+#     the symlink $APPS_ROOT/secrets at it (rename(2) over the old symlink). Only the CURRENT release is kept: a rotated-out
+#     secret does not stay on the SD card (SEC-L6). A running container keeps its already-mounted file until recreated.
+#   - A lock ($APPS_ROOT/.secrets.d/.lock) allows one fetch at a time; at start, leftovers of a killed run (.staging-* and
+#     stale /run/home-lab-fetch.* directories) are removed (QA-L-3).
 #   - Fails closed: a required parameter that is missing or still UNSET-* aborts; nothing is published and the previous
 #     secrets stay in place. The staging dir is removed on every exit path, including Ctrl-C and SIGTERM.
 #   - Writes $APPS_ROOT/secrets/runtime.env (DOMAIN, ROUTE53_ZONE_ID, RA_* ARNs) from the manifest's env: rows.
@@ -41,16 +46,16 @@ while [ $# -gt 0 ]; do
       DRY_RUN=1
       shift
       ;;
-    --manifest)
-      MANIFEST="${2:?}"
-      shift 2
-      ;;
-    --apps-root)
-      APPS_ROOT="${2:?}"
-      shift 2
-      ;;
-    --etc-dir)
-      ETC_DIR="${2:?}"
+    --manifest | --apps-root | --etc-dir)
+      [ $# -ge 2 ] && [ -n "$2" ] || {
+        echo "$1 needs a value" >&2
+        exit 2
+      }
+      case "$1" in
+        --manifest) MANIFEST="$2" ;;
+        --apps-root) APPS_ROOT="$2" ;;
+        --etc-dir) ETC_DIR="$2" ;;
+      esac
       shift 2
       ;;
     -h | --help)
@@ -93,7 +98,9 @@ fail_validation() {
 
 # ------------------------------------------------------------ manifest
 declare -a M_PARAM M_TARGET M_OWNER M_MODE M_REQ M_FMT
-declare -A TARGET_META=()
+declare -A TARGET_META=() TARGET_REQ=()
+# tr removes CRs (a manifest edited on Windows) and the final printf guarantees a last newline: `read` drops an
+# unterminated last line, which silently lost the last row (QA-M-1).
 while IFS=$'\t' read -r param target owner mode req fmt extra; do
   case "$param" in '' | '#'*) continue ;; esac
   [ -z "${extra:-}" ] || fail_validation "manifest row for '$param' has more than 6 columns"
@@ -112,16 +119,25 @@ while IFS=$'\t' read -r param target owner mode req fmt extra; do
   if [ -n "${TARGET_META[$target]:-}" ]; then
     [ "${TARGET_META[$target]}" = "$meta" ] || fail_validation "manifest: rows sharing '$target' disagree on owner or mode"
     [[ "$fmt" == env:* ]] || fail_validation "manifest: only env: rows may share a target ('$target')"
+    # An empty or omitted row on a shared file would truncate or drop the other rows (QA-L-2).
+    { [ "$req" = yes ] && [ "${TARGET_REQ[$target]}" = yes ]; } || fail_validation "manifest: rows sharing '$target' must all be required=yes"
   fi
   TARGET_META[$target]="$meta"
+  TARGET_REQ[$target]="${TARGET_REQ[$target]:-$req}"
   M_PARAM+=("$param")
   M_TARGET+=("$target")
   M_OWNER+=("$owner")
   M_MODE+=("$mode")
   M_REQ+=("$req")
   M_FMT+=("$fmt")
-done < "$MANIFEST"
+done < <(tr -d '\r' < "$MANIFEST"; printf '\n')
 [ "${#M_PARAM[@]}" -gt 0 ] || fail_validation "manifest has no rows"
+# A target that is a directory prefix of another target cannot both be a file and a directory (QA-L-4).
+for a in "${!TARGET_META[@]}"; do
+  for b in "${!TARGET_META[@]}"; do
+    case "$b" in "$a"/*) fail_validation "manifest: target '$a' is also a directory of '$b'" ;; esac
+  done
+done
 
 # ------------------------------------------------------------ AWS identity
 AWS_ENV="$ETC_DIR/aws.env"
@@ -138,6 +154,15 @@ AWS_REGION_CFG="$(lab_env_get "$AWS_ENV" AWS_REGION "$REGION")"
 [ -r "$ETC_DIR/pki/host.crt" ] && [ -r "$ETC_DIR/pki/host.key" ] || die "host certificate or key missing in $ETC_DIR/pki"
 
 AWS_CONFIG_PATH="$ETC_DIR/aws-config"
+if [ "$DRY_RUN" -eq 1 ]; then
+  # Nothing under $ETC_DIR changes in a dry run: the profile goes to the tmpfs working directory.
+  if [ -d /run ] && [ -w /run ]; then
+    RAMDIR="$(mktemp -d /run/home-lab-fetch.XXXXXX)"
+  else
+    RAMDIR="$(mktemp -d)"
+  fi
+  AWS_CONFIG_PATH="$RAMDIR/aws-config"
+fi
 cfg_tmp="$(mktemp "$AWS_CONFIG_PATH.XXXXXX")"
 cat > "$cfg_tmp" << CFG
 [profile home-lab-host]
@@ -148,13 +173,27 @@ chmod 0600 "$cfg_tmp"
 mv -f "$cfg_tmp" "$AWS_CONFIG_PATH"
 
 # ------------------------------------------------------------ working dirs
-install -d -m 0700 -o root -g root "$APPS_ROOT" "$RELEASES"
-if [ -d /run ] && [ -w /run ]; then
-  RAMDIR="$(mktemp -d /run/home-lab-fetch.XXXXXX)"
-else
-  RAMDIR="$(mktemp -d)"
+if [ "$DRY_RUN" -eq 0 ]; then
+  install -d -m 0700 -o root -g root "$APPS_ROOT" "$RELEASES"
+  # One fetch at a time, then clear what a killed run left behind: staging directories (rotated-out secrets on flash) and
+  # tmpfs copies of the decrypted JSON. The age test on /run keeps a concurrent run for another root safe.
+  exec 9> "$RELEASES/.lock"
+  flock -n 9 || die "another fetch-secrets.sh is running (lock $RELEASES/.lock)"
+  rm -rf "$RELEASES"/.staging-* 2> /dev/null || true
+  find /run -maxdepth 1 -name 'home-lab-fetch.*' -mmin +10 -exec rm -rf {} + 2> /dev/null || true
 fi
-STAGE="$(mktemp -d "$RELEASES/.staging-XXXXXX")"
+if [ -z "$RAMDIR" ]; then
+  if [ -d /run ] && [ -w /run ]; then
+    RAMDIR="$(mktemp -d /run/home-lab-fetch.XXXXXX)"
+  else
+    RAMDIR="$(mktemp -d)"
+  fi
+fi
+if [ "$DRY_RUN" -eq 1 ]; then
+  STAGE="$(mktemp -d "$RAMDIR/stage.XXXXXX")"
+else
+  STAGE="$(mktemp -d "$RELEASES/.staging-XXXXXX")"
+fi
 chmod 0700 "$STAGE"
 
 # ------------------------------------------------------------ fetch (the only network call)
@@ -291,10 +330,11 @@ fi
 ln -s ".secrets.d/$release" "$NEWLINK"
 mv -T "$NEWLINK" "$SECRETS_LINK"
 
-# Keep the three newest releases (current plus two); never remove the one in use.
+# Keep only the current release (SEC-L6): a rotated-out secret must not stay on the SD card. Running containers keep their
+# open bind mounts; the next recreate uses the new files.
 current="$(readlink "$SECRETS_LINK")"
-# shellcheck disable=SC2012
-ls -1d "$RELEASES"/release-* 2> /dev/null | sort | head -n -3 | while IFS= read -r old; do
+for old in "$RELEASES"/release-*; do
+  [ -e "$old" ] || continue
   [ ".secrets.d/$(basename "$old")" = "$current" ] || rm -rf "$old"
 done
 

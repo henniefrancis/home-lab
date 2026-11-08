@@ -4,7 +4,7 @@
 # Part A (any user): config/secrets-manifest.tsv agrees with terraform/edge/ssm.tf.
 # Part B (needs root, uses temp dirs only; run via sudo or in a throwaway container): the fetch behaviour:
 #   files, owners, modes, placeholder fail-closed, AWS failure, interrupted run leaves no staging, atomic swap,
-#   release pruning, dry-run, and that no secret value ever reaches the output.
+#   release retention (current only), manifest edge cases, dry-run, and that no secret value ever reaches the output.
 # CI runs it as: sudo -E bash scripts/test-fetch-secrets.sh
 set -uo pipefail
 
@@ -25,7 +25,7 @@ check() { # check <name> <command...>
 manifest_secrets="$(grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv" | cut -f1 | grep -v '^config/' | sort)"
 manifest_config="$(grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv" | cut -f1 | grep '^config/' | sort)"
 tf_secrets="$(grep -E '^[[:space:]]+"[a-z0-9-]+/[a-z0-9-]+"[[:space:]]*=[[:space:]]*"' "$REPO/terraform/edge/ssm.tf" | sed -E 's/^[[:space:]]+"([^"]+)".*/\1/' | grep -v '^config/' | sort)"
-tf_config="$(grep -E '^[[:space:]]+"config/[a-z0-9-]+"[[:space:]]*=' "$REPO/terraform/edge/ssm.tf" | sed -E 's/^[[:space:]]+"([^"]+)".*/\1/' | sort)"
+tf_config="$(grep -oE '"config/[a-z0-9-]+"' "$REPO/terraform/edge/ssm.tf" | tr -d '"' | sort -u)"
 check "manifest SecureStrings == ssm.tf secure_params" test "$manifest_secrets" = "$tf_secrets"
 check "manifest config rows == ssm.tf config_params" test "$manifest_config" = "$tf_config"
 check "manifest has a tab-separated row per parameter" test "$(grep -vcE '^(#|$)' "$REPO/config/secrets-manifest.tsv")" -ge 11
@@ -124,7 +124,7 @@ check "authentik/secret-key 10002:10002 0400 (F02: not the login uid 1000)" test
 check "authentik/postgres-password 10002:10002 0440 (Postgres reads it through the group)" test "$(attrs authentik/postgres-password)" = "10002:10002 440"
 # shellcheck disable=SC2016 # the bash -c snippet is single-quoted on purpose: $1 expands in the child shell
 check "no secret file is owned by uid or gid 1000" bash -c '! find "$1/secrets/" -type f \( -uid 1000 -o -gid 1000 \) | grep -q .' _ "$AR"
-check "breakglass-htpasswd 0:0 0400" test "$(attrs traefik/breakglass-htpasswd)" = "0:0 400"
+check "breakglass-htpasswd 10004:10004 0400 (read by non-root Traefik)" test "$(attrs traefik/breakglass-htpasswd)" = "10004:10004 400"
 check "secret-key content exact (no trailing newline)" test "$(cat "$AR/secrets/authentik/secret-key"; echo x)" = "${V_SK}x"
 check "bootstrap-password is an EMPTY 10002:10002 0400 file while UNSET (compose secret needs it to exist)" test "$(attrs authentik/bootstrap-password)" = "10002:10002 400" -a ! -s "$AR/secrets/authentik/bootstrap-password"
 check "optional placeholder omitted (homepage token)" test ! -e "$AR/secrets/homepage/authentik-token"
@@ -192,10 +192,10 @@ wait "$pid" 2> /dev/null || true
 check "interrupted run leaves no staging or tmpfs dirs" no_staging
 check "interrupted run leaves the release in place" test "$(readlink "$AR/secrets")" = "$second"
 
-# 7. pruning keeps at most 3 releases and the current one
+# 7. only the CURRENT release is kept (SEC-L6: a rotated-out secret must not stay on flash)
 mkjson "$T/params.json"
 for _ in 1 2 3 4; do run; done
-check "pruning keeps 3 releases" test "$(find "$AR/.secrets.d" -maxdepth 1 -name 'release-*' | wc -l)" -eq 3
+check "only the current release is kept (SEC-L6)" test "$(find "$AR/.secrets.d" -maxdepth 1 -name 'release-*' | wc -l)" -eq 1
 check "current release still exists" test -d "$AR/secrets/."
 
 # 8. dry-run on a fresh root publishes nothing
@@ -205,7 +205,7 @@ rc=0
 bash "$REPO/scripts/fetch-secrets.sh" --apps-root "$AR2" --etc-dir "$T/etc" --dry-run > "$T/out.log" 2>&1 || rc=$?
 check "dry-run exits 0" test "$rc" -eq 0
 check "dry-run publishes nothing" test ! -e "$AR2/secrets"
-check "dry-run leaves no staging" test -z "$(find "$AR2/.secrets.d" -maxdepth 1 -name '.staging-*')"
+check "dry-run leaves no staging" test -z "$(find "$AR2/.secrets.d" -maxdepth 1 -name '.staging-*' 2> /dev/null)"
 
 # 9. bad manifest rows are rejected before any AWS call
 printf 'authentik/secret-key\tauthentik/secret-key\t1000:1000\t0777x\tyes\traw\n' > "$T/bad.tsv"
@@ -222,6 +222,62 @@ chmod 644 "$T/etc/aws.env"
 run
 check "aws.env mode 0644 is refused" test "$rc" -ne 0
 chmod 600 "$T/etc/aws.env"
+
+# 11. manifest edge cases (QA-M-1, QA-L-2, QA-L-4, CRLF) and leftovers (QA-L-3)
+mkjson "$T/params.json"
+AR3="$T/apps3"
+mkdir -p "$AR3"
+good_manifest() { grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv"; }
+run3() { # run3 <manifest> [extra args]; sets rc, output in $T/out.log
+  local m="$1"
+  shift
+  rc=0
+  bash "$REPO/scripts/fetch-secrets.sh" --apps-root "$AR3" --etc-dir "$T/etc" --manifest "$m" "$@" > "$T/out.log" 2>&1 || rc=$?
+}
+# M-1: the real manifest WITHOUT a trailing newline must still deliver its LAST row (route53-zone-id is not last: use the final row)
+last_param="$(good_manifest | tail -n 1 | cut -f1)"
+last_var="$(good_manifest | tail -n 1 | cut -f6 | sed 's/^env://')"
+good_manifest | head -c -1 > "$T/nonl.tsv"
+check "fixture really lacks a trailing newline" test "$(tail -c 1 "$T/nonl.tsv" | od -An -c | tr -d ' ')" != '\n'
+run3 "$T/nonl.tsv"
+check "manifest without a trailing newline: exit 0 (QA-M-1)" test "$rc" -eq 0
+check "manifest without a trailing newline: the LAST row ($last_param) is written (QA-M-1)" grep -q "^${last_var}=" "$AR3/secrets/runtime.env"
+check "row count in runtime.env equals the 5 env rows of runtime.env" test "$(grep -c '=' "$AR3/secrets/runtime.env")" -eq 5
+# CRLF manifest
+good_manifest | sed 's/$/\r/' > "$T/crlf.tsv"
+run3 "$T/crlf.tsv"
+check "CRLF manifest is accepted (exit 0)" test "$rc" -eq 0
+check "CRLF manifest: no carriage return reaches a value or a mode" bash -c '! grep -q "$(printf "\r")" "$1/secrets/runtime.env"' _ "$AR3"
+# L-2: an empty/optional row sharing an env target is rejected
+printf 'tailscale/auth-key\tshared.env\t0:0\t0600\tyes\tenv:TS_AUTHKEY\nauthentik/bootstrap-password\tshared.env\t0:0\t0600\tempty\tenv:BOOT\n' > "$T/shared.tsv"
+run3 "$T/shared.tsv" --dry-run
+check "rows sharing an env target must all be required=yes (QA-L-2): exit 4" test "$rc" -eq 4
+# L-4: a target that is a directory of another target
+printf 'authentik/secret-key\tauthentik\t10002:10002\t0400\tyes\traw\nauthentik/postgres-password\tauthentik/pg\t10002:10002\t0440\tyes\traw\n' > "$T/prefix.tsv"
+run3 "$T/prefix.tsv" --dry-run
+check "target that is a directory of another is rejected with exit 4, not 1 (QA-L-4)" test "$rc" -eq 4
+# usage errors exit 2
+rc=0
+bash "$REPO/scripts/fetch-secrets.sh" --manifest > "$T/out.log" 2>&1 || rc=$?
+check "--manifest without a value exits 2 with a message" bash -c 'test "$1" -eq 2 && grep -q "needs a value" "$2"' _ "$rc" "$T/out.log"
+# L-3: leftovers of a killed run are removed by the next run
+mkdir -p "$AR3/.secrets.d/.staging-LEFTOVER" /run/home-lab-fetch.STALE
+touch -d '1 hour ago' /run/home-lab-fetch.STALE
+run3 "$T/nonl.tsv"
+check "stale .staging-* of a killed run is removed (QA-L-3)" test ! -e "$AR3/.secrets.d/.staging-LEFTOVER"
+check "stale /run/home-lab-fetch.* of a killed run is removed (QA-L-3)" test ! -e /run/home-lab-fetch.STALE
+# dry-run writes nothing under etc-dir or apps-root (QA-L-16)
+AR4="$T/apps4"
+ETC4="$T/etc4"
+mkdir -p "$ETC4/pki"
+cp "$T/etc/aws.env" "$ETC4/aws.env"
+: > "$ETC4/pki/host.crt"
+: > "$ETC4/pki/host.key"
+chmod 600 "$ETC4/aws.env"
+rc=0
+bash "$REPO/scripts/fetch-secrets.sh" --apps-root "$AR4" --etc-dir "$ETC4" --dry-run > "$T/out.log" 2>&1 || rc=$?
+check "dry-run exits 0" test "$rc" -eq 0
+check "dry-run creates no aws-config and no apps-root" test ! -e "$ETC4/aws-config" -a ! -e "$AR4"
 
 echo
 if [ "$fails" -eq 0 ]; then

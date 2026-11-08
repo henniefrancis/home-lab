@@ -28,7 +28,7 @@ repo_dir() {
 # lab_env_get <file> <KEY> [default]: read KEY from a KEY=VALUE file without sourcing it.
 lab_env_get() {
   local v
-  v="$(grep -E "^$2=" "$1" 2> /dev/null | tail -n 1 | cut -d= -f2-)" || true
+  v="$(grep -E "^$2=" "$1" 2> /dev/null | tail -n 1 | cut -d= -f2- | tr -d '\r')" || true
   printf '%s' "${v:-${3:-}}"
 }
 
