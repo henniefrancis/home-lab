@@ -39,7 +39,10 @@ case " ${args[*]} " in
     if [ "${MOCK_AUTH:-ok}" = ok ]; then echo "MOCK-ACCOUNT"; exit 0; else exit 255; fi ;;
   *" ssm get-parameter "*)
     echo "${MOCK_TYPE:-SecureString}"; exit 0 ;;
+  *" ssm describe-parameters "*)
+    printf '%s' "${MOCK_PARAMS:-[]}"; exit 0 ;;
   *" ssm put-parameter "*)
+    if [ -n "${MOCK_EXISTS:-}" ]; then echo "An error occurred (ParameterAlreadyExists)" >&2; exit 254; fi
     src=""
     for i in "${!args[@]}"; do
       if [ "${args[$i]}" = "--cli-input-json" ]; then src="${args[$((i + 1))]#file://}"; fi
@@ -115,8 +118,31 @@ check "a value that looks like the placeholder is refused" bash -c 'test "$1" -e
 
 run '' --unset tailscale/auth-key
 check "--unset writes the placeholder with the key id" bash -c 'test "$1" -eq 0 && jq -e ".Value | startswith(\"UNSET-\")" "$2" && jq -e ".KeyId == \"alias/home-lab-ssm\"" "$2"' _ "$rc" "$MOCK_OUT/req.json"
-run 'abc\nabc\n' --create authentik/secret-key
-check "--create sets Overwrite false" bash -c 'jq -e ".Overwrite == false" "$1"' _ "$MOCK_OUT/req.json"
+run '' --create tailscale/auth-key
+check "--create writes the placeholder, Overwrite false, SecureString, key alias, tags Project and ManagedBy (no prompt)" bash -c 'jq -e "(.Value | startswith(\"UNSET-\")) and .Overwrite == false and .Type == \"SecureString\" and .KeyId == \"alias/home-lab-ssm\" and .Tier == \"Standard\" and ([.Tags[] | .Key + \"=\" + .Value] | sort == [\"ManagedBy=set-secret.sh\",\"Project=home-lab\"])" "$1"' _ "$MOCK_OUT/req.json"
+MOCK_EXISTS=1 run '' --create tailscale/auth-key
+check "--create on an existing parameter fails (never overwrites)" test "$rc" -ne 0
+run '' --create not-in/manifest
+check "--create refuses a name that is not a SecureString row of the manifest (exit 2, nothing sent)" bash -c 'test "$1" -eq 2 && test ! -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
+run 'x\nx\n' tailscale/auth-key
+check "a normal set never sends Tags (they are only valid with Overwrite false)" bash -c '! jq -e "has(\"Tags\")" "$1"' _ "$MOCK_OUT/req.json"
+
+good='[{"n":"/home-lab/authentik/secret-key","t":"SecureString","k":"alias/home-lab-ssm","v":3},{"n":"/home-lab/authentik/postgres-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/authentik/bootstrap-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/traefik/breakglass-htpasswd","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/tailscale/auth-key","t":"SecureString","k":"alias/home-lab-ssm","v":4},{"n":"/home-lab/homepage/authentik-token","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/config/domain","t":"String","k":null,"v":1}]'
+MOCK_PARAMS="$good" run '' --check
+check "--check passes when all six SecureStrings exist on alias/home-lab-ssm (config/* is not required to be a SecureString)" bash -c 'test "$1" -eq 0 && grep -q "check OK" "$2" && grep -q "authentik/secret-key" "$2"' _ "$rc" "$work/o"
+check "--check prints key and version only: no value, nothing was written" bash -c '! grep -qi "value" "$1" && test ! -f "$2/req.json"' _ "$work/o" "$MOCK_OUT"
+bad_missing="$(jq -c 'map(select(.n != "/home-lab/tailscale/auth-key"))' <<< "$good")"
+MOCK_PARAMS="$bad_missing" run '' --check
+check "--check fails (exit 1) when one SecureString is missing, and names it" bash -c 'test "$1" -eq 1 && grep -q "tailscale/auth-key.*MISSING" "$2"' _ "$rc" "$work/o"
+bad_key="$(jq -c 'map(if .n == "/home-lab/authentik/secret-key" then .k = "alias/aws/ssm" else . end)' <<< "$good")"
+MOCK_PARAMS="$bad_key" run '' --check
+check "--check fails (exit 1) when a SecureString is not on the home-lab key" bash -c 'test "$1" -eq 1 && grep -q "NOT on alias/home-lab-ssm" "$2"' _ "$rc" "$work/o"
+bad_type="$(jq -c 'map(if .n == "/home-lab/authentik/secret-key" then .t = "String" else . end)' <<< "$good")"
+MOCK_PARAMS="$bad_type" run '' --check
+check "--check fails when a parameter is a plain String" bash -c 'test "$1" -eq 1 && grep -q "NOT a SecureString" "$2"' _ "$rc" "$work/o"
+run 'x\n' --check authentik/secret-key
+check "--check takes no name (exit 2)" test "$rc" -eq 2
+check "the expected list is the manifest: six SecureStrings" test "$(grep -vE '^(#|$)' config/secrets-manifest.tsv | cut -f1 | grep -vc '^config/')" -eq 6
 
 run 'abc\nabc\n' config/domain
 check "config/* is refused (exit 2)" test "$rc" -eq 2

@@ -4,7 +4,13 @@
 # Usage:
 #   scripts/set-secret.sh <name>            prompt for a value and store it, e.g. authentik/secret-key
 #   scripts/set-secret.sh --unset <name>    put the UNSET placeholder back (e.g. after Tailscale has joined)
-#   scripts/set-secret.sh --create <name>   fallback mode only: create the SecureString (see docs/runbooks/secrets-ssm.md)
+#   scripts/set-secret.sh --create <name>   create the SecureString (with the UNSET placeholder, key alias/home-lab-ssm, Standard tier,
+#                                           tags Project=home-lab and ManagedBy=set-secret.sh); refuses if it already exists; then set it
+#   scripts/set-secret.sh --check           list every expected SecureString with its key and version (never a value); exit 1 when one is
+#                                           missing, is not a SecureString or is not on the home-lab key
+#
+# The six SecureStrings are owner-managed, NOT Terraform-managed (ADR-013): config/secrets-manifest.tsv (rows that do not start with
+# config/) is the source of truth for the list. Terraform owns only /home-lab/config/*.
 #
 # Every write passes --key-id (default alias/home-lab-ssm, the customer-managed key from terraform/bootstrap), so a re-set
 # also re-encrypts an old value under that key. The value is read with no echo, travels only through shell builtins and
@@ -28,7 +34,10 @@ PLACEHOLDER="UNSET-set-via-set-secret"
 MAX_LEN=4096
 MODE="set"
 
-usage() { sed -n '2,17p' "$0"; }
+usage() { sed -n '2,23p' "$0"; }
+
+MANIFEST="${SECRETS_MANIFEST:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/secrets-manifest.tsv}"
+expected_names() { grep -vE '^(#|$)' "$MANIFEST" | cut -f1 | tr -d '\r' | grep -v '^config/'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,6 +47,10 @@ while [ $# -gt 0 ]; do
       ;;
     --create)
       MODE="create"
+      shift
+      ;;
+    --check)
+      MODE="check"
       shift
       ;;
     -h | --help)
@@ -52,15 +65,26 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-[ $# -eq 1 ] || {
-  usage >&2
-  exit 2
-}
-NAME="$1"
+if [ "$MODE" = check ]; then
+  [ $# -eq 0 ] || {
+    usage >&2
+    exit 2
+  }
+else
+  [ $# -eq 1 ] || {
+    usage >&2
+    exit 2
+  }
+fi
+NAME="${1:-}"
 
 # Only secret parameters of the form <service>/<name>; config/* is owned by Terraform.
-if ! [[ "$NAME" =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]] || [[ "$NAME" == config/* ]]; then
+if [ "$MODE" != check ] && { ! [[ "$NAME" =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]] || [[ "$NAME" == config/* ]]; }; then
   echo "Refusing '$NAME': expected <service>/<name> (lowercase letters, digits, hyphen), never config/*." >&2
+  exit 2
+fi
+if [ "$MODE" = create ] && ! expected_names | grep -qxF "$NAME"; then
+  echo "Refusing to create '$NAME': it is not a SecureString row of config/secrets-manifest.tsv (add it there first)." >&2
   exit 2
 fi
 [[ "$KEY_ID" =~ ^alias/[A-Za-z0-9/_-]{1,250}$ ]] || {
@@ -97,17 +121,47 @@ if ! aws_ sts get-caller-identity --query Account --output text > /dev/null 2>&1
   exit 1
 fi
 
+if [ "$MODE" = check ]; then
+  # Metadata only (name, type, key, version): describe-parameters never returns a value.
+  listing="$(aws_ ssm describe-parameters --parameter-filters "Key=Path,Option=Recursive,Values=/home-lab" \
+    --query 'Parameters[].{n:Name,t:Type,k:KeyId,v:Version}' --output json)"
+  bad=0
+  printf '%-40s %-22s %s\n' "parameter" "key" "version"
+  while IFS= read -r want; do
+    row="$(jq -r --arg n "/home-lab/$want" '[.[] | select(.n == $n)] | if length == 0 then "MISSING" else .[0] | "\(.t)|\(.k // "-")|\(.v)" end' <<< "$listing")"
+    if [ "$row" = MISSING ]; then
+      printf '%-40s %-22s %s\n' "$want" "-" "MISSING"
+      bad=1
+      continue
+    fi
+    rtype="${row%%|*}"
+    rest="${row#*|}"
+    rkey="${rest%%|*}"
+    rver="${rest#*|}"
+    flag=""
+    if [ "$rtype" != SecureString ]; then flag=" (NOT a SecureString)"; bad=1; fi
+    if [ "$rkey" != "$KEY_ID" ]; then flag="$flag (NOT on $KEY_ID)"; bad=1; fi
+    printf '%-40s %-22s %s%s\n' "$want" "$rkey" "$rver" "$flag"
+  done < <(expected_names)
+  if [ "$bad" -ne 0 ]; then
+    echo "check FAILED: fix with scripts/set-secret.sh --create <name> (missing) or by setting the value again (wrong key)." >&2
+    exit 1
+  fi
+  echo "check OK: every expected SecureString exists and is on $KEY_ID."
+  exit 0
+fi
+
 if [ "$MODE" != create ]; then
   # Type only: no --with-decryption and no Value in the output.
   ptype="$(aws_ ssm get-parameter --name "$PARAM" --query Parameter.Type --output text 2> /dev/null || true)"
   if [ "$ptype" != SecureString ]; then
-    echo "$PARAM does not exist as a SecureString (apply terraform/edge first, or use --create in fallback mode)." >&2
+    echo "$PARAM does not exist as a SecureString (create it first: scripts/set-secret.sh --create ${NAME})." >&2
     exit 1
   fi
 fi
 
 case "$MODE" in
-  unset)
+  unset | create)
     v="$PLACEHOLDER"
     ;;
   *)
@@ -151,8 +205,10 @@ overwrite=true
 
 # Build the request body from stdin (value never in argv); only the parameter name and key alias go to jq as arguments.
 build_body() {
-  printf '%s' "$v" | jq -Rs --arg n "$PARAM" --arg k "$KEY_ID" --argjson o "$overwrite" \
-    '{Name:$n, Value:., Type:"SecureString", KeyId:$k, Tier:"Standard", Overwrite:$o}'
+  # Tags are only accepted by PutParameter when Overwrite is false, i.e. on --create.
+  printf '%s' "$v" | jq -Rs --arg n "$PARAM" --arg k "$KEY_ID" --argjson o "$overwrite" --arg m "$MODE" \
+    '{Name:$n, Value:., Type:"SecureString", KeyId:$k, Tier:"Standard", Overwrite:$o}
+     + (if $m == "create" then {Tags:[{Key:"Project",Value:"home-lab"},{Key:"ManagedBy",Value:"set-secret.sh"}]} else {} end)'
 }
 
 case "$(uname -s)" in

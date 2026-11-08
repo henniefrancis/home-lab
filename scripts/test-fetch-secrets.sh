@@ -25,9 +25,9 @@ check() { # check <name> <command...>
 # ------------------------------------------------------------------ Part A
 manifest_secrets="$(grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv" | cut -f1 | grep -v '^config/' | sort)"
 manifest_config="$(grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv" | cut -f1 | grep '^config/' | sort)"
-tf_secrets="$(grep -E '^[[:space:]]+"[a-z0-9-]+/[a-z0-9-]+"[[:space:]]*=[[:space:]]*"' "$REPO/terraform/edge/ssm.tf" | sed -E 's/^[[:space:]]+"([^"]+)".*/\1/' | grep -v '^config/' | sort)"
 tf_config="$(grep -oE '"config/[a-z0-9-]+"' "$REPO/terraform/edge/ssm.tf" | tr -d '"' | sort -u)"
-check "manifest SecureStrings == ssm.tf secure_params" test "$manifest_secrets" = "$tf_secrets"
+check "the six SecureStrings are owner-managed (ADR-013): the manifest lists six, ssm.tf has no SecureString resource and forgets the old ones" bash -c 'test "$(printf "%s
+" "$1" | wc -l)" -eq 6 && ! grep -Eq "^resource \"aws_ssm_parameter\" \"secret\"" "$2" && grep -q "from = aws_ssm_parameter.secret" "$2"' _ "$manifest_secrets" "$REPO/terraform/edge/ssm.tf"
 check "manifest config rows == ssm.tf config_params" test "$manifest_config" = "$tf_config"
 check "manifest has a tab-separated row per parameter" test "$(grep -vcE '^(#|$)' "$REPO/config/secrets-manifest.tsv")" -ge 11
 
