@@ -25,6 +25,11 @@ services:
       TS_AUTH_ONCE: "true"
       TS_ACCEPT_DNS: "false"
       TS_EXTRA_ARGS: --advertise-tags=tag:homelab
+      # F01: the image's iptables tried to modprobe ip_tables inside the container, which has no /lib/modules, so
+      # every start logged "iptables ... ts-input ... modprobe: can't change directory to '/lib/modules'". nftables mode
+      # (documented at https://tailscale.com/docs/features/firewall-mode) programs the firewall through netlink and
+      # never calls iptables or modprobe; the host kernel loads nf_tables itself. No new capability and no mount.
+      TS_DEBUG_FIREWALL_MODE: nftables
       TS_HOSTNAME: ${TS_HOSTNAME:?set TS_HOSTNAME in config/lab.env}
     env_file:
       - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/secrets/tailscale/tailscale.env
