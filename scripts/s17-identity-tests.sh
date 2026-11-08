@@ -50,7 +50,6 @@ credential_process = $helper credential-process --certificate $ETC/pki/host.crt 
 region = us-east-1
 credential_process = $helper credential-process --certificate $ETC/pki/traefik.crt --private-key $ETC/pki/traefik.key --trust-anchor-arn $TA --profile-arn $ACME_PROFILE --role-arn $ACME_ROLE
 CFG
-printf 'not-a-real-ciphertext' > "$W/garbage.bin"
 cat > "$W/probe.json" << PROBE
 {"Changes":[{"Action":"DELETE","ResourceRecordSet":{"Name":"s17-probe.$DOMAIN.","Type":"TXT","TTL":60,"ResourceRecords":[{"Value":"\"s17\""}]}}]}
 PROBE
@@ -96,13 +95,25 @@ if awsp s17-host ssm get-parameter --name /home-lab/s17-denied-probe --query Par
   echo "       WARNING: /home-lab/s17-denied-probe exists; the put was NOT denied. Delete it and fix the role policy."
 fi
 expect_denied "route53 list-hosted-zones" s17-host route53 list-hosted-zones
-expect_denied "kms decrypt called directly (not via SSM)" s17-host kms decrypt --ciphertext-blob "fileb://$W/garbage.bin"
+# A made-up ciphertext fails with InvalidCiphertextException before KMS checks permissions, so the direct-decrypt probes use
+# a real SecureString ciphertext (read without decryption) and SSM's encryption context; only kms:ViaService then decides.
+if awsp s17-host ssm get-parameter --name /home-lab/authentik/secret-key --query 'Parameter.[Value,ARN]' --output text; then
+  cut -f1 "$W/out" | base64 -d > "$W/real.bin"
+  PARAM_ARN="$(cut -f2 "$W/out")"
+else
+  bad "read the SecureString ciphertext for the KMS probes ($(grep -oE '[A-Za-z]+Exception|AccessDenied[A-Za-z]*' "$W/err" | head -n 1))"
+  PARAM_ARN=unknown
+fi
+expect_denied "kms decrypt called directly (not via SSM)" s17-host \
+  kms decrypt --ciphertext-blob "fileb://$W/real.bin" --encryption-context "PARAMETER_ARN=$PARAM_ARN"
 
 echo "== ACME role (traefik certificate)"
 expect_denied "ssm get-parameter" s17-acme ssm get-parameter --name /home-lab/authentik/secret-key --query Parameter.Version --output text
-expect_denied "kms decrypt called directly" s17-acme kms decrypt --ciphertext-blob "fileb://$W/garbage.bin"
+expect_denied "kms decrypt called directly" s17-acme \
+  kms decrypt --ciphertext-blob "fileb://$W/real.bin" --encryption-context "PARAMETER_ARN=$PARAM_ARN" --region "$REGION"
+# No --query here: with --max-items the CLI applies a query to the trailing NextToken page too, and length(null) fails.
 expect_allowed "route53 list-resource-record-sets in the zone" s17-acme \
-  route53 list-resource-record-sets --hosted-zone-id "$ZONE" --max-items 1 --query 'length(ResourceRecordSets)' --output text
+  route53 list-resource-record-sets --hosted-zone-id "$ZONE" --max-items 1 --output json
 expect_denied "route53 change of a non-_acme-challenge record" s17-acme \
   route53 change-resource-record-sets --hosted-zone-id "$ZONE" --change-batch "file://$W/probe.json"
 
