@@ -1,4 +1,3 @@
 ---
-# No Docker integration by default: Homepage discovers and polls EVERY server listed here, so the optional socket-proxy server
-# is defined in homepage/docker-status/docker.yaml and only mounted over this file by homepage/compose.docker-status.yaml.
-# Never mount docker.sock into Homepage.
+# No Docker integration (SEC-H2). Homepage polls EVERY server listed here; none is listed, and docker.sock is never mounted into
+# Homepage. The file exists only because Homepage looks for it at start.

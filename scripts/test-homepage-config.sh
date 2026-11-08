@@ -10,15 +10,16 @@
 # (The Authentik side of forward auth is proven by scripts/test-authentik-config.sh; this test proves that Homepage's own
 # routers send every request through that middleware and that its outpost callback router is wired like the dashboard's.)
 #
-# Static checks (plan 6.6): pinned image, dedicated uid, read-only root, hardening, no published port, no docker.sock, only the
-#   proxy and socket-proxy networks, HOMEPAGE_ALLOWED_HOSTS, logs to stdout, router labels (allowlist then authentik@file, outpost
-#   router), committed config (all files present, domain only through {{HOMEPAGE_VAR_DOMAIN}}, Docker only via the socket proxy,
-#   update check off), service ids consistent between lab.env, secrets-manifest.tsv and bootstrap.sh, root compose includes it.
+# Static checks (plan 6.6): pinned image (by digest), dedicated uid, read-only root, hardening, no published port, no docker.sock and
+#   no Docker integration of any kind (SEC-H2: the socket proxy and the status add-on are gone), only the proxy network,
+#   HOMEPAGE_ALLOWED_HOSTS, logs to stdout, the routers in traefik/dynamic/routers.yml (allowlist then authentik, outpost router),
+#   committed config (all files present, domain only through {{HOMEPAGE_VAR_DOMAIN}}, no docker server, update check off),
+#   service ids consistent between lab.env, secrets-manifest.tsv and bootstrap.sh, root compose includes it.
 # Full run: Homepage boots as uid 10003 with a read-only root file system and the config mounted read-only; it renders with the
-#   dummy domain; it reads container status through the REAL socket proxy (and the proxy refuses writes and everything else);
-#   HOMEPAGE_ALLOWED_HOSTS rejects other hosts; the REAL Traefik flags, Homepage labels and middlewares answer an anonymous
-#   request with the login redirect (302 from forward auth, Homepage never reached), serve it only with the auth header
-#   result, never serve the apex or www, and the outpost callback path goes to the outpost (not to Homepage).
+#   dummy domain and has no Docker data source; HOMEPAGE_ALLOWED_HOSTS rejects other hosts; the REAL Traefik flags, the REAL
+#   routers.yml and middlewares answer an anonymous request with the login redirect (302 from forward auth, Homepage never
+#   reached), serve it only with the auth header result, never serve the apex or www, and the outpost callback path goes to the
+#   outpost (not to Homepage).
 # shellcheck disable=SC2016 # the bash -c snippets are single-quoted on purpose: $1, $2 expand in the child shell
 set -euo pipefail
 
@@ -42,7 +43,7 @@ command -v jq > /dev/null || {
 }
 export MSYS_NO_PATHCONV=1 # Git Bash on Windows: keep "container:/path" arguments intact
 # Hermetic: the shell environment would win over --env-file, so drop anything that lab.env defines.
-unset PROXY_SUBNET APPS_ROOT DOMAIN AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TZ
+unset PROXY_SUBNET AUTHENTIK_AUTH_SUBNET APPS_ROOT DOMAIN AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID TZ
 
 fails=0
 ok() { printf 'PASS  %s\n' "$*"; }
@@ -58,13 +59,12 @@ check() { # check <description> <command...>
 
 DOMAIN_T=lab.example.test
 NET_PROXY=hmtest-proxy
-NET_SOCK=hmtest-sock
 stage=""
 cleanup() {
   [ "${KEEP:-0}" = 1 ] && return 0 # debugging: leave the hmtest-* containers and networks (remove them by hand afterwards)
   if [ "$STATIC_ONLY" -eq 0 ]; then
-    docker rm -f hmtest-traefik hmtest-homepage hmtest-auth hmtest-sockproxy > /dev/null 2>&1 || true
-    docker network rm "$NET_PROXY" "$NET_SOCK" > /dev/null 2>&1 || true
+    docker rm -f hmtest-traefik hmtest-homepage hmtest-auth > /dev/null 2>&1 || true
+    docker network rm "$NET_PROXY" > /dev/null 2>&1 || true
   fi
   [ -z "$stage" ] || rm -rf "$stage"
 }
@@ -86,18 +86,19 @@ export ACME_CA_SERVER=https://127.0.0.1:1/dir
 all="$(docker compose --env-file config/lab.env config --format json)"
 alone="$(docker compose -f homepage/compose.yaml --env-file config/lab.env config --format json)"
 hp="$(jq -c '.services.homepage' <<< "$alone")"
-withdocker="$(docker compose -f homepage/compose.yaml -f homepage/compose.docker-status.yaml --env-file config/lab.env config --format json)"
-hp2="$(jq -c '.services.homepage' <<< "$withdocker")"
 IMAGE="$(jq -r '.image' <<< "$hp")"
 printf 'image: %s\n' "$IMAGE"
 
 lab_get() { grep -E "^$1=" config/lab.env | cut -d= -f2; }
 manifest_owner() { awk -F'\t' -v p="$1" '$1 == p {print $3 " " $4}' config/secrets-manifest.tsv; }
-lbl() { jq -r --arg k "$1" '.labels[$k]' <<< "$hp"; }
+rt=traefik/dynamic/routers.yml
+router_block() { awk -v r="$1" '$0 == "    " r ":" {f=1; next} /^    [a-z-]+:$/ {f=0} /^  [a-z]+:$/ {f=0} f' "$rt"; }
+export -f router_block
+export rt
 cfgfile() { printf 'homepage/config/%s' "$1"; }
 
 echo "--- static: container definition"
-check "image is a pinned ghcr.io/gethomepage/homepage vX.Y.Z (not latest, not a bare major)" bash -c '[[ "$1" =~ ^ghcr\.io/gethomepage/homepage:v[0-9]+\.[0-9]+\.[0-9]+$ ]]' _ "$IMAGE"
+check "image is a pinned ghcr.io/gethomepage/homepage vX.Y.Z, by digest (not latest, not a bare major, SEC-M5)" bash -c '[[ "$1" =~ ^ghcr\.io/gethomepage/homepage:v[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$ ]]' _ "$IMAGE"
 check "root compose includes homepage, and --only homepage renders the same service" test "$(jq -r '.services.homepage.image' <<< "$all")" = "$IMAGE"
 check "runs as HOMEPAGE_UID:HOMEPAGE_GID = 10003:10003 (not root, not the login user 1000)" test "$(jq -r '.user' <<< "$hp")" = "10003:10003" -a "$(lab_get HOMEPAGE_UID):$(lab_get HOMEPAGE_GID)" = "10003:10003"
 check "read-only root file system; only two tmpfs mounts (/tmp, the Next.js cache), both owned by the service uid" test "$(jq -c '[.read_only, (.tmpfs | map(split(":")[0]) | sort), ([.tmpfs[] | select(contains("uid=10003,gid=10003"))] | length)]' <<< "$hp")" = '[true,["/app/.next/cache","/tmp"],2]'
@@ -106,23 +107,21 @@ check "memory limit set (384M)" test "$(jq -r '.mem_limit' <<< "$hp")" = "402653
 check "no published ports (reached through Traefik only)" test "$(jq '.ports // [] | length' <<< "$hp")" = 0
 check "docker.sock is mounted nowhere in the Homepage service, and DOCKER_HOST is not set" bash -c '! jq -r ".volumes[]? | .source" <<< "$1" | grep -q "docker.sock" && [ "$(jq -r ".environment.DOCKER_HOST // \"none\"" <<< "$1")" = none ]' _ "$hp"
 check "the only volume is the committed config, read-only (no data directory, nothing written into the checkout)" test "$(jq -c '[.volumes[] | [.target, .read_only]]' <<< "$hp")" = '[["/app/config",true]]'
-check "default: Homepage is on the proxy network ONLY (no socket-proxy network, no Docker integration)" test "$(jq -c '[.networks | keys[]]' <<< "$hp")" = '["proxy"]' -a "$(jq -r '.networks.proxy.external' <<< "$alone")" = true
-check "default: HOMEPAGE_VAR_DOCKER_SERVER is empty and config/docker.yaml defines no server" test "$(jq -r '.environment.HOMEPAGE_VAR_DOCKER_SERVER' <<< "$hp")" = "" -a "$(grep -vc '^\s*#\|^---\|^\s*$' "$(cfgfile docker.yaml)" || true)" = 0
-check "optional docker-status override: adds only the socket-proxy network, the server name and the docker.yaml mount" test "$(jq -c '[(.networks | keys | sort), .environment.HOMEPAGE_VAR_DOCKER_SERVER, ([.volumes[] | .target] | sort)]' <<< "$hp2")" = '[["proxy","socket-proxy"],"socket-proxy",["/app/config","/app/config/docker.yaml"]]'
-check "optional docker-status override: still no docker.sock, no port, same hardening" bash -c '! jq -r ".volumes[]? | .source" <<< "$1" | grep -q docker.sock && [ "$(jq -c "[.read_only, .cap_drop, (.ports // [] | length), .user]" <<< "$1")" = "[true,[\"ALL\"],0,\"10003:10003\"]" ]' _ "$hp2"
-check "optional docker-status server: tcp socket-proxy:2375 only, no unix socket" bash -c 'f=homepage/docker-status/docker.yaml; grep -qx "socket-proxy:" $f && grep -qx "  host: socket-proxy" $f && grep -qx "  port: 2375" $f && ! grep -v "^\s*#" $f | grep -Eq "socket:|docker\.sock"' _
-check "the Docker integration is isolated: nothing in homepage/config or compose.yaml names socket-proxy outside comments" bash -c '! grep -rhv "^\s*#" homepage/compose.yaml homepage/config | grep -q "socket-proxy"' _
+check "Homepage is on the proxy network ONLY (no socket-proxy network, no Docker integration)" test "$(jq -c '[.networks | keys[]]' <<< "$hp")" = '["proxy"]' -a "$(jq -r '.networks.proxy.external' <<< "$alone")" = true
+check "no Docker integration: HOMEPAGE_VAR_DOCKER_SERVER is not set and config/docker.yaml defines no server" test "$(jq -r '.environment.HOMEPAGE_VAR_DOCKER_SERVER // "unset"' <<< "$hp")" = "unset" -a "$(grep -vc '^\s*#\|^---\|^\s*$' "$(cfgfile docker.yaml)" || true)" = 0
+check "the status add-on is gone (SEC-H2): no compose.docker-status.yaml, no docker-status directory, nothing names socket-proxy outside comments" bash -c '[ ! -e homepage/compose.docker-status.yaml ] && [ ! -e homepage/docker-status ] && ! grep -rhv "^\s*#" homepage/compose.yaml homepage/config | grep -q "socket-proxy"' _
 check "HOMEPAGE_ALLOWED_HOSTS is exactly dashboard.<domain> (no wildcard)" test "$(jq -r '.environment.HOMEPAGE_ALLOWED_HOSTS' <<< "$hp")" = "dashboard.$DOMAIN_T"
 check "HOMEPAGE_VAR_DOMAIN carries the domain; logs go to stdout only" test "$(jq -c '[.environment.HOMEPAGE_VAR_DOMAIN, .environment.LOG_TARGETS]' <<< "$hp")" = "[\"$DOMAIN_T\",\"stdout\"]"
 check "log rotation json-file 10m x 3" test "$(jq -c '[.logging.driver, .logging.options["max-size"], .logging.options["max-file"]]' <<< "$hp")" = '["json-file","10m","3"]'
 check "no secret in the environment (the optional token would be a file: HOMEPAGE_FILE_*)" bash -c '! jq -r ".environment | keys[]" <<< "$1" | grep -Eiq "token|password|secret|key"' _ "$hp"
 
-echo "--- static: Traefik labels"
-check "homepage router: dashboard.<domain>, websecure, lan-allowlist then authentik@file, no basic auth" test "$(lbl traefik.http.routers.homepage.rule)|$(lbl traefik.http.routers.homepage.entrypoints)|$(lbl traefik.http.routers.homepage.middlewares)" = 'Host(`dashboard.lab.example.test`)|websecure|lan-allowlist@file,authentik@file'
-check "homepage service port 3000 and the router points at it" test "$(lbl traefik.http.services.homepage.loadbalancer.server.port)|$(lbl traefik.http.routers.homepage.service)" = "3000|homepage"
-check "homepage-outpost router: app host + /outpost.goauthentik.io/ -> service authentik, priority 100, allowlist only" test "$(lbl traefik.http.routers.homepage-outpost.rule)|$(lbl traefik.http.routers.homepage-outpost.service)|$(lbl traefik.http.routers.homepage-outpost.priority)|$(lbl traefik.http.routers.homepage-outpost.middlewares)" = 'Host(`dashboard.lab.example.test`) && PathPrefix(`/outpost.goauthentik.io/`)|authentik|100|lan-allowlist@file'
-check "same shape as the Traefik dashboard's outpost router (consistent with M4)" test "$(jq -r '.services.traefik.labels["traefik.http.routers.dashboard-outpost.priority"]' <<< "$all")" = 100
-rules="$(jq -r '.services[] | .labels // {} | to_entries[] | select(.key | endswith(".rule")) | .value' <<< "$all")"
+echo "--- static: routers (traefik/dynamic/routers.yml)"
+check "homepage carries no Traefik labels (its routers are files, SEC-H2)" test "$(jq '.labels // {} | length' <<< "$hp")" = 0
+check "homepage router: dashboard.<domain> through the DOMAIN template, websecure, lan-allowlist then authentik, service homepage, no basic auth" bash -c 'b="$(router_block homepage)"; grep -q "Host(\`dashboard.{{ env \"DOMAIN\" }}\`)" <<< "$b" && grep -q "websecure" <<< "$b" && grep -q "service: homepage" <<< "$b" && [ "$(grep -A3 "middlewares:" <<< "$b" | grep -c -- "- ")" = 2 ] && grep -q -- "- lan-allowlist" <<< "$b" && grep -q -- "- authentik$" <<< "$b" && ! grep -qi basic <<< "$b"' _
+check "homepage service points at http://homepage:3000" bash -c 'awk "/^  services:/{f=1} f" "$1" | grep -q "url: http://homepage:3000"' _ $rt
+check "homepage-outpost router: app host + /outpost.goauthentik.io/ -> service authentik, priority 100, allowlist only" bash -c 'b="$(router_block homepage-outpost)"; grep -q "dashboard.{{ env" <<< "$b" && grep -q "PathPrefix" <<< "$b" && grep -q "/outpost.goauthentik.io/" <<< "$b" && grep -q "priority: 100" <<< "$b" && grep -q "service: authentik$" <<< "$b" && grep -q -- "- lan-allowlist$" <<< "$b" && ! grep -q -- "- authentik$" <<< "$b"' _
+check "same shape as the Traefik dashboard's outpost router (consistent with M4)" bash -c 'diff <(router_block dashboard-outpost | grep -Ev "rule:|^ *#|^$") <(router_block homepage-outpost | grep -Ev "rule:|^ *#|^$")' _
+rules="$(grep -h "rule:" traefik/dynamic/*.yml | sed 's/{{ env "DOMAIN" }}/lab.example.test/g')"
 check "no router for the apex or www anywhere in the lab" bash -c '! grep -Eq "Host\(.(www\.)?lab\.example\.test.\)" <<< "$1"' _ "$rules"
 check "every host in a Traefik rule of the lab is a subdomain of the lab domain (apex and www are not served)" bash -c '! grep -o "Host([^)]*)" <<< "$1" | grep -Ev "Host\(.[a-z0-9-]+\.lab\.example\.test.\)" | grep -q .' _ "$rules"
 check "Authentik blueprint already has the dashboard provider, application and group binding (no blueprint change needed)" bash -c 'grep -q "name: homelab-dashboard" "$1" && grep -q "slug: dashboard" "$1" && grep -q "external_host: !Format \[\"https://dashboard.%s\", !Env DOMAIN\]" "$1"' _ authentik/blueprints/homelab-apps.yaml
@@ -133,19 +132,16 @@ for f in settings services widgets bookmarks docker kubernetes proxmox; do
 done
 check "config/custom.css and custom.js exist" test -f "$(cfgfile custom.css)" -a -f "$(cfgfile custom.js)"
 check "config files use only {{HOMEPAGE_VAR_DOMAIN}}: no literal domain, IP or lab.env value (public vendor doc links only)" bash -c '! grep -rEn "([0-9]{1,3}\.){3}[0-9]{1,3}|example\.test|\.(com|net|org|io|dev|co\.za)/" homepage/config | grep -Ev "gethomepage\.dev|doc\.traefik\.io|docs\.goauthentik\.io|^[^:]+:[0-9]+:\s*#"'
-check "tiles: live Traefik and Authentik tiles take their (optional, empty by default) docker server from HOMEPAGE_VAR_DOCKER_SERVER and name the real containers" bash -c 'grep -q "container: traefik" "$1" && grep -q "container: authentik-server" "$1" && [ "$(grep -c "server: \"{{HOMEPAGE_VAR_DOCKER_SERVER}}\"" "$1")" = 2 ]' _ "$(cfgfile services.yaml)"
+check "tiles are plain links: no docker server or container key anywhere in services.yaml (SEC-H2)" bash -c '! grep -Eq "^\s*(server|container):" "$1" && ! grep -q "HOMEPAGE_VAR_DOCKER_SERVER" "$1"' _ "$(cfgfile services.yaml)"
 for h in traefik auth ha tools links netdata pihole portainer; do
   check "tile href https://$h.{{HOMEPAGE_VAR_DOMAIN}}/" grep -q "href: https://$h\.{{HOMEPAGE_VAR_DOMAIN}}/" "$(cfgfile services.yaml)"
 done
-check "the six planned services are in the Coming soon group, with no container (nothing to read yet)" bash -c 'awk "/^- Coming soon:/{f=1} f" "$1" | grep -c "href:" | grep -qx 6 && ! awk "/^- Coming soon:/{f=1} f" "$1" | grep -q "container:"' _ "$(cfgfile services.yaml)"
+check "the six planned services are in the Coming soon group" bash -c 'awk "/^- Coming soon:/{f=1} f" "$1" | grep -c "href:" | grep -qx 6' _ "$(cfgfile services.yaml)"
 check "settings: update check off, version hidden" bash -c 'grep -qx "disableUpdateCheck: true" "$1" && grep -qx "hideVersion: true" "$1"' _ "$(cfgfile settings.yaml)"
 check "widgets make no external request (no search, weather or API widget)" bash -c '! grep -Eq "^- (search|openmeteo|openweathermap|weatherapi|glances|unifi)" "$1"' _ "$(cfgfile widgets.yaml)"
 check "no HOMEPAGE_FILE_/key placeholder in committed config (the Authentik widget is opt-in: runbook)" bash -c '! grep -rq "HOMEPAGE_FILE_\|HOMEPAGE_VAR_.*KEY" homepage/config' _
 
-echo "--- static: socket proxy and service ids"
-sp="$(jq -c '.services["socket-proxy"]' <<< "$all")"
-check "socket proxy: containers read-only only (CONTAINERS=1, POST=0; none of EXEC/IMAGES/NETWORKS/VOLUMES/INFO/SERVICES/TASKS/SWARM/SECRETS is on)" test "$(jq -c '.environment | [.CONTAINERS, .POST, (.EXEC // "0"), (.IMAGES // "0"), (.NETWORKS // "0"), (.VOLUMES // "0"), (.INFO // "0"), (.SERVICES // "0"), (.TASKS // "0"), (.SWARM // "0"), (.SECRETS // "0"), (.BUILD // "0"), (.COMMIT // "0"), (.CONFIGS // "0"), (.PLUGINS // "0"), (.SYSTEM // "0"), (.AUTH // "0"), (.DISTRIBUTION // "0"), (.GRPC // "0"), (.SESSION // "0"), (.NODES // "0")]' <<< "$sp")" = '["1","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0"]'
-check "socket proxy is on the internal socket-proxy network only, docker.sock mounted read-only only there" test "$(jq -c '[.networks | keys[]]' <<< "$sp")" = '["socket-proxy"]' -a "$(jq -r '[.volumes[] | select(.source | test("docker.sock")) | .read_only] | @csv' <<< "$sp")" = "true" -a "$(jq -r '[.services | to_entries[] | select(.value.volumes[]?.source | tostring | test("docker.sock")) | .key] | join(",")' <<< "$all")" = "socket-proxy"
+echo "--- static: service ids"
 check "lab.env: HOMEPAGE_UID/GID 10003, not 0 and not 1000" test "$(lab_get HOMEPAGE_UID) $(lab_get HOMEPAGE_GID)" = "10003 10003"
 check "manifest: homepage/authentik-token 10003:10003 0400, optional (required = no)" test "$(manifest_owner homepage/authentik-token)" = "10003:10003 0400" -a "$(awk -F'\t' '$1 == "homepage/authentik-token" {print $5}' config/secrets-manifest.tsv)" = no
 check "bootstrap.sh validates the Homepage ids (numeric, not 0, not 1000) and preflight.sh checks them against host users" bash -c 'grep -q "HOMEPAGE_UID" scripts/bootstrap.sh && grep -q "HOMEPAGE_GID" scripts/bootstrap.sh && grep -q "HOMEPAGE_UID HOMEPAGE_GID" scripts/preflight.sh' _
@@ -161,28 +157,21 @@ if [ "$STATIC_ONLY" -eq 1 ]; then
 fi
 
 # --------------------------------------------------------------------------------------------------------------------
-# Containers: the REAL socket proxy, the REAL Homepage definition (image, user, tmpfs, limits, environment, labels, the
-# committed config mounted read-only), the REAL Traefik flags and middlewares, a stub for the Authentik outpost.
+# Containers: the REAL Homepage definition (image, user, tmpfs, limits, environment, the committed config mounted read-only),
+# the REAL Traefik flags, routers and middlewares, a stub for the Authentik outpost.
 # --------------------------------------------------------------------------------------------------------------------
 echo "--- containers"
 docker network create "$NET_PROXY" > /dev/null
-docker network create --internal "$NET_SOCK" > /dev/null
 
-# 1. Homepage, built from a rendered definition (default: proxy network only; the optional docker-status phase at the end
-#    recreates it from the merged definition).
+# 1. Homepage, built from the rendered definition (proxy network only; network alias homepage = the service url in routers.yml).
 start_homepage() { # start_homepage <service json>
-  local j="$1" l n src tgt _ro
-  local args=(--name hmtest-homepage --network "$NET_PROXY" --user "$(jq -r '.user' <<< "$j")" --read-only --cap-drop ALL
+  local j="$1" l src tgt _ro
+  local args=(--name hmtest-homepage --network "$NET_PROXY" --network-alias homepage --user "$(jq -r '.user' <<< "$j")" --read-only --cap-drop ALL
     --security-opt no-new-privileges:true --memory "$(jq -r '.mem_limit' <<< "$j")")
   while IFS= read -r l; do args+=(--tmpfs "$l"); done < <(jq -r '.tmpfs[]' <<< "$j" | tr -d '\r')
   while IFS= read -r l; do args+=(-e "$l"); done < <(jq -r '.environment | to_entries[] | "\(.key)=\(.value)"' <<< "$j" | tr -d '\r')
-  args+=(--label hmtest=1) # the test Traefik only looks at containers with this label (a dev machine may run other lab containers)
-  while IFS= read -r l; do args+=(--label "$l"); done < <(jq -r '.labels | to_entries[] | "\(.key)=\(.value)"' <<< "$j" | tr -d '\r')
   while IFS=$'\t' read -r src tgt _ro; do args+=(--mount "type=bind,source=$src,target=$tgt,readonly"); done < <(jq -r '.volumes[] | [.source, .target, .read_only] | @tsv' <<< "$j" | tr -d '\r')
   docker create "${args[@]}" "$IMAGE" > /dev/null
-  for n in $(jq -r '.networks | keys[]' <<< "$j" | tr -d '\r'); do
-    [ "$n" = proxy ] || docker network connect "$NET_SOCK" hmtest-homepage
-  done
   docker start hmtest-homepage > /dev/null
 }
 start_homepage "$hp"
@@ -199,18 +188,15 @@ http.createServer((q, s) => {
   if (q.url.startsWith("/outpost.goauthentik.io/")) { s.writeHead(200); return s.end("OUTPOST-STUB"); }
   s.writeHead(404); s.end();
 }).listen(9000);'
-# It carries the REAL Traefik labels of authentik-server (the "authentik" service on port 9000 that the outpost routers point at).
-akl=()
-while IFS= read -r l; do akl+=(--label "$l"); done < <(jq -r '.services["authentik-server"].labels | to_entries[] | "\(.key)=\(.value)"' <<< "$all" | tr -d '\r')
-docker run -d --name hmtest-auth --network "$NET_PROXY" --network-alias authentik-server --no-healthcheck --label hmtest=1 "${akl[@]}" --entrypoint node "$IMAGE" -e "$stub_js" > /dev/null
+docker run -d --name hmtest-auth --network "$NET_PROXY" --network-alias authentik-server --no-healthcheck --entrypoint node "$IMAGE" -e "$stub_js" > /dev/null
 
-# 4. Traefik: real flags (Docker endpoint and network swapped for the test; no ACME), real dynamic files (allowlist widened so the
-#    test client passes), a dummy certificate.
+# 4. Traefik: the real flags (no ACME), the real dynamic files (routers.yml with its DOMAIN template, middlewares.yml with the
+#    allowlist widened so the test client passes), a dummy certificate.
 timage="$(jq -r '.services.traefik.image' <<< "$all")"
 mapfile -t flags < <(jq -r '.services.traefik.command[]' <<< "$all" | tr -d '\r' |
-  grep -Ev '^--(certificatesresolvers\.|entrypoints\.websecure\.http\.tls\.(certResolver|domains))' |
-  sed "s#^--providers.docker.endpoint=.*#--providers.docker.endpoint=unix:///var/run/docker.sock#; s#^--providers.docker.network=.*#--providers.docker.network=$NET_PROXY#")
-flags+=('--providers.docker.constraints=Label(`hmtest`,`1`)')
+  grep -Ev '^--(certificatesresolvers\.|entrypoints\.websecure\.http\.tls\.(certResolver|domains))')
+# The resolver and domains flags are dropped (no ACME in the test); TLS itself must stay on for the websecure entrypoint.
+flags+=(--entrypoints.websecure.http.tls=true)
 mkdir -p "$stage/tr/dynamic"
 cp traefik/dynamic/*.yml "$stage/tr/dynamic/"
 sed -i 's#- 10.0.0.0/24#- 0.0.0.0/0#' "$stage/tr/dynamic/middlewares.yml"
@@ -222,7 +208,8 @@ tls:
     - certFile: /etc/traefik/dynamic/test-c.pem
       keyFile: /etc/traefik/dynamic/test-k.pem
 EOF
-cid="$(docker create --name hmtest-traefik --network "$NET_PROXY" -p 127.0.0.1::443 -v /var/run/docker.sock:/var/run/docker.sock:ro --tmpfs /letsencrypt "$timage" "${flags[@]}")"
+cid="$(docker create --name hmtest-traefik --network "$NET_PROXY" -p 127.0.0.1::443 -e DOMAIN="$DOMAIN_T" --tmpfs /letsencrypt "$timage" "${flags[@]}")"
+chmod 644 "$stage/tr/dynamic/test-k.pem"
 docker cp "$stage/tr/." "$cid:/etc/traefik"
 docker start "$cid" > /dev/null
 
@@ -263,13 +250,13 @@ check "HOMEPAGE_ALLOWED_HOSTS: another host is refused (400)" test "$(hp_code ev
 check "HOMEPAGE_ALLOWED_HOSTS: the apex and www hosts are refused too" test "$(hp_code "$DOMAIN_T" /api/services)$(hp_code "www.$DOMAIN_T" /api/services)" = 400400
 check "HOMEPAGE_ALLOWED_HOSTS: a host that merely contains the right name is refused" test "$(hp_code "dashboard.$DOMAIN_T.evil.example.test" /api/services)" = 400
 
-echo "--- default: no Docker integration"
-check "default: Homepage is attached to the proxy network only" test "$(docker inspect hmtest-homepage -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')" = "$NET_PROXY "
-check "default: Homepage cannot reach a socket proxy (no Docker data source)" bash -c '! docker exec hmtest-homepage wget -qO /dev/null -T 3 http://socket-proxy:2375/containers/json 2>/dev/null'
-check "default: tiles render without a status lookup (server is empty on the live tiles)" bash -c 'b="$(docker exec hmtest-homepage wget -qO- --header "Host: dashboard.'"$DOMAIN_T"'" http://127.0.0.1:3000/api/services)"; [ "$(grep -o "\"server\":\"\"" <<< "$b" | wc -l)" -ge 2 ]'
-check "default: Homepage logged no Docker error" bash -c '! docker logs hmtest-homepage 2>&1 | grep -Ei "docker|socket-proxy"'
+echo "--- no Docker integration"
+check "Homepage is attached to the proxy network only" test "$(docker inspect hmtest-homepage -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')" = "$NET_PROXY "
+check "no Docker integration: Homepage cannot reach a socket proxy (no such host, no Docker data source)" bash -c '! docker exec hmtest-homepage wget -qO /dev/null -T 3 http://socket-proxy:2375/containers/json 2>/dev/null'
+check "tiles render with no server or container reference (plain links)" bash -c 'b="$(docker exec hmtest-homepage wget -qO- --header "Host: dashboard.'"$DOMAIN_T"'" http://127.0.0.1:3000/api/services)"; ! grep -q "\"container\"" <<< "$b"'
+check "Homepage logged no Docker error" bash -c '! docker logs hmtest-homepage 2>&1 | grep -Ei "docker|socket-proxy"'
 
-echo "--- through Traefik (real flags, labels and middlewares; stub outpost)"
+echo "--- through Traefik (real flags, routers and middlewares; stub outpost)"
 tip="$(docker inspect "$cid" -f "{{(index .NetworkSettings.Networks \"$NET_PROXY\").IPAddress}}")"
 : "$tip"
 hostport="$(docker port "$cid" 443/tcp | head -n 1 | sed 's/.*://')"
@@ -313,37 +300,6 @@ check "an unknown host is NOT served by Homepage (404)" test "$(via "unknown.$DO
 docker stop hmtest-auth > /dev/null
 code="$(via "dashboard.$DOMAIN_T" / -H 'Cookie: stub_session=ok' | cut -d' ' -f1)"
 check "Authentik down: Homepage is NOT served (forward auth fails closed: got $code)" bash -c '[ "$1" != 200 ] && [ "$1" -ge 400 ]' _ "$code"
-
-echo "--- optional docker-status override: container status through the socket proxy"
-docker rm -f hmtest-homepage > /dev/null
-spimage="$(jq -r '.image' <<< "$sp")"
-spenv=()
-while IFS= read -r l; do spenv+=(-e "$l"); done < <(jq -r '.environment | to_entries[] | "\(.key)=\(.value)"' <<< "$sp" | tr -d '\r')
-docker run -d --name hmtest-sockproxy --network "$NET_SOCK" --network-alias socket-proxy "${spenv[@]}" \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro --security-opt no-new-privileges:true "$spimage" > /dev/null
-start_homepage "$hp2"
-healthy=0
-for _ in $(seq 1 30); do
-  [ "$(docker inspect -f '{{.State.Health.Status}}' hmtest-homepage 2> /dev/null)" = healthy ] && {
-    healthy=1
-    break
-  }
-  sleep 3
-done
-check "with the override Homepage is healthy, uid 10003, read-only" test "$healthy" = 1 -a "$(hx id -u)" = 10003 -a "$(docker inspect hmtest-homepage -f '{{.HostConfig.ReadonlyRootfs}}')" = true
-st="$(hp_get "dashboard.$DOMAIN_T" '/api/docker/statuses?server=socket-proxy' || true)"
-# (statuses lists only the tile containers that exist; the dev machine may or may not run them, so the answer itself is checked)
-check "Homepage reads container state through tcp://socket-proxy:2375: /api/docker/statuses answers with a statuses object, no error (got: ${st:0:140})" bash -c 'grep -q "^{\"statuses\":{" <<< "$1" && ! grep -qi "error" <<< "$1"' _ "$st"
-check "the proxy shows an existing container to Homepage's own client (GET /containers/<name>/json, 200)" test "$(docker exec hmtest-homepage wget -S -qO /dev/null http://socket-proxy:2375/containers/hmtest-homepage/json 2>&1 | awk '/^ *HTTP\//{c=$2} END{print c}')" = 200
-st="$(hp_get "dashboard.$DOMAIN_T" '/api/docker/statuses?server=no-such-server' || true)"
-check "an unknown docker server name yields an error, not container data (got: ${st:0:80})" bash -c '! grep -q "running" <<< "$1"' _ "$st"
-sph() { docker exec hmtest-homepage wget -S -qO /dev/null "$@" 2>&1 | awk '/^ *HTTP\//{c=$2} END{print c}'; }
-check "socket proxy allows GET /containers/json (200)" test "$(sph http://socket-proxy:2375/containers/json)" = 200
-check "socket proxy refuses a write: POST /containers/<id>/kill (403)" test "$(sph --post-data= http://socket-proxy:2375/containers/hmtest-homepage/kill)" = 403
-check "socket proxy refuses exec: POST /containers/<id>/exec (403)" test "$(sph --post-data='{}' http://socket-proxy:2375/containers/hmtest-homepage/exec)" = 403
-check "socket proxy refuses images, networks, volumes and info (403)" test "$(sph http://socket-proxy:2375/images/json)$(sph http://socket-proxy:2375/networks)$(sph http://socket-proxy:2375/volumes)$(sph http://socket-proxy:2375/info)" = 403403403403
-check "Homepage cannot reach the host Docker API except through the proxy (no unix socket, no other tcp endpoint)" bash -c '! docker exec hmtest-homepage sh -c "test -S /var/run/docker.sock"'
-
 
 if [ "$fails" -gt 0 ]; then
   printf '\n%s check(s) FAILED\n' "$fails"

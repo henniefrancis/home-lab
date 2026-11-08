@@ -1,8 +1,6 @@
 ---
-# Tiles (plan 6.6). The live tiles can show the container state, but that is OPTIONAL and OFF by default:
-# {{HOMEPAGE_VAR_DOCKER_SERVER}} is empty (no Docker integration, no socket-proxy network) unless
-# homepage/compose.docker-status.yaml is included (it sets it to the server name defined in homepage/docker-status/docker.yaml).
-# See that file for why it is off.
+# Tiles (plan 6.6). Plain links: there is no Docker integration, so no container-status dots (SEC-H2: reading the Docker API, even
+# through a filtering proxy, exposes container files and logs; docs/runbooks/m5-homepage.md explains the decision).
 # "Coming soon" tiles are placeholders for the planned hosts: no container, no status; the link works once
 # the service exists. {{HOMEPAGE_VAR_DOMAIN}} is the lab domain, injected from compose.
 #
@@ -12,14 +10,10 @@
         icon: traefik.png
         href: https://traefik.{{HOMEPAGE_VAR_DOMAIN}}/
         description: Reverse proxy and certificates
-        server: "{{HOMEPAGE_VAR_DOCKER_SERVER}}"
-        container: traefik
     - Authentik:
         icon: authentik.png
         href: https://auth.{{HOMEPAGE_VAR_DOMAIN}}/
         description: Single sign-on and MFA
-        server: "{{HOMEPAGE_VAR_DOCKER_SERVER}}"
-        container: authentik-server
 
 - Coming soon:
     - Home Assistant:

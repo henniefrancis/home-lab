@@ -9,16 +9,30 @@
 # Needs:  ${APPS_ROOT} and ${TS_HOSTNAME} from config/lab.env; docs/runbooks/m2-pi-setup.md
 services:
   tailscale:
-    image: tailscale/tailscale:v1.104.4
+    image: tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c
     container_name: tailscale
     restart: unless-stopped
     network_mode: host
     devices:
       - /dev/net/tun:/dev/net/tun
+    # SEC-M4: host network namespace, so every capability matters. Everything is dropped except NET_ADMIN (routes, nftables,
+    # tun). NET_RAW is NOT added: the Tailscale container docs list only NET_ADMIN (plus /dev/net/tun) for kernel mode, and
+    # nftables mode (TS_DEBUG_FIREWALL_MODE below) programs the firewall over netlink, which needs no raw socket. Verified on
+    # v1.104.4 with this exact profile: the node starts and reaches NeedsLogin. The one visible effect is that at start tailscaled
+    # tries to clear LEGACY iptables rules, which needs a raw socket: on a host whose iptables is the legacy backend it logs
+    # "linuxfw: clear iptables ... Permission denied" lines and carries on; on Raspberry Pi OS (iptables-nft) there is nothing to
+    # clear. Do not add NET_RAW to silence them. https://tailscale.com/docs/features/containers/docker
+    cap_drop:
+      - ALL
     cap_add:
       - NET_ADMIN
     security_opt:
       - no-new-privileges:true
+    # /run is needed because tailscaled first clears legacy iptables rules (it takes /run/xtables.lock) even in nftables mode.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
     environment:
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "false"

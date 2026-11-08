@@ -1,8 +1,13 @@
-# Runbook: M3 Traefik + ra-helper + socket proxy on the Let's Encrypt STAGING CA
+# Runbook: M3 Traefik + ra-helper on the Let's Encrypt STAGING CA
 
 Plan: `docs/plan/phase-1-traefik.md` rev 7 (sections 6.1-6.3, 6.5, milestone M3). Milestone M3 is done when the checks in "Verify" are green and the
 staging wildcard `*.${DOMAIN}` is in `/apps/traefik/letsencrypt/acme-staging.json`. Production certificates are M6; nothing here talks to the
 production CA.
+
+> **Security remediation (2026-11-08, SEC-H2 and friends).** The Docker socket proxy is gone: Traefik has no Docker provider and nothing mounts `docker.sock`. All routers,
+> services and middlewares are files in `traefik/dynamic/` (`routers.yml`, `middlewares.yml`, `tls.yml`), which `scripts/deploy.sh` copies (root-owned) into
+> `/apps/traefik/dynamic`, the directory Traefik watches. Traefik runs as uid 10004 (non-root), publishes IPv4 only, and every image is pinned by digest. The break-glass
+> router is a drop-in file that `scripts/breakglass.sh on` creates (see `m4-authentik.md`). Wherever this runbook still says `socket-proxy` or `@docker`, read the file provider.
 
 Everything below runs **on the Pi** in the Raspberry Pi Connect terminal, in the repo checkout, unless it says **[Laptop]**. Do not paste secret
 values anywhere. `DOMAIN` is read from the root-only `runtime.env`, so the real domain is never typed into this runbook or git.
@@ -11,23 +16,21 @@ values anywhere. `DOMAIN` is read from the root-only `runtime.env`, so the real 
 
 | Container | Image | Role |
 |-----------|-------|------|
-| `socket-proxy` | `tecnativa/docker-socket-proxy:v0.5.0` | read-only Docker API for Traefik (`CONTAINERS`, `EVENTS`, `VERSION`, `PING`; `POST=0`), internal network only |
-| `traefik` | `traefik:v3.7.17` | ports 80 and 443 only; wildcard cert via DNS-01 on the **staging** CA; dashboard at `traefik.${DOMAIN}` |
+| `traefik` | `traefik:v3.7.17@sha256:...` | non-root (10004), ports 80 and 443 only (IPv4); wildcard cert via DNS-01 on the **staging** CA; dashboard at `traefik.${DOMAIN}` |
 | `ra-helper` | `home-lab/ra-helper:1.8.6` (built on the Pi) | `aws_signing_helper serve` on `127.0.0.1:9911` inside Traefik's network namespace; the **only** container that gets `traefik.key` |
 | `tailscale` | `tailscale/tailscale:v1.104.4` | now part of the root project; F01 fix (below) |
-| `breakglass` | `traefik/whoami:v1.12.0` | optional profile that holds the `bg-traefik` router; **not started** in M3 |
 
 **Dashboard in M3 (decision per plan 6.2):** it is enabled and protected by the LAN/tailnet allowlist (`10.0.0.0/24`, `100.64.0.0/10`) **plus** HTTP
 basic auth with the break-glass htpasswd line from SSM (`/apps/secrets/traefik/breakglass-htpasswd`). It is not open to anyone outside the allowlist
-and not open without a password. M4 replaces the basic auth with Authentik (`authentik@file`); the `breakglass` profile then keeps a basic-auth path.
+and not open without a password. M4 replaces the basic auth with Authentik (`authentik@file`); the break-glass drop-in (`scripts/breakglass.sh on`) then keeps a basic-auth path.
 
 ## Deviations and findings (read once)
 
 - **HTTP redirect is 301 for GET/HEAD and 308 for every other method.** Traefik v3.7's entrypoint redirection has no status-code option; `permanent=true`
   gives 301 for GET and 308 for POST and friends (verified on the pinned image). Both are permanent and keep the method safe.
 - **Unmatched hosts get a bare 404** without the security headers (entrypoint middlewares apply to routers). Every real lab router has them.
-- **`default` TLS option is overridden** (same strict settings as `modern`): Traefik uses it for names that match no router (the apex, no SNI), which would
-  otherwise be served the self-generated default certificate. Tested: the apex and no-SNI handshakes are refused.
+- **One TLS option set, named `default`** (`traefik/dynamic/tls.yml`): Traefik uses it for every router and for names that match no router (the apex, no SNI), which would
+  otherwise be served the self-generated default certificate. Tested: the apex and no-SNI handshakes are refused. A second named set caused HTTP 421 in M5 (see Troubleshooting).
 - Extra flags beyond the plan: `--global.aliasHeadersStrategy=delete` (silences a v3.7 warning and blocks header-alias spoofing before M4 forward auth)
   and `--certificatesresolvers.le.acme.keyType=EC256` (the default RSA 4096 is slow on a Pi). There is no `ping` endpoint and no `:8080` entrypoint: the
   container healthcheck is a TCP connect to port 80 (`nc -z`), because with the access log covering internal routers every ping probe would be logged.
@@ -96,13 +99,12 @@ the build fails if the binary checksum is wrong) and starts everything. Wait abo
 sudo docker compose -p home-lab -f compose.yaml --env-file config/lab.env --env-file /apps/secrets/runtime.env ps --format 'table {{.Name}}\t{{.Status}}'
 ```
 
-Expected: `socket-proxy` Up, `traefik` Up (healthy), `ra-helper` Up (healthy), `tailscale` Up.
+Expected: `traefik` Up (healthy), `ra-helper` Up (healthy), `tailscale` Up.
 
 ### 2b. Applying the follow-up fixes to an already deployed M3 (F02-F05)
 
 ```bash
 cd /opt/home-lab
-git pull --ff-only
 sudo scripts/bootstrap.sh          # idempotent; installs /etc/sysctl.d/99-home-lab.conf (src_valid_mark=1) and applies it
 sudo scripts/deploy.sh --no-git    # recreates traefik (access log on stdout, new healthcheck) and tailscale (NoSNAT in compose)
 ```
@@ -118,14 +120,14 @@ DOMAIN="$(sudo sed -n 's/^DOMAIN=//p' /apps/secrets/runtime.env)"
 ### 3.1 ra-helper and credentials
 
 ```bash
-docker logs --tail 15 ra-helper                       # no "failed to generate initial credentials"
-docker logs traefik 2>&1 | grep -c 'no EC2 IMDS role' # 0
+sudo docker logs --tail 15 ra-helper                       # no "failed to generate initial credentials"
+sudo docker logs traefik 2>&1 | grep -c 'no EC2 IMDS role' # 0
 ```
 
 ### 3.2 The staging wildcard was issued (acceptance 1)
 
 ```bash
-docker logs traefik 2>&1 | grep -iE 'acme|certificate|dns01' | tail -12
+sudo docker logs traefik 2>&1 | grep -iE 'acme|certificate|dns01' | tail -12
 sudo jq -r '.le.Certificates[] | "main=\(.domain.main) sans=\(.domain.sans // [] | length)"' /apps/traefik/letsencrypt/acme-staging.json
 echo | openssl s_client -connect 127.0.0.1:443 -servername "traefik.$DOMAIN" 2>/dev/null | openssl x509 -noout -issuer -subject -ext subjectAltName -dates
 ```
@@ -155,23 +157,23 @@ The laptop needs name resolution until Pi-hole exists: be on Tailscale (the wild
 
 1. Open `https://traefik.<your domain>/`. Accept the staging-certificate warning (staging only).
 2. A basic-auth prompt appears. Wrong password: stays 401. Username and password are the ones you generated for `traefik/breakglass-htpasswd`
-   (the plaintext is in the password manager). Correct: the Traefik dashboard loads, with routers `dashboard@docker`.
+   (the plaintext is in the password manager). Correct: the Traefik dashboard loads, with the router `dashboard@file`.
 3. From a device outside the LAN and tailnet (phone on mobile data, Tailscale off): the page must not load (the name resolves to a tailnet address that is
    unreachable). There are no port-forwards.
 
 ### 3.5 Hardening and isolation (S2, S17)
 
 ```bash
-sudo ss -tlnp | grep -E ':(80|443|8080|2375|9911)\b'                        # docker-proxy on 80 and 443 only
-docker inspect traefik --format '{{json .Mounts}}' | grep -c docker.sock   # 0
-docker inspect socket-proxy --format '{{range .Mounts}}{{.Destination}} rw={{.RW}}{{"\n"}}{{end}}'   # /var/run/docker.sock rw=false
-docker exec traefik wget -qO- http://socket-proxy:2375/_ping; echo                                 # OK
-docker exec traefik wget -S -qO- --post-data= http://socket-proxy:2375/containers/create 2>&1 | head -2   # 403
-docker exec traefik wget -S -qO- http://socket-proxy:2375/images/json 2>&1 | head -2                      # 403
-docker inspect traefik ra-helper --format '{{.Name}}: {{range .Mounts}}{{.Source}} {{end}}' | grep -c 'host.key'   # 0
-docker inspect ra-helper --format '{{range .Mounts}}{{.Destination}} {{end}}'                      # /run/secrets/ra_acme_crt /run/secrets/ra_acme_key
-docker inspect traefik --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -ciE 'SECRET|TOKEN|ACCESS_KEY|PASSWORD'   # 0
-docker inspect traefik --format '{{range .Config.Cmd}}{{println .}}{{end}}' | grep -ciE 'insecure=true|api.debug|insecureSkipVerify|:8080'  # 0
+sudo ss -tlnp | grep -E ':(80|443|8080|2375|9911)\b'                        # docker-proxy on 0.0.0.0:80 and 0.0.0.0:443 only; NO [::]:80 or [::]:443 line (SEC-L2)
+sudo docker inspect traefik --format '{{json .Mounts}}' | grep -c docker.sock   # 0
+sudo docker ps -a --format '{{.Names}}' | grep -c socket-proxy                                   # 0 (SEC-H2: no proxy exists)
+sudo docker inspect $(sudo docker ps -q) --format '{{.Name}}: {{range .Mounts}}{{.Source}} {{end}}' | grep -c docker.sock   # 0: no container mounts the socket
+sudo docker inspect traefik --format '{{.Config.User}}'                                           # 10004:10004 (non-root)
+sudo docker network ls --format '{{.Name}}' | grep -c '^socket-proxy$'                            # 0 (remove an old one: sudo docker network rm socket-proxy)
+sudo docker inspect traefik ra-helper --format '{{.Name}}: {{range .Mounts}}{{.Source}} {{end}}' | grep -c 'host.key'   # 0
+sudo docker inspect ra-helper --format '{{range .Mounts}}{{.Destination}} {{end}}'                      # /run/secrets/ra_acme_crt /run/secrets/ra_acme_key
+sudo docker inspect traefik --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -ciE 'SECRET|TOKEN|ACCESS_KEY|PASSWORD'   # 0
+sudo docker inspect traefik --format '{{range .Config.Cmd}}{{println .}}{{end}}' | grep -ciE 'insecure=true|api.debug|insecureSkipVerify|:8080'  # 0
 ```
 
 On the Pi the `ss` line may also list Tailscale or other host listeners on unrelated ports; what matters is that nothing from Docker listens on 8080 or 2375
@@ -190,23 +192,40 @@ Expected: the peer (right-hand) address is `100.x.y.z` for tailnet clients and `
 not active: `docker exec tailscale tailscale --socket=/tmp/tailscaled.sock set --snat-subnet-routes=false`.
 
 ```bash
-docker logs --tail 200 traefik 2>&1 | jq -r 'select(.DownstreamStatus) | [.ClientHost,.RouterName,.DownstreamStatus] | @tsv' | tail -5   # client, router, status
+sudo docker logs --tail 200 traefik 2>&1 | jq -r 'select(.DownstreamStatus) | [.ClientHost,.RouterName,.DownstreamStatus] | @tsv' | tail -5   # client, router, status
 sudo rm -rf /apps/traefik/logs                                                                       # the unused, empty log directory of the first deploy
 ```
 
 ### 3.7 Tailscale F01 and F05
 
 ```bash
-docker logs tailscale 2>&1 | grep -ciE "modprobe|can't change directory"           # 0 for lines after this restart
-docker logs tailscale 2>&1 | grep -iE 'router:' | tail -3                          # shows nftables
-docker exec tailscale tailscale --socket=/tmp/tailscaled.sock status | head -3     # node still joined, same tailnet IP
-docker exec tailscale tailscale --socket=/tmp/tailscaled.sock debug prefs | grep NoSNAT   # true
+sudo docker logs tailscale 2>&1 | grep -ciE "modprobe|can't change directory"           # 0 for lines after this restart
+sudo docker logs tailscale 2>&1 | grep -iE 'router:' | tail -3                          # shows nftables
+sudo docker exec tailscale tailscale --socket=/tmp/tailscaled.sock status | head -3     # node still joined, same tailnet IP
+sudo docker exec tailscale tailscale --socket=/tmp/tailscaled.sock debug prefs | grep NoSNAT   # true
 sysctl net.ipv4.conf.all.src_valid_mark                                             # = 1 (set by bootstrap.sh)
-docker logs --since 2m tailscale 2>&1 | grep -c src_valid_mark                      # 0 after the restart; an old line is harmless once the sysctl is 1
+sudo docker logs --since 2m tailscale 2>&1 | grep -c src_valid_mark                      # 0 after the restart; an old line is harmless once the sysctl is 1
 ```
 
 If the old error text is still in `docker logs` it is from before the recreate: judge only by lines after the container's new start time
 (`docker inspect tailscale --format '{{.State.StartedAt}}'`).
+
+### 3.5b Published ports: IPv4 only, and an optional firewall rule (SEC-L2)
+
+Docker publishes ports with its own iptables chains, which bypass host firewalls such as ufw. What the repo does: `traefik/compose.yaml` binds `0.0.0.0:80` and `0.0.0.0:443`
+explicitly (a bare `80:80` would also make `docker-proxy` listen on `[::]`, which a global IPv6 address would expose), the allowlist denies every peer outside `10.0.0.0/24` and
+`100.64.0.0/10`, and `scripts/preflight.sh --stage full` FAILs if a `[::]:80` or `[::]:443` listener exists. Check by hand: `sudo ss -tlnp | grep -E ':(80|443) '` (expect only `0.0.0.0`).
+
+Optional extra layer, NOT applied by any script because it cannot be tested without the Pi and a wrong rule would cut the Pi off from the lab: drop new connections to 80 and 443 from
+anywhere but the LAN and the tailnet in Docker's `DOCKER-USER` chain (the original destination port is matched with conntrack because the packet is already DNATed):
+
+```bash
+# LAN_CIDR and TAILNET_CIDR as in config/lab.env; run as root; ADD, test from the laptop and the tailnet, then persist (iptables-persistent) only if it works
+sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 ! -s 10.0.0.0/24 ! -s 100.64.0.0/10 -j DROP
+sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 80  ! -s 10.0.0.0/24 ! -s 100.64.0.0/10 -j DROP
+```
+
+Remove a rule with the same command and `-D` instead of `-I`. Leave it out unless the router or the ISP ever hands the Pi a global IPv6 address.
 
 ## 4. Roll back
 
@@ -214,7 +233,7 @@ Stop the M3 stack only (secrets, networks and Tailscale stay):
 
 ```bash
 cd /opt/home-lab
-sudo docker compose -p home-lab -f compose.yaml --env-file config/lab.env --env-file /apps/secrets/runtime.env rm -sf traefik ra-helper socket-proxy breakglass
+sudo docker compose -p home-lab -f compose.yaml --env-file config/lab.env --env-file /apps/secrets/runtime.env rm -sf traefik ra-helper
 ```
 
 That returns the Pi to the M2 state (Tailscale running, no ingress). The F01 change is independent; to undo it, remove the `TS_DEBUG_FIREWALL_MODE` line and run
@@ -236,15 +255,18 @@ sudo scripts/deploy.sh --only traefik
 | ra-helper log: cannot read the private key | `traefik.key` is not `10001:10001 0400` (`sudo scripts/preflight.sh --stage bootstrap`) |
 | Traefik log: `no EC2 IMDS role found ... 127.0.0.1:9911` | ra-helper is down or lost Traefik's network namespace after a Traefik recreate: `sudo docker compose -p home-lab -f compose.yaml --env-file config/lab.env --env-file /apps/secrets/runtime.env up -d --force-recreate traefik ra-helper` |
 | Log: `AccessDenied` on `ChangeResourceRecordSets` | the ACME role only changes `_acme-challenge.<domain>` TXT: check `AWS_HOSTED_ZONE_ID` (= `ROUTE53_ZONE_ID`) is the zone of `DOMAIN` |
-| DNS-01 timeout or `NXDOMAIN` | Route 53 propagation is slow; wait and restart Traefik (`docker restart traefik`, the helper keeps running); resolvers are 1.1.1.1 and 8.8.8.8 and must be reachable from the Pi |
+| DNS-01 timeout or `NXDOMAIN` | Route 53 propagation is slow; wait and restart Traefik (`sudo docker restart traefik`, the helper keeps running); resolvers are 1.1.1.1 and 8.8.8.8 and must be reachable from the Pi |
 | Traefik exits at start | an unknown flag or a bad dynamic file: `docker logs traefik`; `bash scripts/test-traefik-config.sh` reproduces it off the Pi |
 | 403 over Tailscale, access log shows `172.30.0.1` | Tailscale is SNATing: see F02 (`tailscale set --snat-subnet-routes=false`); verify with the `nsenter ... ss` step in 3.6 |
 | 403 from the laptop | the laptop is outside `10.0.0.0/24` and `100.64.0.0/10` (Wi-Fi guest network, VPN) |
 | Port 80 or 443 already in use | another service on the Pi; `sudo ss -tlnp` |
+| **421 Misdirected Request** on one host right after you added a service (seen on `dashboard.<domain>` after `auth.<domain>`) | The browser is reusing an old HTTP/2 connection that it opened to another host of the same wildcard certificate before the new router existed. Fresh connections are fine (`curl` with the right SNI and Host returns the normal 302/403). Close the browser completely, or flush its socket pools (`chrome://net-internals/#sockets`, "Flush socket pools"), and reload. There is now ONE TLS option set, so differing option names can no longer cause it; if it comes back after a TLS change, suspect a second option set. |
+| Break-glass login still reachable after a reboot | It must not be: `home-lab-breakglass-reset.service` removes it at boot. Check `sudo scripts/breakglass.sh status` and `systemctl status home-lab-breakglass-reset`. |
 
 ## 6. Off-Pi checks (already run before this milestone was handed over)
 
-`docker compose config` with dummy values for the root project; `scripts/test-traefik-config.sh` (runs the pinned Traefik image with the exact flags and the dynamic files:
-healthcheck, no `:8080`, JSON access log on stdout, 308/301, TLS 1.1 and apex refused, allowlist 403 with headers, socket and key mount rules); the arm64 `ra-helper` image build with its
+`docker compose config` with dummy values for the root project; `scripts/test-traefik-config.sh` (runs the pinned Traefik image, as uid 10004, with the exact flags and the dynamic files:
+healthcheck, no `:8080`, JSON access log on stdout, 308/301, TLS 1.1 and apex refused, allowlist 403 with headers, every lab host answers from the file provider,
+no 421 across hosts, the break-glass drop-in switching a router on and off, no docker socket, key mount rules); the arm64 `ra-helper` image build with its
 checksum; a Pebble (local test CA) run that proved the ACME account registers without an email and that lego's Route 53 provider takes credentials from
 `127.0.0.1:9911` and the pinned zone ID. Only the real Roles Anywhere to Route 53 to staging CA path needs the Pi.

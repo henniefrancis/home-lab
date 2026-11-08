@@ -3,7 +3,7 @@
 #
 # Start (Pi):  sudo scripts/deploy.sh --only homepage      (or the whole lab: sudo scripts/deploy.sh)
 # Needs:       config/lab.env + ${APPS_ROOT}/secrets/runtime.env (DOMAIN), the networks from scripts/bootstrap.sh (proxy),
-#              Traefik and Authentik running (the dashboard provider and application are in
+#              Traefik (its routers for this host are in traefik/dynamic/routers.yml) and Authentik running (the dashboard provider and application are in
 #              authentik/blueprints/homelab-apps.yaml).
 # Runbook:     docs/runbooks/m5-homepage.md        Self-test: scripts/test-homepage-config.sh
 #
@@ -14,14 +14,15 @@
 # Hardening: read-only root file system (the only writable paths are two tmpfs, owned by the service uid), config mounted
 # read-only from the repo checkout (all nine files the app looks for are committed, so it never tries to copy its skeleton),
 # logs to stdout only (LOG_TARGETS=stdout: nothing is written into the checkout), cap_drop ALL, no-new-privileges, memory
-# limit, no published port. There is NO Docker integration by default (no
-# socket-proxy network, no docker.sock): the optional container-status dots are in compose.docker-status.yaml, which explains
-# why they are off (socket proxy CVE-2026-78122). docker.sock is never mounted here.
+# limit, no published port. There is NO Docker integration at all (no docker.sock, no socket proxy, no status dots): the tiles are
+# links. The optional add-on that used a socket proxy was removed (SEC-H2, CVE-2026-78122: a Docker API reader exposes container
+# files and logs). docker.sock is never mounted here. Routing and Authentik forward auth for dashboard.<domain> are in
+# traefik/dynamic/routers.yml.
 #
 # Homepage has no telemetry; its update check is switched off in config/settings.yaml (disableUpdateCheck, hideVersion).
 services:
   homepage:
-    image: ghcr.io/gethomepage/homepage:v2.7.0
+    image: ghcr.io/gethomepage/homepage:v2.7.0@sha256:19c5c09184458a41b7b5915e71463a39f36cd33540f41bdbed008791b8182d5f
     container_name: homepage
     restart: unless-stopped
     user: "${HOMEPAGE_UID:?set HOMEPAGE_UID in config/lab.env}:${HOMEPAGE_GID:?set HOMEPAGE_GID in config/lab.env}"
@@ -42,31 +43,12 @@ services:
       HOMEPAGE_ALLOWED_HOSTS: dashboard.${DOMAIN:?set DOMAIN (runtime.env)}
       # Used as {{HOMEPAGE_VAR_DOMAIN}} in config/*.yaml, so no domain is committed.
       HOMEPAGE_VAR_DOMAIN: ${DOMAIN}
-      # Empty = tiles show no container status. compose.docker-status.yaml (optional) sets it to the socket-proxy server name.
-      HOMEPAGE_VAR_DOCKER_SERVER: ""
       LOG_TARGETS: stdout
       LOG_LEVEL: info
       TZ: ${TZ:-UTC}
       PORT: "3000"
     volumes:
       - ./config:/app/config:ro
-    labels:
-      traefik.enable: "true"
-      # Same pattern as the Traefik dashboard (traefik/compose.yaml): LAN/tailnet allowlist, then Authentik forward auth
-      # (SSO + enforced MFA, group homelab-admins). Security headers come from the websecure entrypoint. Only this host is
-      # routed: the apex and www are NOT served by this lab (the 404 comes from Traefik's catch-all).
-      traefik.http.routers.homepage.rule: Host(`dashboard.${DOMAIN}`)
-      traefik.http.routers.homepage.entrypoints: websecure
-      traefik.http.routers.homepage.middlewares: lan-allowlist@file,authentik@file
-      traefik.http.routers.homepage.service: homepage
-      traefik.http.services.homepage.loadbalancer.server.port: "3000"
-      # The outpost's own endpoints on THIS host go straight to Authentik (no forward auth: it would loop), behind the
-      # allowlist. The callback sets the session cookie on dashboard.${DOMAIN} only (host-only, per-app login).
-      traefik.http.routers.homepage-outpost.rule: Host(`dashboard.${DOMAIN}`) && PathPrefix(`/outpost.goauthentik.io/`)
-      traefik.http.routers.homepage-outpost.entrypoints: websecure
-      traefik.http.routers.homepage-outpost.priority: "100"
-      traefik.http.routers.homepage-outpost.service: authentik
-      traefik.http.routers.homepage-outpost.middlewares: lan-allowlist@file
     logging:
       driver: json-file
       options:

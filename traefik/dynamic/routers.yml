@@ -1,0 +1,73 @@
+---
+# Traefik dynamic configuration: every router and service of the lab (SEC-H2: this replaces the Docker provider and its
+# socket proxy; nothing is discovered from containers any more). Watched by the file provider, no restart needed for edits.
+#
+# {{ env "DOMAIN" }} is a Go template expression that Traefik fills from the DOMAIN environment variable of the Traefik
+# container (set from runtime.env in traefik/compose.yaml), so the real domain is never committed. The templates are evaluated
+# at load time; a change of DOMAIN needs a Traefik restart.
+#
+# Pattern for a protected app host (see middlewares.yml for the two middlewares):
+#   <app>          Host(`<sub>.DOMAIN`)                                         lan-allowlist, authentik  -> the app service
+#   <app>-outpost  Host(`<sub>.DOMAIN`) && PathPrefix(`/outpost.goauthentik.io/`), priority 100, lan-allowlist only
+#                  -> service `authentik`: the login redirect finishes ON the app host, so the session cookie is host-only.
+# The apex and unknown hosts match no router and get Traefik's bare 404; nothing is served for them.
+http:
+  routers:
+    # Traefik dashboard (M4): LAN/tailnet allowlist, then Authentik forward auth (SSO, enforced MFA, group homelab-admins).
+    # The Basic-auth break-glass router is NOT here: it exists only while scripts/breakglass.sh is on (traefik/breakglass/).
+    dashboard:
+      rule: Host(`traefik.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: api@internal
+      middlewares:
+        - lan-allowlist
+        - authentik
+    dashboard-outpost:
+      rule: Host(`traefik.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # Authentik login UI and OAuth endpoints. Reachable from the LAN and the tailnet only, like every lab host. No forward
+    # auth on this host (it would loop).
+    authentik:
+      rule: Host(`auth.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # Homepage dashboard (M5), same pattern as the Traefik dashboard.
+    homepage:
+      rule: Host(`dashboard.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: homepage
+      middlewares:
+        - lan-allowlist
+        - authentik
+    homepage-outpost:
+      rule: Host(`dashboard.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+  services:
+    # authentik-server on the dedicated authentik-auth network (shared with Traefik only). Also the target of the forward-auth
+    # middleware in middlewares.yml.
+    authentik:
+      loadBalancer:
+        servers:
+          - url: http://authentik-server:9000
+    homepage:
+      loadBalancer:
+        servers:
+          - url: http://homepage:3000

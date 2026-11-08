@@ -1,0 +1,29 @@
+---
+# Break-glass access to the Traefik dashboard WITHOUT Authentik (Basic auth only), for when Authentik is down or locked.
+# NOT loaded by default: scripts/breakglass.sh on copies this file into the tmpfs drop-in directory that Traefik watches
+# (/run/home-lab/breakglass, mounted at /etc/traefik/dynamic/breakglass). It disappears again after `breakglass.sh off`, after
+# the auto-off timer (default 60 minutes) and after every reboot, so a forgotten break-glass can never become a standing MFA
+# bypass (SEC-L3). Reaching it still needs the LAN or tailnet (lan-allowlist), the Basic-auth secret from SSM, and it is
+# rate limited (no lockout exists in Basic auth). The host name comes from the DOMAIN environment variable of the Traefik
+# container (Go template), so no domain is committed.
+http:
+  middlewares:
+    breakglass-auth:
+      basicAuth:
+        usersFile: /run/secrets/breakglass_users
+        removeHeader: true
+    breakglass-ratelimit:
+      rateLimit:
+        average: 6
+        period: 1m
+        burst: 6
+  routers:
+    bg-traefik:
+      rule: Host(`bg-traefik.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: api@internal
+      middlewares:
+        - lan-allowlist@file
+        - breakglass-ratelimit
+        - breakglass-auth

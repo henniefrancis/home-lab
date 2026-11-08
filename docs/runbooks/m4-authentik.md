@@ -10,12 +10,14 @@ anywhere. `DOMAIN` is read from the root-only `runtime.env`, so the real domain 
 
 | Container | Image | Role |
 |-----------|-------|------|
-| `authentik-postgresql` | `postgres:16.15-alpine3.24` | database, internal network only, runs as uid 70, 512M |
-| `authentik-server` | `ghcr.io/goauthentik/server:2026.8.5` | login UI, OAuth endpoints and the **embedded outpost** (forward auth), `proxy` + internal networks, uid 10002, 1G |
+| `authentik-postgresql` | `postgres:16.15-alpine3.24@sha256:...` | database, internal network only, runs as uid 70, 512M |
+| `authentik-server` | `ghcr.io/goauthentik/server:2026.8.5@sha256:...` | login UI, OAuth endpoints and the **embedded outpost** (forward auth), on `authentik-auth` (shared with Traefik only) + internal networks, uid 10002, 1G |
 | `authentik-worker` | same image | background tasks and blueprint application, internal network only, **no docker.sock, not root**, uid 10002, 768M |
 
 No Redis (the 2026.8 compose has none). No published ports: everything is reached through Traefik. Traefik now protects `traefik.${DOMAIN}` with
-`lan-allowlist@file,authentik@file`; the `bg-traefik` break-glass router (basic auth, no Authentik) is unchanged and stays in the `breakglass` profile.
+`lan-allowlist,authentik` (file provider, `traefik/dynamic/routers.yml`). The `bg-traefik` break-glass router (basic auth, no Authentik) exists only while `sudo scripts/breakglass.sh on` is active (see section 5, step 5, and the hardening notes below).
+
+**Network trust (SEC-L8).** `authentik-server` is not on the `proxy` network any more: it sits on `authentik-auth`, which only Traefik shares, and `AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS` is that subnet. Homepage and every other container on `proxy` cannot reach `authentik-server:9000`, so none of them can forge `X-Forwarded-*` headers or call the outpost directly.
 
 Configuration is code: `authentik/blueprints/homelab-apps.yaml` creates the group `homelab-admins`, two forward-auth providers and applications
 (`traefik`, `dashboard`), binds both applications to that group (fail-closed), enforces MFA, and attaches both providers to the embedded outpost.
@@ -65,13 +67,13 @@ cd /opt/home-lab
 sudo scripts/deploy.sh
 ```
 
-`deploy.sh` pulls, fetches secrets (the three Authentik files appear), pulls the images (about 600 MB for Authentik; arm64), builds `ra-helper` from cache and
-starts everything. Traefik is recreated once (its dashboard labels changed) and `ra-helper` with it; expect a few seconds without TLS. Watch the first start:
+`deploy.sh` fetches and signature-verifies the commit, fetches secrets (the three Authentik files appear), pulls the images (about 600 MB for Authentik; arm64), builds `ra-helper` from cache and
+starts everything. Traefik is recreated once (non-root, no Docker provider, new routers file) and `ra-helper` with it; expect a few seconds without TLS. Watch the first start:
 
 ```bash
 dc() { sudo docker compose -p home-lab -f /opt/home-lab/compose.yaml --env-file /opt/home-lab/config/lab.env --env-file /apps/secrets/runtime.env "$@"; }
 dc ps --format 'table {{.Name}}\t{{.Status}}'
-docker logs --tail 3 authentik-server 2>&1 | cut -c1-160      # "Applying authentik_...": migrations, then the server starts
+sudo docker logs --tail 3 authentik-server 2>&1 | cut -c1-160      # "Applying authentik_...": migrations, then the server starts
 ```
 
 Wait until `authentik-postgresql`, `authentik-server` and `authentik-worker` all say `(healthy)` (give it up to 15 minutes; `dc ps` again every minute).
@@ -91,9 +93,9 @@ sudo find /apps/secrets /apps/authentik -maxdepth 2 \( -uid 1000 -o -gid 1000 \)
 LOGIN_USER="$(id -un)"; sudo -u "$LOGIN_USER" cat /apps/secrets/authentik/secret-key 2>&1 | head -1   # Permission denied
 
 # 3.3 hardening: no published ports, no docker.sock, trust only the proxy network, no cookie domain
-docker inspect -f '{{.Name}} ports={{json .NetworkSettings.Ports}}' authentik-server authentik-worker authentik-postgresql        # all {}
-docker inspect -f '{{.Name}} {{range .Mounts}}{{.Source}} {{end}}' authentik-server authentik-worker authentik-postgresql | grep -c docker.sock   # 0
-docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' authentik-server | grep -E 'TRUSTED_PROXY|COOKIE_DOMAIN|SECRET|PASSWORD'
+sudo docker inspect -f '{{.Name}} ports={{json .NetworkSettings.Ports}}' authentik-server authentik-worker authentik-postgresql        # all {}
+sudo docker inspect -f '{{.Name}} {{range .Mounts}}{{.Source}} {{end}}' authentik-server authentik-worker authentik-postgresql | grep -c docker.sock   # 0
+sudo docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' authentik-server | grep -E 'TRUSTED_PROXY|COOKIE_DOMAIN|SECRET|PASSWORD'
 ```
 
 Expected from the last line: `AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS=172.30.0.0/24` (the `proxy` network only), `AUTHENTIK_SECRET_KEY=file:///run/secrets/authentik_secret_key`,
@@ -136,7 +138,7 @@ printf '%s\n' 'from authentik.stages.authenticator_validate.models import Authen
   'print("MFA", list(S.objects.filter(name="default-authentication-mfa-validation").values_list("not_configured_action", "device_classes")))' \
   | docker exec -i authentik-worker ak shell 2>/dev/null | grep '^MFA'
 # 4. What the worker is doing right now (it logs every blueprint it applies).
-docker logs --since 5m authentik-worker 2>&1 | grep -i blueprint | cut -c1-200 | tail -8
+sudo docker logs --since 5m authentik-worker 2>&1 | grep -i blueprint | cut -c1-200 | tail -8
 ```
 
 Done when: check 1 shows every instance `successful` (ours included), check 2 lists `homelab-dashboard` and `homelab-traefik` (mode `forward_single`), the apps `dashboard` and
@@ -157,9 +159,9 @@ and several paths can be given in order (`--dry-run` only validates). It writes 
 checks 2 and 3, not by check 1.
 
 ```bash
-docker exec authentik-worker ak apply_blueprint default/flow-default-authentication-flow.yaml
-docker exec authentik-worker ak apply_blueprint system/providers-oauth2.yaml
-docker exec authentik-worker ak apply_blueprint custom/homelab-apps.yaml
+sudo docker exec authentik-worker ak apply_blueprint default/flow-default-authentication-flow.yaml
+sudo docker exec authentik-worker ak apply_blueprint system/providers-oauth2.yaml
+sudo docker exec authentik-worker ak apply_blueprint custom/homelab-apps.yaml
 ```
 
 Then repeat checks 1 to 3. If one fails with a message about a missing flow or stage, a prerequisite from the list is not applied yet: apply that one first. `apply_blueprint` runs in the
@@ -168,7 +170,7 @@ foreground and may itself take several minutes on the Pi. A real `error` (not `u
 ```bash
 # 3.5 forward auth answers (from inside the proxy network, bypassing the allowlist, which a loopback curl on the Pi would fail with 403)
 DOMAIN="$(sudo sed -n 's/^DOMAIN=//p' /apps/secrets/runtime.env)"
-docker exec traefik wget -S -q -O /dev/null --header "X-Forwarded-Host: traefik.$DOMAIN" --header 'X-Forwarded-Proto: https' \
+sudo docker exec traefik wget -S -q -O /dev/null --header "X-Forwarded-Host: traefik.$DOMAIN" --header 'X-Forwarded-Proto: https' \
   --header 'X-Forwarded-Uri: /' http://authentik-server:9000/outpost.goauthentik.io/auth/traefik 2>&1 | grep -iE 'HTTP/|location' | cut -c1-120
 ```
 
@@ -220,20 +222,20 @@ curl -ski https://traefik.<domain>/ | tr -d '\r' | grep -iE '^HTTP|^location|^se
 5. **Fail closed + break-glass** (do this once, it proves the rollback path):
 
 ```bash
-docker stop authentik-server
+sudo docker stop authentik-server
 ```
 
-   From the laptop, with Authentik stopped, `https://traefik.<domain>/` must **not** show the dashboard (an error page, never the dashboard: forward auth fails closed). Then start the break-glass router:
+   From the laptop, with Authentik stopped, `https://traefik.<domain>/` must **not** show the dashboard (an error page, never the dashboard: forward auth fails closed). Then switch the break-glass router on (it switches itself off after 60 minutes, and a reboot removes it):
 
 ```bash
-dc --profile breakglass up -d breakglass
+sudo scripts/breakglass.sh on 30
 ```
 
    Open `https://bg-traefik.<domain>/`: the browser asks for the break-glass user and password (from the password manager) and shows the dashboard while Authentik is down. Then:
 
 ```bash
-dc --profile breakglass rm -sf breakglass            # stop and remove the break-glass holder again
-docker start authentik-server   # back up; https://traefik.<domain>/ redirects to the login again
+sudo scripts/breakglass.sh off                       # remove the break-glass router again (auto-off and reboot do the same)
+sudo docker start authentik-server                   # back up; https://traefik.<domain>/ redirects to the login again
 ```
 
 6. **Group binding (fail-closed)**, optional on the Pi (proved in the local self-test): in the admin UI create a user without adding them to `homelab-admins`; that user can log in to
@@ -247,7 +249,7 @@ docker start authentik-server   # back up; https://traefik.<domain>/ redirects t
 |-----------|------------|
 | Lost phone, another MFA device or key still works | Log in with it, User settings, MFA Devices: delete the lost one, add a new one. |
 | Lost every MFA device, or the `akadmin` password | Create a one-time recovery link (valid for the minutes you pass, here 15) from the Pi, open it, then fix the account: `docker exec authentik-server ak create_recovery_key 15 akadmin` prints `/recovery/use-token/<token>/`; open `https://auth.<domain>` plus that path **within 15 minutes**. You are logged in as `akadmin`: immediately enrol a new MFA device and, if needed, set a new password (User settings). The link is single use and is not stored anywhere else. |
-| Authentik is down or broken, you need the dashboard | Break-glass: `dc --profile breakglass up -d breakglass`, browse `https://bg-traefik.<domain>/` (basic auth). Stop it again with `dc --profile breakglass rm -sf breakglass`. |
+| Authentik is down or broken, you need the dashboard | Break-glass: `sudo scripts/breakglass.sh on 30`, browse `https://bg-traefik.<domain>/` (basic auth, rate limited, LAN or tailnet only). Stop it again with `sudo scripts/breakglass.sh off`. `sudo scripts/breakglass.sh status` and the preflight WARN tell you whether it is on; it never survives a reboot. |
 | The Pi is unreachable on the network | Raspberry Pi Connect terminal (works without SSH), then the rows above. |
 | Database or data directory lost (new SD card) | The blueprint rebuilds groups, applications and providers; **users and MFA devices are gone** until backups exist (a later phase). `scripts/bootstrap.sh`, set `authentik/bootstrap-password`, `sudo scripts/deploy.sh`, log in as `akadmin`, enrol MFA again. |
 
@@ -283,3 +285,19 @@ or LAN client in front of forward auth; the memory limits under real use (`docke
 | Secret rotated in SSM but Authentik still uses the old value | Containers keep the secret file they were created with: `dc up -d --force-recreate authentik-server authentik-worker` after `deploy.sh`. |
 | Providers, apps or the outpost binding are missing 5 to 25 minutes after the first deploy | The worker is still applying blueprints (slow on Pi/SD): section 3.4a. Do not restart the worker; use the progress checks and, after ~30 minutes, the manual `ak apply_blueprint` fallback. |
 | Blueprint shows `error` | Admin interface, Customization, Blueprints, open the instance for the message; `docker logs authentik-worker 2>&1 | grep -i blueprint`. |
+
+## 8. Account hygiene after the first login (SEC-L8, owner steps)
+
+Live Authentik state cannot be audited offline, so these are checks the owner does once and after every change to flows:
+
+1. **Named admin, then retire `akadmin`.** Create your own user, add it to `homelab-admins` and to the Authentik `authentik Admins` group, enrol MFA for it, log in as that user and
+   confirm the dashboards work. Then deactivate `akadmin` (Directory, Users, `akadmin`, Deactivate) so the well-known name is not a standing superuser target. Keep the recovery path
+   (`sudo docker exec authentik-server ak create_recovery_key 15 <your user>`) in mind: it works for any user.
+2. **Set `authentik/bootstrap-password` back to UNSET** (`scripts/set-secret.sh --unset authentik/bootstrap-password`), then `sudo scripts/deploy.sh` so the worker no longer exports it.
+3. **No second path past MFA.** The blueprint patches the stock authentication flow, so the stock flow is the only one. Check in Admin, Flows and Stages, Flows: the brand's
+   authentication flow is `default-authentication-flow`; **no recovery flow is attached to the brand** (Brands, the default brand, Default flows, "Recovery flow" empty) and no
+   passwordless or "WebAuthn only" authentication flow is bound anywhere. If you ever add one, it must still contain the MFA validation stage. Re-run
+   `scripts/test-authentik-config.sh` (full run) after any flow change: it proves MFA enrolment is forced and an outsider is denied.
+4. **Event retention.** Authentik keeps login events (with client IP and user agent) for 365 days by default. For a household, set Admin, Events, Settings, "Event retention" to 90 days
+   (POPIA data-minimisation) and note the processing in your register.
+5. **Break-glass drill.** At least twice a year run `sudo scripts/breakglass.sh on 10`, log in at `bg-traefik.<domain>`, then `off`. The htpasswd is bcrypt cost 12; the password lives only in the password manager.

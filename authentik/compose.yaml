@@ -6,7 +6,7 @@
 #
 # Start (Pi):  sudo scripts/deploy.sh          (fetch-secrets, then `docker compose up -d` for the root compose.yaml)
 # Needs:       config/lab.env + ${APPS_ROOT}/secrets/runtime.env (DOMAIN, PROXY_SUBNET), the networks from scripts/bootstrap.sh
-#              (proxy, authentik-internal), the data directories from scripts/bootstrap.sh (owned by the uids in config/lab.env),
+#              (authentik-auth, authentik-internal), the data directories from scripts/bootstrap.sh (owned by the uids in config/lab.env),
 #              ${APPS_ROOT}/secrets/authentik/{secret-key,postgres-password,bootstrap-password} (SSM /home-lab/authentik/*).
 # Runbook:     docs/runbooks/m4-authentik.md
 #
@@ -15,8 +15,12 @@
 # by 10002:10002; Postgres reads postgres-password through the extra group (mode 0440, group_add), so no file is readable by
 # the login user. Keep config/lab.env, config/secrets-manifest.tsv and scripts/bootstrap.sh in step (test-authentik-config.sh checks).
 #
-# Trust: Authentik believes X-Forwarded-* headers ONLY from the proxy network (PROXY_SUBNET: Traefik lives there); the Authentik
-# default would also trust all of 10/8, 172.16/12 and 192.168/16. No AUTHENTIK_COOKIE_DOMAIN: every app gets a host-only cookie.
+# Trust (SEC-L8): authentik-server sits on the dedicated authentik-auth network that only Traefik shares (AUTHENTIK_AUTH_SUBNET), and
+# believes X-Forwarded-* headers ONLY from that subnet. Homepage and every other container on the proxy network cannot reach
+# authentik-server:9000 at all, so none of them can forge forwarded headers. The Authentik default would trust all of 10/8,
+# 172.16/12 and 192.168/16. No AUTHENTIK_COOKIE_DOMAIN: every app gets a host-only cookie.
+# Routing: the routers for auth.<domain> and the outpost paths are in traefik/dynamic/routers.yml (file provider); this file
+# carries no Traefik labels.
 #
 # The worker is internal-only (no egress, no docker.sock, no root). The official compose gives it root and the Docker socket
 # for managed outposts; we run only the embedded outpost, so it needs neither (the "Local Docker Integration" shown in the UI
@@ -27,7 +31,7 @@ x-authentik-env: &authentik-env
   AUTHENTIK_POSTGRESQL__USER: authentik
   AUTHENTIK_POSTGRESQL__PASSWORD: file:///run/secrets/pg_password
   AUTHENTIK_SECRET_KEY: file:///run/secrets/authentik_secret_key
-  AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: ${PROXY_SUBNET:?set PROXY_SUBNET in config/lab.env}
+  AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: ${AUTHENTIK_AUTH_SUBNET:?set AUTHENTIK_AUTH_SUBNET in config/lab.env}
   AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
   AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
   AUTHENTIK_DISABLE_STARTUP_ANALYTICS: "true"
@@ -40,7 +44,7 @@ x-authentik-env: &authentik-env
   DOMAIN: ${DOMAIN:?set DOMAIN (runtime.env)}
 
 x-authentik-common: &authentik-common
-  image: ghcr.io/goauthentik/server:2026.8.5
+  image: ghcr.io/goauthentik/server:2026.8.5@sha256:602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5
   restart: unless-stopped
   user: "${AUTHENTIK_UID:?set AUTHENTIK_UID in config/lab.env}:${AUTHENTIK_GID:?set AUTHENTIK_GID in config/lab.env}"
   read_only: true
@@ -62,7 +66,7 @@ x-authentik-common: &authentik-common
 
 services:
   authentik-postgresql:
-    image: postgres:16.15-alpine3.24
+    image: postgres:16.15-alpine3.24@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     container_name: authentik-postgresql
     restart: unless-stopped
     # Non-root from the start (the entrypoint then skips chown and gosu): the data directory must be owned by 70:70 (bootstrap.sh).
@@ -70,6 +74,11 @@ services:
     # Group that owns the secret files (10002): lets uid 70 read postgres-password (0440) without owning it.
     group_add:
       - "${AUTHENTIK_GID}"
+    # SEC-L9: read-only root; the only writable paths are the data directory (below) and two small tmpfs (socket and pid file, scratch).
+    read_only: true
+    tmpfs:
+      - /var/run/postgresql:uid=${AUTHENTIK_PG_UID},gid=${AUTHENTIK_PG_GID},mode=0700
+      - /tmp:uid=${AUTHENTIK_PG_UID},gid=${AUTHENTIK_PG_GID},mode=0700
     cap_drop:
       - ALL
     security_opt:
@@ -103,7 +112,7 @@ services:
     command: server
     mem_limit: 1g
     networks:
-      - proxy
+      - authentik-auth
       - authentik-internal
     environment: *authentik-env
     secrets:
@@ -113,17 +122,6 @@ services:
       - ${APPS_ROOT}/authentik/data:/data
       - ./templates:/templates:ro
       - ./blueprints:/blueprints/custom:ro
-    labels:
-      traefik.enable: "true"
-      # The login UI and the OAuth endpoints. Reachable from the LAN and the tailnet only, like every lab host.
-      traefik.http.routers.authentik.rule: Host(`auth.${DOMAIN}`)
-      traefik.http.routers.authentik.entrypoints: websecure
-      traefik.http.routers.authentik.middlewares: lan-allowlist@file
-      traefik.http.routers.authentik.service: authentik
-      # Shared with the per-app "<app>-outpost" routers (path /outpost.goauthentik.io/ on each app host), which finish the
-      # login redirect so the session cookie is set on the APP host (host-only), and with the forward-auth middleware
-      # authentik@file (traefik/dynamic/middlewares.yml, which calls this container directly on port 9000).
-      traefik.http.services.authentik.loadbalancer.server.port: "9000"
 
   authentik-worker:
     <<: *authentik-common
@@ -158,7 +156,7 @@ services:
       - ./blueprints:/blueprints/custom:ro
 
 networks:
-  proxy:
+  authentik-auth:
     external: true
   authentik-internal:
     external: true

@@ -40,7 +40,7 @@ command -v jq > /dev/null || {
 }
 export MSYS_NO_PATHCONV=1 # Git Bash on Windows: keep "container:/path" arguments intact
 # Hermetic: the shell environment would win over --env-file, so drop anything that lab.env defines.
-unset PROXY_SUBNET APPS_ROOT DOMAIN AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID
+unset PROXY_SUBNET AUTHENTIK_AUTH_SUBNET APPS_ROOT DOMAIN AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID TRAEFIK_UID TRAEFIK_GID
 
 fails=0
 ok() { printf 'PASS  %s\n' "$*"; }
@@ -58,16 +58,18 @@ DOMAIN_T=lab.example.test
 PROJECT=aktest
 NET_PROXY=aktest-proxy
 NET_INT=aktest-internal
+NET_AUTH=aktest-auth
 TEST_SUBNET=172.29.88.0/24
+TEST_AUTH_SUBNET=172.29.89.0/24
 AK_IMAGE=""
 PG_IMAGE=""
 stage=""
 cleanup() {
   if [ "$STATIC_ONLY" -eq 0 ]; then
-    docker rm -f aktest-traefik aktest-whoami aktest-breakglass > /dev/null 2>&1 || true
+    docker rm -f aktest-traefik aktest-whoami > /dev/null 2>&1 || true
     docker compose -p "$PROJECT" --env-file config/lab.env -f authentik/compose.yaml -f "${stage:-/nonexistent}/override.yaml" down -v --remove-orphans > /dev/null 2>&1 || true
     docker volume rm "${PROJECT}_aktest-data" "${PROJECT}_aktest-pg" > /dev/null 2>&1 || true
-    docker network rm "$NET_PROXY" "$NET_INT" > /dev/null 2>&1 || true
+    docker network rm "$NET_PROXY" "$NET_INT" "$NET_AUTH" > /dev/null 2>&1 || true
   fi
   [ -z "$stage" ] || rm -rf "$stage"
 }
@@ -111,8 +113,8 @@ printf 'images: %s, %s\n' "$AK_IMAGE" "$PG_IMAGE"
 
 echo "--- static: images and services"
 check "root compose renders Authentik server, worker and PostgreSQL only (no Redis anywhere)" test "$(jq -c 'keys' <<< "$ak")" = '["authentik-postgresql","authentik-server","authentik-worker"]' -a "$(jq -r '.services | keys[]' <<< "$all" | grep -ci redis)" = 0
-check "Authentik image is a pinned 2026.8.x patch release (not latest, not a bare minor)" bash -c '[[ "$1" =~ ^ghcr\.io/goauthentik/server:2026\.8\.[0-9]+$ ]]' _ "$AK_IMAGE"
-check "PostgreSQL image is a pinned 16.x-alpine release" bash -c '[[ "$1" =~ ^postgres:16\.[0-9]+-alpine[0-9.]*$ ]]' _ "$PG_IMAGE"
+check "Authentik image is a pinned 2026.8.x patch release, by digest (not latest, not a bare minor, SEC-M5)" bash -c '[[ "$1" =~ ^ghcr\.io/goauthentik/server:2026\.8\.[0-9]+@sha256:[0-9a-f]{64}$ ]]' _ "$AK_IMAGE"
+check "PostgreSQL image is a pinned 16.x-alpine release, by digest (SEC-M5)" bash -c '[[ "$1" =~ ^postgres:16\.[0-9]+-alpine[0-9.]*@sha256:[0-9a-f]{64}$ ]]' _ "$PG_IMAGE"
 check "server and worker run the same image" test "$(jq -r '.["authentik-server"].image' <<< "$ak")" = "$(jq -r '.["authentik-worker"].image' <<< "$ak")"
 check "every Authentik service has a memory limit" test "$(jq '[.[] | select((.mem_limit // 0 | tonumber) > 0)] | length' <<< "$ak")" = 3
 check "memory limits: postgres 512M, server 1G, worker 768M" test "$(jq -c '[.["authentik-postgresql"].mem_limit, .["authentik-server"].mem_limit, .["authentik-worker"].mem_limit]' <<< "$ak")" = '["536870912","1073741824","805306368"]'
@@ -122,10 +124,11 @@ check "no Authentik service is privileged, root, or keeps capabilities" test "$(
 check "server and worker run as AUTHENTIK_UID:AUTHENTIK_GID (10002), not the image default 1000" test "$(jq -c '[.["authentik-server"].user, .["authentik-worker"].user]' <<< "$ak")" = '["10002:10002","10002:10002"]'
 check "PostgreSQL runs as 70:70 with the Authentik group added (reads postgres-password via group)" test "$(jq -c '[.["authentik-postgresql"].user, .["authentik-postgresql"].group_add]' <<< "$ak")" = '["70:70",["10002"]]'
 check "server and worker: read-only root fs, no-new-privileges" test "$(jq '[.["authentik-server"], .["authentik-worker"] | select(.read_only == true and (.security_opt | index("no-new-privileges:true")))] | length' <<< "$ak")" = 2
+check "PostgreSQL: read-only root fs, no-new-privileges, tmpfs only for the socket directory and /tmp (SEC-L9)" test "$(jq -c '[.["authentik-postgresql"] | .read_only, (.security_opt | index("no-new-privileges:true") != null), ([.tmpfs[] | split(":")[0]] | sort)]' <<< "$ak")" = '[true,true,["/tmp","/var/run/postgresql"]]'
 check "worker is not on the proxy network and has no Traefik labels (internal only)" test "$(jq -c '[.["authentik-worker"].networks | keys[]]' <<< "$ak")" = '["authentik-internal"]' -a "$(jq '.["authentik-worker"].labels // {} | length' <<< "$ak")" = 0
 check "PostgreSQL is on the internal network only" test "$(jq -c '[.["authentik-postgresql"].networks | keys[]]' <<< "$ak")" = '["authentik-internal"]'
-check "server is on proxy and the internal network" test "$(jq -c '[.["authentik-server"].networks | keys[]] | sort' <<< "$ak")" = '["authentik-internal","proxy"]'
-check "authentik-internal and socket-proxy are declared external (created --internal by bootstrap.sh)" test "$(jq -c '[.networks["authentik-internal"].external, .networks["socket-proxy"].external]' <<< "$all")" = '[true,true]'
+check "server is on authentik-auth (shared with Traefik only) and the internal network, NOT on proxy (SEC-L8)" test "$(jq -c '[.["authentik-server"].networks | keys[]] | sort' <<< "$ak")" = '["authentik-auth","authentik-internal"]' 
+check "authentik-internal and authentik-auth are declared external (created by bootstrap.sh); no socket-proxy network" test "$(jq -c '[.networks["authentik-internal"].external, .networks["authentik-auth"].external, (.networks | has("socket-proxy"))]' <<< "$all")" = '[true,true,false]' 
 check "every Authentik service uses json-file rotation 10m x 3" test "$(jq '[.[] | select(.logging.driver == "json-file" and .logging.options["max-size"] == "10m" and .logging.options["max-file"] == "3")] | length' <<< "$ak")" = 3
 
 echo "--- static: secrets and trust"
@@ -133,15 +136,16 @@ check "Authentik secrets come from files (file://), none is a literal in the env
 check "PostgreSQL uses POSTGRES_PASSWORD_FILE and has no POSTGRES_PASSWORD" test "$(jq -r '.["authentik-postgresql"].environment | [.POSTGRES_PASSWORD_FILE, (.POSTGRES_PASSWORD // "none")] | join(" ")' <<< "$ak")" = "/run/secrets/pg_password none"
 check "no secret-looking literal appears in the rendered environment of any service" bash -c '! jq -r ".[] | .environment // {} | to_entries[] | .value" <<< "$1" | grep -v "^file://" | grep -Eq "^(.{40,}|[0-9a-f]{32,})$"' _ "$ak"
 check "bootstrap password is exported by an entrypoint wrapper from its secret file, worker only (!Env cannot read file://)" bash -c 'jq -e ".[\"authentik-worker\"].entrypoint | join(\" \") | test(\"(?s)authentik_bootstrap_password.*AUTHENTIK_BOOTSTRAP_PASSWORD\")" <<< "$1" && ! jq -e ".[\"authentik-server\"].environment | has(\"AUTHENTIK_BOOTSTRAP_PASSWORD\")" <<< "$1"' _ "$ak"
-check "trusted proxy CIDRs are the proxy network only (PROXY_SUBNET), not Authentik's 10/8 172.16/12 192.168/16 default" test "$(jq -r '.["authentik-server"].environment.AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS' <<< "$ak")" = "$(grep -E '^PROXY_SUBNET=' config/lab.env | cut -d= -f2)"
+check "trusted proxy CIDRs are the authentik-auth subnet only (AUTHENTIK_AUTH_SUBNET), not Authentik's 10/8 172.16/12 192.168/16 default" test "$(jq -r '.["authentik-server"].environment.AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS' <<< "$ak")" = "$(grep -E '^AUTHENTIK_AUTH_SUBNET=' config/lab.env | cut -d= -f2)" 
 check "no AUTHENTIK_COOKIE_DOMAIN anywhere (host-only cookies)" bash -c '! grep -rIn "COOKIE_DOMAIN\|cookie_domain" authentik/ traefik/ config/ | grep -v "^authentik/compose.yaml:.*#\|^authentik/blueprints/homelab-apps.yaml:.*#"' _
 check "error reporting, update check and analytics are off" test "$(jq -c '.["authentik-server"].environment | [.AUTHENTIK_ERROR_REPORTING__ENABLED, .AUTHENTIK_DISABLE_UPDATE_CHECK, .AUTHENTIK_DISABLE_STARTUP_ANALYTICS]' <<< "$ak")" = '["false","true","true"]'
-check "server routes only auth.<domain> through lan-allowlist, service port 9000" test "$(jq -r '.["authentik-server"].labels | [."traefik.http.routers.authentik.rule", ."traefik.http.routers.authentik.middlewares", ."traefik.http.services.authentik.loadbalancer.server.port"] | join("|")' <<< "$ak")" = 'Host(`auth.lab.example.test`)|lan-allowlist@file|9000'
+check "authentik-server carries no Traefik labels; its router is a file (auth.<domain>, lan-allowlist only, service on :9000)" bash -c 'test "$(jq ".[\"authentik-server\"].labels // {} | length" <<< "$1")" = 0 && f=traefik/dynamic/routers.yml && grep -q "service: authentik" $f && grep -q "url: http://authentik-server:9000" $f && awk "/^    authentik:/{f=1} f&&/middlewares:/{m=1} f&&m&&/- /{print; if(++n==2) exit}" $f | grep -q "lan-allowlist"' _ "$ak"
+check "no other container can reach authentik-server: only the proxy-less authentik-auth network carries it" test "$(jq -c '[.services | to_entries[] | select(.value.networks | has("authentik-auth")) | .key] | sort' <<< "$all")" = '["authentik-server","traefik"]' 
 
 echo "--- static: service ids (F02)"
 lab_get() { grep -E "^$1=" config/lab.env | cut -d= -f2; }
 manifest_owner() { awk -F'\t' -v p="$1" '$1 == p {print $3 " " $4}' config/secrets-manifest.tsv; }
-check "lab.env service ids are 10002 (Authentik), 70 (PostgreSQL), 10003 (Homepage); none is 1000" test "$(lab_get AUTHENTIK_UID) $(lab_get AUTHENTIK_GID) $(lab_get AUTHENTIK_PG_UID) $(lab_get AUTHENTIK_PG_GID) $(lab_get HOMEPAGE_UID)" = "10002 10002 70 70 10003"
+check "lab.env service ids are 10002 (Authentik), 70 (PostgreSQL), 10003 (Homepage), 10004 (Traefik); none is 1000" test "$(lab_get AUTHENTIK_UID) $(lab_get AUTHENTIK_GID) $(lab_get AUTHENTIK_PG_UID) $(lab_get AUTHENTIK_PG_GID) $(lab_get HOMEPAGE_UID) $(lab_get TRAEFIK_UID)" = "10002 10002 70 70 10003 10004" 
 check "manifest: secret-key 10002:10002 0400" test "$(manifest_owner authentik/secret-key)" = "10002:10002 0400"
 check "manifest: postgres-password 10002:10002 0440 (group read for uid 70)" test "$(manifest_owner authentik/postgres-password)" = "10002:10002 0440"
 check "manifest: bootstrap-password 10002:10002 0400, empty file while UNSET" test "$(manifest_owner authentik/bootstrap-password)" = "10002:10002 0400" -a "$(awk -F'\t' '$1 == "authentik/bootstrap-password" {print $5}' config/secrets-manifest.tsv)" = empty
@@ -159,16 +163,16 @@ check "blueprint: group membership is seeded once (state: created), never overwr
 check "blueprint: embedded outpost carries both providers" bash -c 'grep -q "managed: goauthentik.io/outposts/embedded" "$1" && grep -q "provider-traefik" "$1" && grep -q "provider-dashboard" "$1"' _ $bp
 check "blueprint is mounted read-only into server and worker" test "$(jq -c '[.["authentik-server"].volumes[], .["authentik-worker"].volumes[] | select(.target == "/blueprints/custom") | .read_only]' <<< "$ak")" = '[true,true]'
 
-tjson="$(docker compose -f traefik/compose.yaml --env-file config/lab.env --profile breakglass config --format json)"
-tj="$(jq -c '.services.traefik.labels' <<< "$tjson")"
-bgj="$(jq -c '.services.breakglass.labels' <<< "$tjson")"
-check "dashboard router: lan-allowlist then authentik@file, no basic auth" test "$(jq -r '.["traefik.http.routers.dashboard.middlewares"]' <<< "$tj")" = "lan-allowlist@file,authentik@file"
-check "dashboard-outpost router: app host + /outpost.goauthentik.io/ -> service authentik, priority 100, allowlist only" test "$(jq -r '[.["traefik.http.routers.dashboard-outpost.rule"], .["traefik.http.routers.dashboard-outpost.service"], .["traefik.http.routers.dashboard-outpost.priority"], .["traefik.http.routers.dashboard-outpost.middlewares"]] | join("|")' <<< "$tj")" = 'Host(`traefik.lab.example.test`) && PathPrefix(`/outpost.goauthentik.io/`)|authentik|100|lan-allowlist@file'
-check "break-glass profile keeps bg-traefik behind allowlist + basic auth (no Authentik dependency)" test "$(jq -r '.["traefik.http.routers.bg-traefik.middlewares"]' <<< "$bgj")" = "lan-allowlist@file,breakglass-auth@docker" -a "$(jq -c '.services.breakglass.profiles' <<< "$tjson")" = '["breakglass"]'
-check "break-glass is not started by default (profile)" bash -c '! docker compose --env-file config/lab.env config --services | grep -qx breakglass'
-check "middleware authentik@file: embedded outpost address on the proxy network, trustForwardHeader, the 12 documented headers" bash -c 'f=traefik/dynamic/middlewares.yml; grep -q "address: http://authentik-server:9000/outpost.goauthentik.io/auth/traefik" $f && grep -q "trustForwardHeader: true" $f && [ "$(grep -c "^          - X-authentik-" $f)" = 12 ] && grep -q "maxResponseBodySize: 4194304" $f'
+tjson="$(docker compose -f traefik/compose.yaml --env-file config/lab.env config --format json)"
+rt=traefik/dynamic/routers.yml
+check "routers.yml: dashboard router = lan-allowlist then authentik, service api@internal, no basic auth" bash -c 'awk "/^    dashboard:/{f=1;next} /^    [a-z-]+:/{f=0} f" "$1" | tr -d " " | tr "\n" "|" | grep -q "service:api@internal|middlewares:|-lan-allowlist|-authentik|"' _ $rt
+router_block() { awk -v r="$1" '$0 == "    " r ":" {f=1; next} /^    [a-z-]+:$/ {f=0} /^  [a-z]+:$/ {f=0} f' "$rt"; }
+export -f router_block
+export rt
+check "routers.yml: each *-outpost router = app host + /outpost.goauthentik.io/ -> service authentik, priority 100, allowlist only (no forward auth: it would loop)" bash -c 'for r in dashboard-outpost homepage-outpost; do b="$(router_block $r)"; grep -q "PathPrefix" <<< "$b" && grep -q "/outpost.goauthentik.io/" <<< "$b" && grep -q "priority: 100" <<< "$b" && grep -q "service: authentik$" <<< "$b" && grep -q -- "- lan-allowlist$" <<< "$b" && ! grep -q -- "- authentik$" <<< "$b" || exit 1; done' _
+check "break-glass is not a router of the default config (only the drop-in provides it)" bash -c '! grep -q "bg-traefik" traefik/dynamic/*.yml && grep -q "breakglass-auth" traefik/breakglass/bg-traefik.yml && grep -q "lan-allowlist" traefik/breakglass/bg-traefik.yml'
+check "middleware authentik: embedded outpost address on the authentik-auth network, trustForwardHeader, the 12 documented headers" bash -c 'f=traefik/dynamic/middlewares.yml; grep -q "address: http://authentik-server:9000/outpost.goauthentik.io/auth/traefik" $f && grep -q "trustForwardHeader: true" $f && [ "$(grep -c "^          - X-authentik-" $f)" = 12 ]'
 check "lan-allowlist ranges unchanged (LAN + tailnet)" bash -c 'f=traefik/dynamic/middlewares.yml; grep -q "10.0.0.0/24" $f && grep -q "100.64.0.0/10" $f'
-check "Authentik host label does not go through authentik@file (no login loop)" bash -c '! jq -r ".[\"authentik-server\"].labels[]" <<< "$1" | grep -q "authentik@file"' _ "$ak"
 
 if [ "$STATIC_ONLY" -eq 1 ]; then
   if [ "$fails" -gt 0 ]; then
@@ -205,6 +209,12 @@ networks:
     ipam:
       config:
         - subnet: $TEST_SUBNET
+  authentik-auth:
+    name: $NET_AUTH
+    external: !reset null
+    ipam:
+      config:
+        - subnet: $TEST_AUTH_SUBNET
   authentik-internal:
     name: $NET_INT
     external: !reset null
@@ -213,7 +223,7 @@ volumes:
   aktest-pg:
   aktest-data:
 EOF
-export PROXY_SUBNET="$TEST_SUBNET"
+export PROXY_SUBNET="$TEST_SUBNET" AUTHENTIK_AUTH_SUBNET="$TEST_AUTH_SUBNET"
 dc() { docker compose -p "$PROJECT" --env-file config/lab.env -f authentik/compose.yaml -f "$stage/override.yaml" "$@"; }
 dc create > /dev/null 2>&1 || {
   bad "compose create failed"
@@ -285,17 +295,12 @@ rk="$(dc exec -T authentik-server ak create_recovery_key 2 akadmin 2>&1 | grep -
 check "ak create_recovery_key works under uid 10002 without a passwd entry (USER=authentik set)" test "$rk" = 1
 
 # --------------------------------------------------------------------------------------------------------------------
-# Traefik: the REAL static flags (docker endpoint and network swapped for the test), the REAL labels of the traefik and
-# breakglass services, the REAL dynamic files (allowlist widened so the test client passes), and a dummy certificate.
+# Traefik: the REAL static flags, the REAL dynamic files (routers.yml with its DOMAIN template, middlewares.yml with the allowlist
+# widened so the test client passes), a dummy certificate, and the break-glass drop-in switched on and off like breakglass.sh does.
 # --------------------------------------------------------------------------------------------------------------------
 echo "--- Traefik forward auth"
 timage="$(jq -r '.services.traefik.image' <<< "$tjson")"
-mapfile -t flags < <(jq -r '.services.traefik.command[]' <<< "$tjson" | tr -d '\r' |
-  sed "s#^--providers.docker.endpoint=.*#--providers.docker.endpoint=unix:///var/run/docker.sock#; s#^--providers.docker.network=.*#--providers.docker.network=$NET_PROXY#")
-tlabels=()
-while IFS= read -r l; do tlabels+=(--label "$l"); done < <(jq -r '.services.traefik.labels | to_entries[] | "\(.key)=\(.value)"' <<< "$tjson" | tr -d '\r')
-blabels=()
-while IFS= read -r l; do blabels+=(--label "$l"); done < <(jq -r '.services.breakglass.labels | to_entries[] | "\(.key)=\(.value)"' <<< "$tjson" | tr -d '\r')
+mapfile -t flags < <(jq -r '.services.traefik.command[]' <<< "$tjson" | tr -d '\r')
 
 mkdir -p "$stage/tr/dynamic"
 cp traefik/dynamic/*.yml "$stage/tr/dynamic/"
@@ -308,31 +313,15 @@ tls:
     - certFile: /etc/traefik/dynamic/test-c.pem
       keyFile: /etc/traefik/dynamic/test-k.pem
 EOF
-# Stand-in for Homepage (M5): the pattern every later app copies (own host, forward auth, own outpost router).
-cat > "$stage/tr/dynamic/test-app.yml" << EOF
-http:
-  routers:
-    t-dash:
-      rule: Host(\`dashboard.${DOMAIN_T}\`)
-      entryPoints: [websecure]
-      service: t-whoami
-      middlewares: [lan-allowlist@file, authentik@file]
-    t-dash-outpost:
-      rule: Host(\`dashboard.${DOMAIN_T}\`) && PathPrefix(\`/outpost.goauthentik.io/\`)
-      entryPoints: [websecure]
-      priority: 100
-      service: authentik@docker
-      middlewares: [lan-allowlist@file]
-  services:
-    t-whoami:
-      loadBalancer:
-        servers:
-          - url: http://aktest-whoami:80
-EOF
-docker run -d --name aktest-whoami --network "$NET_PROXY" traefik/whoami:v1.12.0 > /dev/null
+# Authentik no longer uses the proxy network (server is on authentik-auth), so compose does not create it: make it for the test.
+docker network inspect "$NET_PROXY" > /dev/null 2>&1 || docker network create --subnet "$TEST_SUBNET" "$NET_PROXY" > /dev/null
+# Stand-in backend for the real "homepage" router (http://homepage:3000): whoami listening on 3000 under the network alias homepage.
+docker run -d --name aktest-whoami --network "$NET_PROXY" --network-alias homepage traefik/whoami:v1.12.0 --port 3000 > /dev/null
 cid="$(docker create --name aktest-traefik --network "$NET_PROXY" -p 127.0.0.1::443 \
-  -e AWS_REGION=us-east-1 -e AWS_HOSTED_ZONE_ID="$ROUTE53_ZONE_ID" -e AWS_EC2_METADATA_SERVICE_ENDPOINT=http://127.0.0.1:9911 \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro -v "$apps_host/secrets/traefik/breakglass-htpasswd:/run/secrets/breakglass_users:ro"   --tmpfs /letsencrypt "${tlabels[@]}" "$timage" "${flags[@]}")"
+  -e DOMAIN="$DOMAIN_T" -e AWS_REGION=us-east-1 -e AWS_HOSTED_ZONE_ID="$ROUTE53_ZONE_ID" -e AWS_EC2_METADATA_SERVICE_ENDPOINT=http://127.0.0.1:9911 \
+  -v "$apps_host/secrets/traefik/breakglass-htpasswd:/run/secrets/breakglass_users:ro" --tmpfs /letsencrypt "$timage" "${flags[@]}")"
+docker network connect "$NET_AUTH" "$cid"
+chmod 644 "$stage/tr/dynamic/test-k.pem"
 docker cp "$stage/tr/." "$cid:/etc/traefik"
 docker start "$cid" > /dev/null
 sleep 6
@@ -378,13 +367,19 @@ code="$(probe traefik)"
 check "Authentik down: the dashboard is NOT served (forward auth fails closed: got $code)" bash -c '[ "$1" != 200 ] && [ "$1" -ge 400 ]' _ "$code"
 code="$(probe dashboard)"
 check "Authentik down: the app behind forward auth is NOT served either (got $code)" bash -c '[ "$1" != 200 ] && [ "$1" -ge 400 ]' _ "$code"
-bgid="$(docker create --name aktest-breakglass --network "$NET_PROXY" "${blabels[@]}" traefik/whoami:v1.12.0)"
-docker start "$bgid" > /dev/null
-sleep 4
+code="$(probe bg-traefik)"
+check "break-glass is OFF until the drop-in exists: bg-traefik.<domain> has no router (404)" test "$code" = 404
+docker cp traefik/breakglass/bg-traefik.yml "$cid:/etc/traefik/dynamic/bg-traefik.yml"
+docker exec -u 0 "$cid" chmod 0644 /etc/traefik/dynamic/bg-traefik.yml
+sleep 5
 code="$(probe bg-traefik)"
 check "break-glass without credentials: 401 (basic auth, not Authentik)" test "$code" = 401
 code="$(probe bg-traefik -u "admin:${BG_PW}")"
 check "break-glass with the htpasswd credentials reaches the dashboard while Authentik is down (got $code)" bash -c '[ "$1" = 200 ] || [ "$1" = 301 ] || [ "$1" = 302 ]' _ "$code"
+docker exec -u 0 "$cid" rm -f /etc/traefik/dynamic/bg-traefik.yml
+sleep 5
+code="$(probe bg-traefik -u "admin:${BG_PW}")"
+check "break-glass OFF again: the router is gone even with the right credentials (404, SEC-L3)" test "$code" = 404
 docker start authentik-server > /dev/null
 recovered=0
 for _ in $(seq 1 24); do

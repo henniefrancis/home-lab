@@ -6,13 +6,17 @@
 #   No ipStrategy is set, so the TCP peer address is used and X-Forwarded-For is never trusted.
 # security-headers: applied to every response of a router on the websecure entrypoint (entrypoint-level middleware),
 #   including the 401/403 answers of the allowlist and basic auth; unmatched hosts get a bare 404.
-#   HSTS is short (300 s) while on the Let's Encrypt staging CA; M6 raises it to 31536000.
+#   HSTS is short (300 s) while on the Let's Encrypt staging CA. M6 (production certificate) raises stsSeconds to 31536000 (SEC-L12):
+#   a browser that has cached a long HSTS value would otherwise lock itself out if the staging certificate were ever served again.
 #   No preload: this domain also hosts a separate public website on the apex.
+#   CSP (SEC-L12): deliberately not set here. A global Content-Security-Policy would break Authentik and Homepage, which load inline
+#   scripts and styles; each app already sends its own policy where it supports one. Revisit per router, not globally.
 #
-# authentik: forward auth against the EMBEDDED outpost inside authentik-server (container name on the proxy network, port
-#   9000, plain HTTP inside the Docker network). Add `authentik@file` AFTER `lan-allowlist@file` to a router; the same app
-#   host also needs a "<app>-outpost" router for PathPrefix(/outpost.goauthentik.io/) pointing at service `authentik`
-#   (see the dashboard labels in traefik/compose.yaml). Fails closed: if Authentik is down, forwardAuth answers 500/502 and
+# authentik: forward auth against the EMBEDDED outpost inside authentik-server (container name on the authentik-auth network, port
+#   9000, plain HTTP over the dedicated authentik-auth network that only Traefik and Authentik share). Add `authentik` AFTER
+#   `lan-allowlist` to a router; the same app host also needs a "<app>-outpost" router for
+#   PathPrefix(/outpost.goauthentik.io/) pointing at service `authentik` (see dynamic/routers.yml).
+#   Fails closed: if Authentik is down, forwardAuth answers 500/502 and
 #   the app is NOT served. trustForwardHeader is safe here: Traefik is the only edge (no proxy in front of it), and the
 #   entrypoint overwrites X-Forwarded-* from untrusted peers. The header list is the one in the official Authentik Traefik
 #   guide (2026.8); `authorization` is left out on purpose (no HTTP-Basic injection is configured).
