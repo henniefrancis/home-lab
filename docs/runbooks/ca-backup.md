@@ -19,6 +19,8 @@ secret fetch and ACME. The recovery from a lost CA is a new CA, a new `ca_cert_p
 
 Two independent copies, in two different places:
 
+> **No USB stick yet?** Make copy A now and copy B as soon as you have a stick (any removable drive kept apart from the laptop works). Until then the password manager is the only copy of the CA and of the Authentik backup age identity outside the laptop: record that as an accepted risk with a date, and test copy A on its own (section 3).
+
 **Copy A, the password manager.** Create one item, for example "home-lab offline CA backup", and attach the three files (`ca.key`, `ca.crt`, `issued.tsv`). Keep the CA
 passphrase in its OWN item (the one `m2-pi-setup.md` step 4 told you to create), not in the same item as the attachment and never in a note next to the files. **Ideally in a different vault or collection** than the attachment, with different sharing: a compromise of one vault then yields only half. Be honest about the limit: if both items sit behind the same master password, whoever has that has both, and the passphrase then protects only copy B (the stick). Keep the password manager's master credentials and recovery key apart (`pi-recovery.md` section 0.5).
 

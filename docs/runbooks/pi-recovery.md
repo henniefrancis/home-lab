@@ -21,7 +21,7 @@ Check this list at every drill. A recovery that starts by installing tools is sl
 - **age** (and `age-keygen`), **Docker** (the Authentik restore test), **git** with the repository, **gh** (the deploy key) and the **commit signing key** (releases are signed; `deploy.sh` verifies).
 - **openssl** and a checkout of `scripts/pki` (CA restore test, `sign.sh`).
 - **Password manager items:** the CA passphrase (its own item), the CA backup attachment (copy A, a different item), the Authentik backup age identity, the break-glass and Tailscale values, and the SSO and HCP logins. Keep the password manager's own recovery (emergency kit or recovery key) printed and stored with the CA USB stick (copy B), which is kept apart from the laptop.
-- **The CA USB stick** (copy B: `ca.key`, `ca.crt`, `issued.tsv`, `identity.age` the passphrase-encrypted age identity).
+- **The CA USB stick** (copy B: `ca.key`, `ca.crt`, `issued.tsv`, `identity.age` the passphrase-encrypted age identity). If it does not exist yet, the password manager is the only copy: see the note at the top of `ca-backup.md` section 1.
 
 **If the Pi and the laptop are both gone (a burglary, a fire):** recover the laptop side first, from the other places. (1) A new machine: install the tools above. (2) The password manager: sign in with its master credentials and recovery key (the emergency kit on the USB stick, or wherever you keep it). (3) AWS: `aws configure sso` for the admin role, then `terraform login`. (4) The CA: restore copy A (password manager) or copy B (stick) and test it (`ca-backup.md` sections 3 and 4); if both are gone too, `ca-backup.md` section 5. (5) The age identity: from the password manager, or decrypt `identity.age` from the stick with its passphrase. Then continue below as for a stolen Pi.
 
@@ -117,7 +117,7 @@ generation bump is the simpler, tested path, and 365 day certificates bound the 
 Run this at every drill (at least once a year, and once before the first real certificate renewal), then add one row to the log below. A drill without all the lines is partial; say which line was skipped.
 
 1. **Tabletop or spare-card walk through** of sections 0 to 8 (plan Q20): what would you do, in what order, with which secret from which place?
-2. **CA restore test** (K5): restore the offline CA from BOTH copies (password manager attachment and USB stick) into scratch directories and run `scripts/pki/test-ca-restore.sh --ca-dir <dir>` on each (`ca-backup.md` section 3).
+2. **CA restore test** (K5): restore the offline CA from BOTH copies (password manager attachment and USB stick) into scratch directories and run `scripts/pki/test-ca-restore.sh --ca-dir <dir>` on each (`ca-backup.md` section 3). Without a stick yet, test copy A and write "copy B: none yet" in the log.
    Record PASS or FAIL per copy, whether the copy's `issued.tsv` checksum matched the live one, and the CA certificate's expiry date. Refresh the copies if `issued.tsv` is stale.
 3. **Authentik restore test** (K5): choose a dump by S3 `LastModified` and `VersionId` (`authentik-backup.md` sections 3 and 4), check that every key has exactly one version, restore it into a throwaway container with `--network none` and look at the users (section 5).
    Record the dump `LastModified` and `VersionId`, the user counts and the time it took. Check that `sudo scripts/preflight.sh --stage full` shows `backup-last` PASS, and run the monthly size and object count check.

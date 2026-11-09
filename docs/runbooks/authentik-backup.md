@@ -40,7 +40,8 @@ was not suspiciously small. The Pi cannot delete, so a failed or truncated uploa
    ```
 
    - Copy the **whole `identity.txt`** (`# created:`, `# public key:` and the `AGE-SECRET-KEY-1...` line) into the password manager as a secure note "home-lab Authentik backup age identity". The passphrase of `identity.age` goes in a different item.
-   - **Put `identity.age` on the CA USB stick** (`ca-backup.md`). It is required, not optional: the password manager copy is a single point of failure, and **losing the identity makes every backup unreadable**.
+   - **Put `identity.age` on the CA USB stick** (`ca-backup.md`). The password manager copy alone is a single point of failure, and **losing the identity makes every backup unreadable**.
+     **No stick yet?** Skip the `age -p` line for now (the password manager is then the only copy: record it as an accepted risk with a date). When the stick arrives, restore `identity.txt` from the password manager into a fresh `mktemp -d` scratch directory, run the `age -p -o identity.age identity.txt` line there, copy `identity.age` to the stick, and delete the scratch directory.
    - Note the `age1...` public key. Then delete the scratch directory (`rm -rf` it) and clear the terminal scrollback.
 2. **Terraform.** `terraform -chdir=terraform/bootstrap plan` with admin SSO. Expect exactly: **8 to add** (`aws_s3_bucket.backup`, its public access block, ownership controls, encryption configuration,
    versioning, lifecycle configuration and bucket policy, plus the `aws_budgets_budget.backup_storage` budget), **2 to change in place** (`aws_iam_role_policy.pi_host` gains `WriteAuthentikBackups`; `aws_iam_role.pi_host` gets a new description),
