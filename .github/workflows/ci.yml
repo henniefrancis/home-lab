@@ -2,7 +2,7 @@
 # One lean job (target < 5 minutes) to stay inside the 100 minutes/month cap while the repo is private.
 # No credentials, no HCP token, no cloud access: Terraform checks use `init -backend=false` only.
 # Markdown-only changes skip this workflow, NOT the secret scan: that runs in .github/workflows/secret-scan.yml on every push
-# and pull request (SEC-M6). Third-party tool images come pinned by digest from .github/ci-images/<tool>/Dockerfile (SEC-M5).
+# and pull request (SEC-M6). Third-party tool images come pinned by digest from ci/images/<tool>/Dockerfile (SEC-M5).
 name: ci
 
 on:
@@ -109,11 +109,11 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: .github/requirements-ci.txt
+          cache-dependency-path: ci/requirements-ci.txt
 
       - name: yamllint
         run: |
-          pip install --quiet -r .github/requirements-ci.txt
+          pip install --quiet -r ci/requirements-ci.txt
           yamllint --strict .
 
       - name: shellcheck
@@ -227,7 +227,7 @@ jobs:
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |
           set -eu
-          img="$(awk '$1=="FROM" && $4=="terraform" {print $2}' .github/ci-images/terraform/Dockerfile)"
+          img="$(awk '$1=="FROM" && $4=="terraform" {print $2}' ci/images/terraform/Dockerfile)"
           tf() { docker run --rm -v "$PWD:/w" -w "/w/$1" "$img" "${@:2}"; }
           docker run --rm -v "$PWD:/w" -w /w "$img" fmt -check -recursive -diff
           for d in bootstrap edge; do
@@ -238,7 +238,7 @@ jobs:
       - name: Self-test - bootstrap IAM and KMS policies (terraform test; stub provider, dead proxy, nothing reaches AWS)
         run: |
           set -eu
-          IMG="$(awk '$1=="FROM" && $4=="terraform" {print $2}' .github/ci-images/terraform/Dockerfile)"
+          IMG="$(awk '$1=="FROM" && $4=="terraform" {print $2}' ci/images/terraform/Dockerfile)"
           export IMG
           cat > "$RUNNER_TEMP/tf" << 'WRAP'
           #!/bin/sh
@@ -253,10 +253,15 @@ jobs:
           chmod +x "$RUNNER_TEMP/tf"
           TERRAFORM="$RUNNER_TEMP/tf" bash scripts/test-terraform-policies.sh
 
+      # `tflint --init` downloads the aws ruleset from the GitHub API. Unauthenticated, that shares the runner IP's 60 requests/hour
+      # and failed CI with 403 rate limit (2026-11-09). The job token (contents: read, expires with the job) lifts that limit; it is
+      # passed by name only, never echoed, into an image pinned by digest.
       - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          img="$(awk '$1=="FROM" && $4=="tflint" {print $2}' .github/ci-images/tflint/Dockerfile)"
-          docker run --rm -v "$PWD:/data" -w /data --entrypoint sh "$img" -c '
+          img="$(awk '$1=="FROM" && $4=="tflint" {print $2}' ci/images/tflint/Dockerfile)"
+          docker run --rm -e GITHUB_TOKEN -v "$PWD:/data" -w /data --entrypoint sh "$img" -c '
             tflint --init --config=/data/.tflint.hcl > /dev/null
             for d in bootstrap edge; do
               tflint --chdir="terraform/$d" --config=/data/.tflint.hcl
@@ -264,6 +269,6 @@ jobs:
 
       - name: trivy config
         run: |
-          img="$(awk '$1=="FROM" && $4=="trivy" {print $2}' .github/ci-images/trivy/Dockerfile)"
+          img="$(awk '$1=="FROM" && $4=="trivy" {print $2}' ci/images/trivy/Dockerfile)"
           docker run --rm -v "$PWD:/w" -w /w "$img" \
             config --exit-code 1 --severity HIGH,CRITICAL --skip-dirs '**/.terraform' terraform

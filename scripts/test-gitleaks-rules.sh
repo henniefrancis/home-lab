@@ -11,7 +11,7 @@ command -v docker > /dev/null || {
   exit 2
 }
 native_path() { if command -v cygpath > /dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
-IMG="$(awk '$1=="FROM" && $4=="gitleaks" {print $2}' .github/ci-images/gitleaks/Dockerfile)"
+IMG="$(awk '$1=="FROM" && $4=="gitleaks" {print $2}' ci/images/gitleaks/Dockerfile)"
 [ -n "$IMG" ] || {
   echo "no gitleaks image pinned" >&2
   exit 2
@@ -74,8 +74,8 @@ check "the committed tree has no finding under the public rules (git archive HEA
 # ---------------------------------------------------------------- check-private-denylist.sh
 # a throwaway git repository with one commit that contains a (fabricated) private value
 git -C "$T/priv-repo" init -q -b main
-mkdir -p "$T/priv-repo/.github/ci-images/gitleaks" "$T/priv-repo/scripts"
-cp .github/ci-images/gitleaks/Dockerfile "$T/priv-repo/.github/ci-images/gitleaks/Dockerfile"
+mkdir -p "$T/priv-repo/ci/images/gitleaks" "$T/priv-repo/scripts"
+cp ci/images/gitleaks/Dockerfile "$T/priv-repo/ci/images/gitleaks/Dockerfile"
 printf 'host = "lab.secret-example.invalid"\n' > "$T/priv-repo/notes.txt"
 git -C "$T/priv-repo" add -A
 git -C "$T/priv-repo" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q -m "synthetic"

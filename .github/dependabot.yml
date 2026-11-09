@@ -69,16 +69,17 @@ updates:
         patterns: ["*"]
 
   # N2: the images CI runs with `docker run` (gitleaks, terraform, tflint, trivy) each have their own one-line Dockerfile under
-  # .github/ci-images/<tool>/ (see the header there). They used to share one multi-stage Dockerfile and the whole job failed
-  # with UNAUTHORIZED when pulling hashicorp/terraform; with one directory per tool a registry problem fails only that tool's job.
-  # /.github/ci-images/terraform is NOT listed: Docker Hub answers Dependabot's lookup of hashicorp/terraform with
-  # UNAUTHORIZED (seen 2026-11-09), which fails the whole job. Bump that image by hand together with required_version in
-  # terraform/*/versions.tf (same Terraform release), digest from the official Docker Hub tag page.
+  # ci/images/<tool>/ (see the header there), so a registry problem fails only that tool's job.
+  # They live OUTSIDE .github on purpose: under /.github/ci-images Dependabot found the tflint bump but GitHub refused the PR
+  # ("invalid or unauthorized changes", dependency_file_not_supported, 2026-11-09).
+  # /ci/images/terraform is NOT listed: Docker Hub answers Dependabot's lookup of hashicorp/terraform with UNAUTHORIZED, which
+  # fails the whole job. Bump that image by hand together with required_version in terraform/*/versions.tf (same Terraform
+  # release), digest from the official Docker Hub tag page.
   - package-ecosystem: docker
     directories:
-      - /.github/ci-images/gitleaks
-      - /.github/ci-images/tflint
-      - /.github/ci-images/trivy
+      - /ci/images/gitleaks
+      - /ci/images/tflint
+      - /ci/images/trivy
     schedule:
       interval: weekly
     cooldown:
@@ -87,9 +88,9 @@ updates:
       ci-images:
         patterns: ["*"]
 
-  # CI Python tooling (yamllint).
+  # CI Python tooling (yamllint), ci/requirements-ci.txt (moved out of .github for the same reason as the images).
   - package-ecosystem: pip
-    directory: /.github
+    directory: /ci
     schedule:
       interval: weekly
     cooldown:

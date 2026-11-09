@@ -9,7 +9,7 @@
 # Run it: before the repo goes public (against the exact commit that goes public), and optionally as a pre-push hook:
 #   printf '#!/bin/sh\nexec bash scripts/check-private-denylist.sh\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
 # CI never runs this and never sees the private file (it is not in git); CI uses the public rules only.
-# Needs a gitleaks binary or docker (the digest-pinned image from .github/ci-images/gitleaks/Dockerfile).
+# Needs a gitleaks binary or docker (the digest-pinned image from ci/images/gitleaks/Dockerfile).
 # Exit codes: 0 nothing found, 1 a private identifier was found, 2 not configured (no private file, still the template, no tool).
 set -euo pipefail
 
@@ -65,9 +65,9 @@ run_gitleaks() { # run_gitleaks <git|dir>
     gitleaks "$mode" "$REPO" --config "$CONFIG" --redact --no-banner
   elif command -v docker > /dev/null 2>&1; then
     local img cfgdir
-    img="$(awk '$1=="FROM" && $4=="gitleaks" {print $2}' "$SCRIPT_DIR/../.github/ci-images/gitleaks/Dockerfile")"
+    img="$(awk '$1=="FROM" && $4=="gitleaks" {print $2}' "$SCRIPT_DIR/../ci/images/gitleaks/Dockerfile")"
     [ -n "$img" ] || {
-      echo "no gitleaks image in .github/ci-images/gitleaks/Dockerfile" >&2
+      echo "no gitleaks image in ci/images/gitleaks/Dockerfile" >&2
       exit 2
     }
     cfgdir="$(cd "$(dirname "$CONFIG")" && pwd)"
