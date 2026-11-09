@@ -16,6 +16,9 @@
 ALERT_ETC_DIR="${HOME_LAB_ETC_DIR:-/etc/home-lab}"
 ALERT_STATE_DIR="${HOME_LAB_STATE_DIR:-/var/lib/home-lab}"
 ALERT_INTERVAL="${HOME_LAB_ALERT_INTERVAL:-86400}"
+# The timer has RandomizedDelaySec=1h, so a run can come up to an hour earlier than yesterday's: allow slack, so the cadence is
+# daily, not 24 to 48 hours (QA-L-1). Override for tests: HOME_LAB_ALERT_SLACK (seconds).
+ALERT_SLACK="${HOME_LAB_ALERT_SLACK:-7200}"
 
 ALERT_TOPIC_RE='^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+$'
 
@@ -40,7 +43,7 @@ alert_publish() {
   }
   topic="$(alert_topic)"
   [ -n "$topic" ] || {
-    warn "alert: ALERT_TOPIC_ARN is missing or malformed in $env_file (terraform output alert_topic_arn, see docs/runbooks/alerting.md)"
+    warn "alert: ALERT_TOPIC_ARN is missing or malformed in $env_file (no quotes or spaces; value from terraform output alert_topic_arn, see docs/runbooks/alerting.md)"
     return 1
   }
   ta="$(lab_env_get "$env_file" RA_TRUST_ANCHOR_ARN)"
@@ -68,8 +71,10 @@ alert_publish() {
     return 1
   }
   # SNS limits: subject 100 ASCII characters on one line, message 256 KB. Keep both short and plain.
+  # SEC-L-7: both values start with fixed text (never "-" or "file://") and are passed as --option=value.
+  case "$subject" in home-lab*) ;; *) subject="home-lab: $subject" ;; esac
   subject="$(printf '%s' "$subject" | tr -c '[:print:]' ' ' | cut -c1-100)"
-  message="$(printf '%s' "$message" | head -c 4000)"
+  message="$(printf 'home-lab alert\n%s' "$message" | head -c 4000)"
 
   tmp="$(mktemp -d)"
   chmod 0700 "$tmp"
@@ -82,7 +87,7 @@ CFG
   out="$(env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_DEFAULT_PROFILE \
     HOME="$tmp" AWS_CONFIG_FILE="$tmp/aws-config" AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_PROFILE=home-lab-host \
     AWS_EC2_METADATA_DISABLED=true AWS_PAGER="" \
-    aws sns publish --topic-arn "$topic" --subject "$subject" --message "$message" \
+    aws sns publish --topic-arn "$topic" --subject="$subject" --message="$message" \
     --query MessageId --output text --region "$region" --no-cli-pager 2>&1)" || rc=$?
   rm -rf "$tmp"
   if [ "$rc" -ne 0 ]; then
@@ -92,26 +97,44 @@ CFG
   printf 'alert published (SNS message id %s)\n' "$(printf '%s' "$out" | head -n 1 | cut -c1-64)"
 }
 
-# alert_send <key> <subject> <message>: rate limited publish. Returns 0 when sent OR suppressed (nothing more to do), 1 on failure.
+# alert_last_sent <file> <now>: print the epoch of the last alert from a state file, or nothing when the file is missing or its
+# content is not trustworthy (not plain decimal digits, more than 11 digits, in the future, which a Pi with no RTC can write, QA-M-2).
+# The value is converted with 10# so a leading zero is never read as octal (QA-L-6).
+alert_last_sent() {
+  local last
+  last="$(head -c 20 "$1" 2> /dev/null | tr -d '\n' || true)"
+  [[ "$last" =~ ^[0-9]{1,11}$ ]] || return 0
+  last=$((10#$last))
+  [ "$last" -le "$2" ] || return 0
+  printf '%s' "$last"
+}
+
+# alert_send <key> <subject> <message>: rate limited publish (one per key per interval, minus slack). Returns 0 when sent OR
+# suppressed (nothing more to do), 1 on failure. A lock makes check, publish and state write one step, so two parallel runs for
+# one key cannot both publish (QA-L-7).
 alert_send() {
-  local key="$1" subject="$2" message="$3" f last now
-  [[ "$key" =~ ^[a-z0-9-]{1,40}$ ]] || {
+  local key="$1" subject="$2" message="$3" f last now rc=0
+  [[ "$key" =~ ^[a-z0-9-]{1,60}$ ]] || {
     warn "alert: bad key '$key'"
     return 1
   }
-  f="$ALERT_STATE_DIR/alert-$key.last"
-  now="$(date +%s)"
-  if [ -r "$f" ]; then
-    last="$(cat "$f" 2> /dev/null || true)"
-    if [[ "$last" =~ ^[0-9]+$ ]] && [ $((now - last)) -lt "$ALERT_INTERVAL" ]; then
-      printf 'alert for %s suppressed: one was sent %d minutes ago (limit: one per %d hours)\n' "$key" $(((now - last) / 60)) $((ALERT_INTERVAL / 3600))
-      return 0
-    fi
-  fi
   { mkdir -p "$ALERT_STATE_DIR" && chmod 0700 "$ALERT_STATE_DIR"; } 2> /dev/null || {
     warn "alert: cannot create $ALERT_STATE_DIR"
     return 1
   }
-  alert_publish "$subject" "$message" || return 1
-  printf '%s\n' "$now" > "$f.new" && mv -f "$f.new" "$f"
+  if command -v flock > /dev/null 2>&1 && exec 8> "$ALERT_STATE_DIR/.lock"; then
+    flock -w 120 8 || warn "alert: could not take the lock; continuing without it"
+  fi
+  f="$ALERT_STATE_DIR/alert-$key.last"
+  now="$(date +%s)"
+  last="$(alert_last_sent "$f" "$now")"
+  if [ -n "$last" ] && [ $((now - last + ALERT_SLACK)) -lt "$ALERT_INTERVAL" ]; then
+    printf 'alert for %s suppressed: one was sent %d minutes ago (limit: one per %d hours)\n' "$key" $(((now - last) / 60)) $((ALERT_INTERVAL / 3600))
+  elif alert_publish "$subject" "$message"; then
+    printf '%s\n' "$now" > "$f.new" && mv -f "$f.new" "$f"
+  else
+    rc=1
+  fi
+  exec 8>&-
+  return "$rc"
 }
