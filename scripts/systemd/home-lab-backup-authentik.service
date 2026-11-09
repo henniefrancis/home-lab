@@ -2,8 +2,11 @@
 # Runs as ROOT on purpose: `docker exec` needs the Docker socket, and access to it is root-equivalent whoever holds it; the login user is
 # not in the docker group (SEC-M3). The hardening below is therefore the minimum that still works with the docker CLI: no new privileges,
 # private /tmp, read-only file system except /var/lib/home-lab, no home directories, no kernel, clock or device access, only IP and Unix
-# sockets, no namespaces, a system-call allow-list. A capability bounding set is deliberately NOT set: it is untested against the docker
-# and aws helpers on the Pi, and the script holds no secret (the database password is read inside the container).
+# sockets, no namespaces, a system-call allow-list, a private /proc view, a 0077 umask and resource limits so a dump cannot starve Traefik.
+# CapabilityBoundingSet keeps only the two capabilities that let root read root-only files and reach the docker socket whatever their modes.
+# These options could only be checked with systemd-analyze offline; if the first real run on the Pi fails with a permission error, the
+# journal shows which one (docs/runbooks/authentik-backup.md, "Hardening notes"), and the alert mail says the backup failed.
+# The script holds no secret (the database password is read inside the container).
 [Unit]
 Description=home-lab Authentik database backup (pg_dump, encrypted with age, uploaded to S3)
 Documentation=file:@REPO_DIR@/docs/runbooks/authentik-backup.md
@@ -40,3 +43,13 @@ RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077
+ProtectProc=invisible
+ProcSubset=pid
+ProtectHostname=true
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+MemoryMax=512M
+TasksMax=128
+CPUQuota=50%
+Nice=10

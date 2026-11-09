@@ -104,6 +104,8 @@ if [ "$*" = "--mock-marker" ]; then echo MOCK-AWS-MARKER; exit 0; fi
   printf 'PROFILE %s\n' "${AWS_PROFILE:-}"
   if grep -q '^credential_process = /usr/local/bin/aws_signing_helper credential-process' "${AWS_CONFIG_FILE:-/nonexistent}" 2> /dev/null; then echo "CONFIG-OK"; fi
   printf 'MODE %s\n' "$(stat -c %a "$(dirname "${AWS_CONFIG_FILE:-/nonexistent}")" 2> /dev/null || echo none)"
+  printf 'AMBIENT [%s][%s][%s][%s]\n' "${AWS_ACCESS_KEY_ID:-}" "${AWS_SECRET_ACCESS_KEY:-}" "${AWS_SESSION_TOKEN:-}" "${AWS_DEFAULT_PROFILE:-}"
+  printf 'CREDFILE %s\n' "${AWS_SHARED_CREDENTIALS_FILE:-}"
 } >> "$MOCK_LOG"
 case "$1 $2" in
   "sns publish")
@@ -178,6 +180,20 @@ check "success: the state file holds a current epoch, no .new file is left" bash
 check "success: the state file is private (0600) and the state dir is 0700" bash -c 'test "$(stat -c %a "$1/backup-authentik.last")" = 600 && test "$(stat -c %a "$1")" = 700' _ "$STATE"
 check "success: no alert sent" test "$(published)" -eq 0
 check "success: the output names no credential" bash -c '! grep -Eqi "secret|session|token|BEGIN|password=" "$1"' _ "$T/o"
+
+# QA L-5: ambient AWS credentials of the calling environment must never reach aws (only the host profile may be used)
+fresh
+backup AWS_ACCESS_KEY_ID=AKIAAMBIENTCANARY AWS_SECRET_ACCESS_KEY=ambientsecretcanary AWS_SESSION_TOKEN=ambienttokencanary AWS_DEFAULT_PROFILE=ambientprofile
+check "ambient AWS_* credentials are stripped before aws runs, the shared credentials file is /dev/null" bash -c 'test "$1" -eq 0 && grep -q "^AMBIENT \[\]\[\]\[\]\[\]$" "$2" && ! grep -q "canary" "$2" && grep -q "^CREDFILE /dev/null$" "$2"' _ "$rc" "$MOCK_LOG"
+
+# QA M-2: a restore is in progress, the nightly run must not upload the fresh empty database as the newest backup
+fresh
+touch "$ETC/restore-pending"
+backup
+check "restore-pending: exit 0, nothing dumped, nothing uploaded, no alert, the reason is logged" bash -c 'test "$1" -eq 0 && grep -q "restore-pending exists" "$2" && test "$(grep -c "^DOCKER exec" "$3")" -eq 0 && test "$(grep -c "^ARGS s3" "$3")" -eq 0 && test "$(grep -c "^ARGS sns" "$3")" -eq 0 && test "$4" = ok' _ "$rc" "$T/o" "$MOCK_LOG" "$(state_unchanged && echo ok)"
+rm -f "$ETC/restore-pending"
+backup
+check "restore-pending removed: the next run backs up again" bash -c 'test "$1" -eq 0 && test "$(grep -c "^DOCKER exec" "$2")" -eq 1' _ "$rc" "$MOCK_LOG"
 
 # ---------------------------------------------------------------- failures: every stage, and the state file stays untouched
 fresh
@@ -329,6 +345,14 @@ out="$(pf "BACKUP_AGE_RECIPIENT=age1short\nBACKUP_S3_BUCKET=$BUCKET\n" "$((NOW -
 check "preflight: a malformed recipient is a WARN" bash -c 'printf "%s" "$1" | grep -q "^\[WARN\] backup-recipient"' _ "$out"
 check "preflight: the timer is in the timer list and age is in the installed-tools check" bash -c 'grep -q "home-lab-backup-authentik.timer; do" scripts/preflight.sh && grep -q "command -v age" scripts/preflight.sh'
 
+mkdir -p "$T/pf-etc"
+touch "$T/pf-etc/restore-pending"
+out="$(pf "$GOOD_ENV" "$((NOW - 3600))")"
+check "preflight: a restore-pending file is a WARN that names it" bash -c 'printf "%s" "$1" | grep -q "^\[WARN\] backup-restore-pending"' _ "$out"
+rm -f "$T/pf-etc/restore-pending"
+out="$(pf "$GOOD_ENV" "$((NOW - 3600))")"
+check "preflight: no restore-pending file, no such warning" bash -c '! printf "%s" "$1" | grep -q "backup-restore-pending"' _ "$out"
+
 # ---------------------------------------------------------------- render-aws-env.sh (terraform is a mock too)
 cat > "$T/mockbin/terraform" << 'MOCK'
 #!/usr/bin/env bash
@@ -358,11 +382,27 @@ for badrec in "$fake_identity" "age1short" "$RECIPIENT;id"; do
   check "render-aws-env refuses '${badrec:0:20}...' (exit 2, nothing printed, the value is not echoed)" bash -c 'test "$1" -eq 2 && ! test -s "$2" && ! grep -q "SECRET-KEY-1" "$3"' _ "$rc" "$T/o" "$T/e"
 done
 
+rc=0
+bash scripts/render-aws-env.sh --age-recipient "" > "$T/o" 2> "$T/e" || rc=$?
+check "render-aws-env with an empty --age-recipient: friendly message, exit 2 (QA L-9)" bash -c 'test "$1" -eq 2 && grep -q "empty or missing" "$2"' _ "$rc" "$T/e"
+if [ -n "$REAL_AGE" ]; then
+  mkdir -p "$T/realbin" && ln -sf "$REAL_AGE" "$T/realbin/age" && cp "$T/mockbin/terraform" "$T/realbin/terraform"
+  rc=0
+  PATH="$T/realbin:/usr/bin:/bin" bash scripts/render-aws-env.sh --age-recipient "$RECIPIENT" > "$T/o" 2> "$T/e" || rc=$?
+  check "render-aws-env with real age: a recipient of the right shape but a bad checksum is refused at render time (exit 2)" bash -c 'test "$1" -eq 2 && ! grep -q "^BACKUP_AGE_RECIPIENT" "$2" && grep -q "checksum" "$3"' _ "$rc" "$T/o" "$T/e"
+  "$REAL_AGE_KEYGEN" -o "$T/id2.txt" > /dev/null 2>&1
+  good_rec="$("$REAL_AGE_KEYGEN" -y "$T/id2.txt")"
+  rc=0
+  PATH="$T/realbin:/usr/bin:/bin" bash scripts/render-aws-env.sh --age-recipient "$good_rec" > "$T/o" 2> "$T/e" || rc=$?
+  check "render-aws-env with real age: a real recipient is accepted and printed" bash -c 'test "$1" -eq 0 && grep -q "^BACKUP_AGE_RECIPIENT=$2$" "$3"' _ "$rc" "$good_rec" "$T/o"
+fi
+
 # ---------------------------------------------------------------- units, drift list, hardening
 SVC=scripts/systemd/home-lab-backup-authentik.service
 TMR=scripts/systemd/home-lab-backup-authentik.timer
 check "the service runs scripts/backup-authentik.sh as a oneshot and fails over to the alert handler (OnFailure=)" bash -c 'grep -q "^ExecStart=@REPO_DIR@/scripts/backup-authentik.sh$" "$1" && grep -q "^Type=oneshot" "$1" && grep -q "^OnFailure=home-lab-alert-failure@%n.service" "$1"' _ "$SVC"
-check "the service keeps what docker exec allows: no new privileges, private tmp, read-only system, no kernel or clock access" bash -c 'for k in NoNewPrivileges=true PrivateTmp=true ProtectSystem=strict ProtectHome=true ProtectKernelTunables=true ProtectKernelModules=true ProtectKernelLogs=true ProtectControlGroups=true ProtectClock=true RestrictRealtime=true LockPersonality=true RestrictSUIDSGID=true; do grep -q "^$k\$" "$1" || { echo "missing $k"; exit 1; }; done' _ "$SVC"
+check "the service keeps what docker exec allows: no new privileges, private tmp, read-only system, no kernel or clock access" bash -c 'for k in NoNewPrivileges=true PrivateTmp=true ProtectSystem=strict ProtectHome=true ProtectKernelTunables=true ProtectKernelModules=true ProtectKernelLogs=true ProtectControlGroups=true ProtectClock=true RestrictRealtime=true LockPersonality=true RestrictSUIDSGID=true UMask=0077 ProtectProc=invisible ProcSubset=pid ProtectHostname=true SystemCallArchitectures=native MemoryMax=512M TasksMax=128 CPUQuota=50%; do grep -q "^$k\$" "$1" || { echo "missing $k"; exit 1; }; done' _ "$SVC"
+check "the service has a capability bounding set (only the two DAC capabilities root needs)" grep -q "^CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH$" "$SVC"
 check "the service documents why it is root and keeps /var/lib/home-lab as its state directory" bash -c 'grep -qi "root" "$1" && grep -q "^StateDirectory=home-lab" "$1"' _ "$SVC"
 check "the timer is nightly, randomised and persistent" bash -c 'grep -q "^OnCalendar=" "$1" && grep -q "^RandomizedDelaySec=" "$1" && grep -q "^Persistent=true" "$1" && grep -q "^WantedBy=timers.target" "$1"' _ "$TMR"
 check "the unit drift list covers both new units" bash -c '. scripts/lib/common.sh; . scripts/lib/units.sh; printf "%s\n" "${LAB_UNITS[@]}" | grep -qx home-lab-backup-authentik.service && printf "%s\n" "${LAB_UNITS[@]}" | grep -qx home-lab-backup-authentik.timer'

@@ -72,6 +72,15 @@ if command -v flock > /dev/null 2>&1 && exec 9> "$ALERT_STATE_DIR/.backup.lock";
   }
 fi
 
+# Recovery in progress (QA M-2): on a rebuilt Pi the fresh, EMPTY Authentik database would be dumped, uploaded and marked good the
+# first night, and it would then be the newest backup. The recovery runbook creates this file before bootstrap.sh (which enables the
+# timer) and removes it after a successful restore. While it exists the run is skipped: logged, exit 0, no alert (nothing is wrong).
+# preflight.sh WARNs about it, so a forgotten file shows up (and after 2 and 7 days of no success, backup-last WARNs and FAILs).
+if [ -e "$ALERT_ETC_DIR/restore-pending" ]; then
+  info "backup-authentik: $ALERT_ETC_DIR/restore-pending exists (a restore is in progress): no backup taken. Remove it after the restore (docs/runbooks/authentik-backup.md)"
+  exit 0
+fi
+
 # ---------------------------------------------------------------- configuration (validated, nothing sourced)
 [ -r "$ENV_FILE" ] || fail "cannot read $ENV_FILE (run with sudo)"
 bucket="$(lab_env_get "$ENV_FILE" BACKUP_S3_BUCKET)"

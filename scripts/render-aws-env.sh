@@ -19,7 +19,11 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --age-recipient)
-      AGE_RECIPIENT="${2:?--age-recipient needs an age public key (age1...)}"
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "--age-recipient needs the age PUBLIC key (age1... from age-keygen), and it is empty or missing." >&2
+        exit 2
+      fi
+      AGE_RECIPIENT="$2"
       shift 2
       ;;
     -h | --help)
@@ -42,6 +46,15 @@ done
 if [ -n "$AGE_RECIPIENT" ] && ! [[ "$AGE_RECIPIENT" =~ ^age1[02-9ac-hj-np-z]{58}$ ]]; then
   echo "--age-recipient must be an age public key (age1 and 58 more characters). Never pass the secret identity (AGE-SECRET-KEY-...)." >&2
   exit 2
+fi
+
+# A recipient with the right shape but a bad checksum would only fail at the first nightly run (QA L-9): when age is installed here, make it
+# parse the recipient now (encrypting a few bytes to /dev/null). Skipped quietly when age is not on this machine.
+if [ -n "$AGE_RECIPIENT" ] && command -v age > /dev/null 2>&1; then
+  printf 'x' | age -r "$AGE_RECIPIENT" > /dev/null 2>&1 || {
+    echo "age does not accept that recipient (a typo: the checksum is wrong). Copy the Public key line of age-keygen again." >&2
+    exit 2
+  }
 fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

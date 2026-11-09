@@ -586,6 +586,9 @@ check_backup() {
     configured=0
     warnx backup-bucket "BACKUP_S3_BUCKET is missing or malformed in $f (terraform output backup_bucket_name, scripts/render-aws-env.sh)"
   fi
+  if [ -e "$ETC_DIR/restore-pending" ]; then
+    warnx backup-restore-pending "$ETC_DIR/restore-pending exists: nightly backups are SKIPPED until you remove it. Remove it right after the Authentik restore (docs/runbooks/authentik-backup.md section 4)"
+  fi
   sf="${HOME_LAB_STATE_DIR:-/var/lib/home-lab}/backup-authentik.last"
   now="$(date +%s)"
   last="$(head -c 20 "$sf" 2> /dev/null | tr -d '\n' || true)"
