@@ -71,12 +71,12 @@ updates:
   # N2: the images CI runs with `docker run` (gitleaks, terraform, tflint, trivy) each have their own one-line Dockerfile under
   # .github/ci-images/<tool>/ (see the header there). They used to share one multi-stage Dockerfile and the whole job failed
   # with UNAUTHORIZED when pulling hashicorp/terraform; with one directory per tool a registry problem fails only that tool's job.
-  # If the terraform directory still reports UNAUTHORIZED on the next run, drop that one directory from this list and bump
-  # the image by hand; the other three keep working.
+  # /.github/ci-images/terraform is NOT listed: Docker Hub answers Dependabot's lookup of hashicorp/terraform with
+  # UNAUTHORIZED (seen 2026-11-09), which fails the whole job. Bump that image by hand together with required_version in
+  # terraform/*/versions.tf (same Terraform release), digest from the official Docker Hub tag page.
   - package-ecosystem: docker
     directories:
       - /.github/ci-images/gitleaks
-      - /.github/ci-images/terraform
       - /.github/ci-images/tflint
       - /.github/ci-images/trivy
     schedule:
