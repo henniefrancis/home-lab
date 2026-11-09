@@ -47,4 +47,6 @@ regexes = [
 ]
 paths = [
   '''(^|/)\.gitleaks\.toml$''',
+  # the fabricated account and zone IDs in this test file are its input
+  '''(^|/)scripts/test-gitleaks-rules\.sh$''',
 ]
