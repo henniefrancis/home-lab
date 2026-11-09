@@ -99,5 +99,5 @@ If you get no alert but expect one: `sudo scripts/alert.sh check; echo $?`, `ls 
 
 ## Not covered
 
-Only certificates, the check units, the Authentik backup (K5: the script mails `backup-authentik-failed` once a day, and preflight WARNs after 2 days and FAILs after 7 without a success, `authentik-backup.md`) and the alert path itself are watched. Nothing yet alerts on a down container or a full SD card; do not read silence as health. SNS email is not a pager: it reaches you when you read mail.
+Only certificates, the check units, the Authentik backup (K5: the script mails `backup-authentik-failed` once a day; the daily `alert.sh check` also runs `scripts/backup-age-check.sh` and mails "Authentik backup age" when the last success is over 2 days old (critical after 7) or `/etc/home-lab/restore-pending` has stopped the backups for over 3 days; preflight WARNs and FAILs on the same ages, `authentik-backup.md`) and the alert path itself are watched. Nothing yet alerts on a down container or a full SD card; do not read silence as health. SNS email is not a pager: it reaches you when you read mail.
 SNS Publish is a CloudTrail data event; if you turn on audit logging (N7) and want these calls recorded, add data events for the topic.

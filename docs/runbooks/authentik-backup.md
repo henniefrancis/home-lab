@@ -58,11 +58,13 @@ was not suspiciously small. The Pi cannot delete, so a failed or truncated uploa
    `home-lab-backup-authentik.timer`), then `sudo scripts/preflight.sh --stage full`: `age`, `backup-recipient`, `backup-bucket` and `timer-home-lab-backup-authentik` should PASS; `backup-last` WARNs "never" until step 5.
 5. **First backup.** `sudo systemctl start home-lab-backup-authentik.service` (it waits until done), then `journalctl -u home-lab-backup-authentik.service -n 20` (expect `OK, <n> bytes uploaded`).
    From the laptop with admin SSO: `aws s3 ls s3://<bucket>/authentik/ --profile <profile>` shows the `.dump.age` and its `.dump.age.ok`. `sudo scripts/preflight.sh --stage full` now shows `backup-last` PASS.
-6. **Restore test** (section 5) the same day. Until it passes once, the backup is unproven.
+6. **Check the hardened unit on the Pi (first real run).** The unit's hardening (capability set, `ProtectProc`, `ProcSubset`, memory limit) was verified offline only. After the first successful run of step 5, run `systemd-analyze security home-lab-backup-authentik.service` and note the overall exposure score (the offline baseline was about 4, OK). If step 5 failed with a permission error that the plain script does not have, **fall back**: remove the most recent hardening option you suspect (the `CapabilityBoundingSet` line first, then `ProtectProc` and `ProcSubset`), `sudo systemctl daemon-reload`, start the unit again, and tell the developer.
+7. **Restore test** (section 5) the same day. Until it passes once, the backup is unproven.
 
 ## 2. Day to day
 
 - `systemctl list-timers home-lab-backup-authentik.timer` (next and last run), `journalctl -u home-lab-backup-authentik.service`, `sudo cat /var/lib/home-lab/backup-authentik.last` (epoch of the last full success).
+- **The daily alert path watches the backup too** (SEC L-6). `alert.sh check`, run by the daily certificate timer, also runs `scripts/backup-age-check.sh` when `BACKUP_S3_BUCKET` is set: WARN when the last success (`backup-authentik.last`) is more than 2 days old, CRITICAL after 7; mails "Authentik backup age" through the same rate-limited alert library, one mail per state a day, an escalation mails again. If no success was ever recorded, the clock starts when the check first saw backups configured (`/var/lib/home-lab/backup-authentik.first-seen`, written once). A `restore-pending` file older than 3 days WARNs (7 days CRITICAL) with a message that says the sentinel is stopping the backups, so a forgotten sentinel can no longer be silent.
 - Preflight: `backup-last` PASS under 2 days, WARN from 2 days, FAIL from 7 days; `backup-restore-pending` WARNs while the sentinel exists. A failed night also mails once per day.
 - Alert reasons and what to do:
 
@@ -171,7 +173,8 @@ The dump has to get from your laptop to the Pi without a plaintext file on the P
    echo "restore pipeline exit code: $?"      # must be 0
    ```
 
-   If the code is not 0 (an expired URL, a truncated download, a restore error), nothing is lost: `--clean` makes a repeat safe. Create a new URL (step 2, last command) and run the last block again.
+   **If the code is not 0 (an expired URL, a truncated download, a restore error), the live database may now be EMPTY or half restored:** `--clean` drops the tables before it loads them, so a failed or truncated run leaves a gutted database. **Keep `authentik-server` and `authentik-worker` stopped until `pg_restore` exits 0.** A repeat is safe (`--clean --if-exists`): create a new URL (step 2, last command) and run the last block again, as often as it takes. Do not start the server on a database you have not restored successfully.
+   A very long presigned URL (a large SSO session token) can be cut by the terminal's line limit when pasted, and a cut URL gives `403`: on the laptop check its length (`... | wc -c`, keep it under about 4000 characters) before you paste it.
 4. **Pi, clean up.** `shred -u /run/ak-restore/id.txt; rmdir /run/ak-restore; unset URL`. **Laptop:** remove the `restore/` object and its version: `aws s3api list-object-versions --bucket <bucket> --prefix restore/ --profile <profile>`, then `aws s3api delete-object --bucket <bucket> --key restore/authentik-restore.dump.age --version-id <VersionId> --profile <profile>` for each (the lifecycle removes it after one day anyway); delete `authentik.dump.age` and clear the scrollback.
 5. **Pi:** `dc start authentik-server authentik-worker`, then `dc ps` (both healthy; Authentik runs its migrations at start, so allow a few minutes).
 6. **Remove the sentinel** `/etc/home-lab/restore-pending` (`rm /etc/home-lab/restore-pending`), so the nightly backup resumes (section 7), and `exit` the root shell.

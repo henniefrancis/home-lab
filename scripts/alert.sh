@@ -96,6 +96,8 @@ cmd_check() {
   rm -f "$marker" 2> /dev/null || true
   run_check cert-expiry "Pi Roles Anywhere certificates" "$SCRIPT_DIR/cert-expiry.sh"
   run_check served-cert "certificate served by Traefik" "$SCRIPT_DIR/served-cert-check.sh"
+  # K5, SEC L-6: a backup that silently stopped (a forgotten restore-pending file, a dead timer) mails too.
+  run_check backup-age "Authentik backup age" "$SCRIPT_DIR/backup-age-check.sh"
   if [ "$WORST" -ne 0 ] && [ "$ALERT_FAILED" -eq 0 ]; then
     { mkdir -p "$ALERT_STATE_DIR" && : > "$marker"; } 2> /dev/null || true
   fi

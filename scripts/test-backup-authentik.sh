@@ -397,6 +397,74 @@ if [ -n "$REAL_AGE" ]; then
   check "render-aws-env with real age: a real recipient is accepted and printed" bash -c 'test "$1" -eq 0 && grep -q "^BACKUP_AGE_RECIPIENT=$2$" "$3"' _ "$rc" "$good_rec" "$T/o"
 fi
 
+# ---------------------------------------------------------------- backup-age-check.sh and the daily alert path (SEC L-6)
+BAC=scripts/backup-age-check.sh
+bac() { # bac <last epoch or "" > [env assignments...]: run the check against a fresh state dir; verdict in $T/o, exit code in $rc
+  local last="$1"
+  shift
+  rm -rf "$T/bs" && mkdir -p "$T/bs"
+  [ -z "$last" ] || echo "$last" > "$T/bs/backup-authentik.last"
+  rc=0
+  env HOME_LAB_ETC_DIR="$ETC" HOME_LAB_STATE_DIR="$T/bs" "$@" bash "$BAC" > "$T/o" 2>&1 || rc=$?
+}
+NOW="$(date +%s)"
+write_env
+rm -f "$ETC/restore-pending"
+bac "$((NOW - 3600))"
+check "backup-age: a backup an hour ago -> PASS, exit 0" bash -c 'test "$1" -eq 0 && grep -q "^\[PASS\] backup-age" "$2"' _ "$rc" "$T/o"
+bac "$((NOW - 2 * 86400 + 600))"
+check "backup-age: just under 2 days -> PASS" test "$rc" -eq 0
+bac "$((NOW - 3 * 86400))"
+check "backup-age: 3 days old -> WARN, exit 1" bash -c 'test "$1" -eq 1 && grep -q "^\[WARN\] backup-age.*3 days" "$2"' _ "$rc" "$T/o"
+bac "$((NOW - 8 * 86400))"
+check "backup-age: 8 days old -> FAIL, exit 2" bash -c 'test "$1" -eq 2 && grep -q "^\[FAIL\] backup-age.*8 days" "$2"' _ "$rc" "$T/o"
+bac "$((NOW + 86400))"
+check "backup-age: a time in the future counts as none recorded (first-seen starts the clock, no alert yet)" bash -c 'test "$1" -eq 0 && grep -q "no backup recorded yet" "$2" && test -s "$3/backup-authentik.first-seen"' _ "$rc" "$T/o" "$T/bs"
+bac ""
+check "backup-age: configured, never run: the first look records first-seen and passes" bash -c 'test "$1" -eq 0 && grep -Eq "^[0-9]{10}$" "$2/backup-authentik.first-seen" && test ! -e "$2/backup-authentik.first-seen.new"' _ "$rc" "$T/bs"
+echo "$((NOW - 3 * 86400))" > "$T/bs/backup-authentik.first-seen"
+rc=0
+env HOME_LAB_ETC_DIR="$ETC" HOME_LAB_STATE_DIR="$T/bs" bash "$BAC" > "$T/o" 2>&1 || rc=$?
+check "backup-age: never run and first seen 3 days ago -> WARN (the clock does not restart)" bash -c 'test "$1" -eq 1 && grep -q "^\[WARN\] backup-age.*since this check first saw" "$2" && test "$(cat "$3/backup-authentik.first-seen")" = "$4"' _ "$rc" "$T/o" "$T/bs" "$((NOW - 3 * 86400))"
+echo "$((NOW - 9 * 86400))" > "$T/bs/backup-authentik.first-seen"
+rc=0
+env HOME_LAB_ETC_DIR="$ETC" HOME_LAB_STATE_DIR="$T/bs" bash "$BAC" > "$T/o" 2>&1 || rc=$?
+check "backup-age: never run and first seen 9 days ago -> FAIL" test "$rc" -eq 2
+bac "banana"
+check "backup-age: garbage in the last-success file counts as none recorded" bash -c 'test "$1" -eq 0 && grep -q "no backup recorded yet" "$2"' _ "$rc" "$T/o"
+# not configured
+cp "$ETC/aws.env" "$T/aws.env.keep"
+sed -i '/^BACKUP_S3_BUCKET=/d' "$ETC/aws.env"
+bac "$((NOW - 30 * 86400))"
+check "backup-age: not configured (no BACKUP_S3_BUCKET) -> PASS even with an ancient state, nothing to check" bash -c 'test "$1" -eq 0 && grep -q "not configured\|no backup configured" "$2"' _ "$rc" "$T/o"
+cp "$T/aws.env.keep" "$ETC/aws.env"
+# restore-pending sentinel
+touch "$ETC/restore-pending"
+bac "$((NOW - 30 * 86400))"
+check "backup-age: restore-pending under 3 days old -> PASS (a restore is in progress, expected)" bash -c 'test "$1" -eq 0 && grep -q "restore in progress" "$2"' _ "$rc" "$T/o"
+touch -d "4 days ago" "$ETC/restore-pending"
+bac "$((NOW - 3600))"
+check "backup-age: restore-pending 4 days old -> WARN that names the sentinel, whatever the last success says" bash -c 'test "$1" -eq 1 && grep -q "^\[WARN\] backup-age.*restore-pending.*SKIPPED" "$2"' _ "$rc" "$T/o"
+touch -d "8 days ago" "$ETC/restore-pending"
+bac "$((NOW - 3600))"
+check "backup-age: restore-pending 8 days old -> FAIL" test "$rc" -eq 2
+# through the daily alert path: a stale backup mails with its own key and state, rate limited like the certificate checks
+rm -rf "$T/bs" "$STATE"; mkdir -p "$T/bs" "$STATE"
+: > "$MOCK_LOG"
+echo "99999.00 1.00" > "$T/uptime"
+touch "$ETC/restore-pending"; touch -d "4 days ago" "$ETC/restore-pending"
+alertchk() { env HOME_LAB_ETC_DIR="$ETC" HOME_LAB_STATE_DIR="$STATE" HOME_LAB_UPTIME_FILE="$T/uptime" HOME_LAB_PKI_DIR="$T/nopki" SERVED_CERT_EXPECT=any bash scripts/alert.sh check > "$T/o" 2>&1 || true; }
+alertchk
+check "alert.sh check mails 'Authentik backup age' with a warn key when restore-pending is old" bash -c 'grep -q -- "--subject=home-lab WARNING: Authentik backup age" "$1" && test -f "$2/alert-backup-age-warn.last"' _ "$MOCK_LOG" "$STATE"
+n1="$(grep -c -- '--subject=home-lab WARNING: Authentik backup age' "$MOCK_LOG")"
+alertchk
+check "...and a second run the same day is suppressed (rate limit per key and state)" test "$(grep -c -- '--subject=home-lab WARNING: Authentik backup age' "$MOCK_LOG")" -eq "$n1"
+touch -d "9 days ago" "$ETC/restore-pending"
+alertchk
+check "...and escalation to critical mails again the same day (state is part of the key)" bash -c 'grep -q -- "--subject=home-lab CRITICAL: Authentik backup age" "$1" && test -f "$2/alert-backup-age-crit.last"' _ "$MOCK_LOG" "$STATE"
+rm -f "$ETC/restore-pending"
+check "alert.sh runs the backup age check and the script is executable in git" bash -c 'grep -q "run_check backup-age" scripts/alert.sh && git ls-files -s scripts/backup-age-check.sh | grep -q "^100755" || test -x scripts/backup-age-check.sh'
+
 # ---------------------------------------------------------------- units, drift list, hardening
 SVC=scripts/systemd/home-lab-backup-authentik.service
 TMR=scripts/systemd/home-lab-backup-authentik.timer
