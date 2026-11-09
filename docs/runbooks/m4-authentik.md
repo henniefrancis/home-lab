@@ -253,7 +253,7 @@ sudo docker start authentik-server                   # back up; https://traefik.
 | The Pi is unreachable on the network | Raspberry Pi Connect terminal (works without SSH), then the rows above. |
 | Database or data directory lost (new SD card) | The blueprint rebuilds groups, applications and providers; **users and MFA devices are gone** until backups exist (a later phase). `scripts/bootstrap.sh`, set `authentik/bootstrap-password`, `sudo scripts/deploy.sh`, log in as `akadmin`, enrol MFA again. |
 
-Authentik secret-key rotation invalidates every session and is not a routine operation; the Postgres password is changed in the database first (`password authentik` in psql, which runs `ALTER USER` without putting the value in argv), then SSM, then `deploy.sh --recreate authentik` (`rotate-secrets.md`, plan R48).
+Authentik secret-key rotation invalidates every session and is not a routine operation; the Postgres password is changed in the database first (`\password authentik` in psql, which runs `ALTER USER` without putting the value in argv), then SSM, then `deploy.sh --recreate authentik` (`rotate-secrets.md`, plan R48).
 
 ## 7. Rollback
 

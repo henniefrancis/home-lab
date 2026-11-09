@@ -63,6 +63,10 @@ rc=0
 bash scripts/deploy.sh --recreate traefik --only traefik > "$T/o" 2>&1 || rc=$?
 check "deploy.sh --recreate with --only: exit 2 (K8)" bash -c 'test "$1" -eq 2 && grep -q "cannot be combined" "$2"' _ "$rc" "$T/o"
 rc=0
+bash scripts/deploy.sh --recreate traefik --recreate authentik > "$T/o" 2>&1 || rc=$?
+check "deploy.sh --recreate twice: exit 2 with its own message, not the --only one (QA-L-11)" bash -c 'test "$1" -eq 2 && grep -q "given twice" "$2"' _ "$rc" "$T/o"
+check "deploy.sh --help ends at the usage text (no stray script line, QA-L-11)" bash -c '! bash scripts/deploy.sh --help | grep -q "set -euo"'
+rc=0
 bash scripts/deploy.sh --bogus > "$T/o" 2>&1 || rc=$?
 check "deploy.sh unknown argument: exit 2" test "$rc" -eq 2
 check "deploy.sh --help exits 0" bash scripts/deploy.sh --help

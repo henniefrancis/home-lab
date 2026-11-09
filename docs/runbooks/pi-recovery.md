@@ -18,7 +18,7 @@ Fastest first (minutes), then the tidy version:
 1. Disable the trust anchor so no certificate works: `aws rolesanywhere disable-trust-anchor --trust-anchor-id <uuid> --region af-south-1` (admin SSO), or set `enabled = false` on
    `aws_rolesanywhere_trust_anchor.ca` in `terraform/bootstrap` and apply. This stops BOTH identities (secret fetch and ACME) until you re-enable it in step 3.
 2. In the Tailscale admin console, remove the old `homelab-pi` node and (if the node key could have leaked) expire it.
-3. Treat every secret as exposed: rotate them as you can afford (`set-secret.sh`; the Authentik secret key rotation invalidates sessions, the Postgres password is changed in the database first (`password authentik` in psql, which runs `ALTER USER`
+3. Treat every secret as exposed: rotate them as you can afford (`set-secret.sh`; the Authentik secret key rotation invalidates sessions, the Postgres password is changed in the database first (`\password authentik` in psql, which runs `ALTER USER`
    without the value in argv; see `rotate-secrets.md`). The break-glass password should be changed (`htpasswd -nBi -C 12 admin`).
 4. Tidy revocation: bump `pki_generation` (for example `gen-2`) in `terraform/bootstrap/terraform.tfvars` and apply with admin SSO. The roles' trust policy pins the OU, so old certificates
    stop working for good; re-enable the trust anchor. (Cost: both new certificates must carry `OU=gen-2`.)
