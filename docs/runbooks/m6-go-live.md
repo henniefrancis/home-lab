@@ -152,5 +152,5 @@ Settings, Code security, Private vulnerability reporting: Enable. `SECURITY.md` 
 
 - T5b (Access Analyzer tightening of the four roles) one week later (owner decision).
 - Record in the Obsidian TAM note: date public, SHA, ruleset enabled, deploy key removed, K2 done.
-- The remaining TAM items still apply before sign-off: K5 (recovery drill, CA backup restore test, `pg_dump` off the Pi), the Q20 tabletop.
+- The remaining TAM items still apply before sign-off: K5 (the pieces are built: encrypted `pg_dump` to S3, `authentik-backup.md`, and the offline CA backup with its restore test, `ca-backup.md`; the owner still does the one-time setup, runs both restore tests and records the drill, see the drill checklist in `pi-recovery.md`), the Q20 tabletop.
 - Watch the first email alert path for real: `sudo scripts/alert.sh check` weekly by hand for the first month, and the first automatic renewal (about 60 days after issue).

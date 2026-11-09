@@ -113,7 +113,9 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 | M5 | Homepage dashboard | Done |
 | M6 | Production certificate, alerting, hardening, repository made public | In progress (`docs/runbooks/m6-go-live.md`) |
 
-Later phases (not scheduled): DNSSEC for the zone, backups and a recovery drill, more services behind the same pattern.
+Backups (K5): a nightly age-encrypted `pg_dump` of the Authentik database goes to a write-only, versioned S3 bucket (`docs/runbooks/authentik-backup.md`), and the offline CA has a documented, testable backup (`docs/runbooks/ca-backup.md`). The recovery drill (`docs/runbooks/pi-recovery.md`) is the owner's to run.
+
+Later phases (not scheduled): DNSSEC for the zone, more services behind the same pattern.
 
 ## Development
 

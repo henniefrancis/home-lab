@@ -603,6 +603,7 @@ If the provider **does** read the decrypted value into state, stop and switch to
 - `aws/ssm` has no monthly fee; KMS request charges are negligible at this volume.
 - Roles Anywhere is free; HCP is on the free tier.
 - Customer-managed key `alias/home-lab-ssm` (SEC-M2, supersedes A22): about USD 1/month. The SNS alert topic (K4, AWS-managed key `aws/sns`, one email subscriber) is negligible (email delivery is free at this volume).
+- The Authentik backup bucket (K5, SSE-S3, a nightly dump of a few MB kept 400 days, noncurrent versions 35 days): well under 1 GB, a few US cents a month.
 - **Total about USD 1.50-2/month, inside the USD 5 budget.**
 
 ### 6.8 PKI (Roles Anywhere)
@@ -687,7 +688,7 @@ If the provider **does** read the decrypted value into state, stop and switch to
   - Adoption no-op gates and `prevent_destroy`.
   - Break-glass and Pi Connect.
 - **Performance:** unchanged; the fetch is one API call per deploy.
-- **Cost (2026-11 update):** about USD 1.50-2/month (SSM Standard free, the customer-managed key `alias/home-lab-ssm` about USD 1/month since SEC-M2, SNS alerts negligible, no Secrets Manager); USD 5 alert.
+- **Cost (2026-11 update):** about USD 1.50-2/month (SSM Standard free, the customer-managed key `alias/home-lab-ssm` about USD 1/month since SEC-M2, SNS alerts negligible, the Authentik backup bucket a few US cents (K5), no Secrets Manager); USD 5 alert.
 - **Sustainability:** one ARM host, managed services.
 
 ## 8. Phased delivery plan (owner review at the end of EVERY milestone)
@@ -820,7 +821,7 @@ Unchanged from rev 6, steps AD1-AD7:
 4. Write `/etc/home-lab/aws.env`.
 5. Run `deploy.sh`, which restores all secrets from SSM. The password manager remains the offline backup if SSM is unavailable; in that case use `set-secret.sh` from the laptop.
 6. **Tailscale:** generate a new one-off key, `set-secret.sh`, deploy, unset. Remove the old node in the Tailscale admin.
-7. **Authentik data** (users, MFA) is lost until backups exist (a later phase). Config comes back from the blueprints. Re-enrol MFA.
+7. **Authentik data** (users, MFA): restore the nightly encrypted backup from S3 (K5, `docs/runbooks/authentik-backup.md`). Without a usable backup, config comes back from the blueprints and MFA must be re-enrolled.
 
 ## 12. Risks and mitigations
 

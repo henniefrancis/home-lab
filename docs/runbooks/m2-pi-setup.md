@@ -323,6 +323,8 @@ scripts/pki/new-ca.sh --out "$HOME/home-lab-ca"
 - Result: `~/home-lab-ca/ca.key` (ECDSA P-384, AES-256 encrypted) and `~/home-lab-ca/ca.crt` (`CN=home-lab-offline-ca`, 5 years, `CA:TRUE`, pathlen 0).
 - The script refuses to run inside a git work tree and refuses to overwrite an existing CA.
 - **Store `ca.key` (attach the file) and its passphrase in the password manager.** Keep `ca.key` only on encrypted storage. Only `ca.crt` is public.
+- **Back the CA up now, and prove the backup** (K5): the three files (`ca.key`, `ca.crt`, `issued.tsv`) as an attachment in the password manager AND on a USB stick kept apart from the laptop, the passphrase only in the password manager (its own item, never next to the files),
+  then `scripts/pki/test-ca-restore.sh --ca-dir <restored copy>`. Full procedure, refresh rule and the lost-laptop recovery: `ca-backup.md`. Until you do this the CA has no other copy.
 - The script prints `ca.crt` at the end; the SHA-256 fingerprint is printed too. Note it for step 8.
 
 ## 5. Generate keys and CSRs on the Pi [Pi]
@@ -363,6 +365,8 @@ scripts/pki/sign.sh --ca-dir "$HOME/home-lab-ca" --role traefik --csr ~/m2-pki/t
 `sign.sh` asks for the CA passphrase and **refuses** unless the CSR has a valid self-signature, an ECDSA P-256 key and exactly the expected subject
 (`CN=home-lab-pi-host` or `CN=home-lab-pi-traefik`, plus `OU=<generation>`, nothing else). Certificates are `CA:FALSE`, `digitalSignature`, `clientAuth`,
 SHA-256, **365 days**, with a random serial, and are chain-verified before they are written. Each issuance is logged in `~/home-lab-ca/issued.tsv`.
+
+**After every `sign.sh` run, refresh the CA backup** (`issued.tsv` changed; `ca-backup.md` section 2): replace the files in the password manager item and on the USB stick.
 
 ## 7. Install the certificates on the Pi [Pi]
 
@@ -417,7 +421,7 @@ On the laptop, print the file contents from the Terraform outputs (needs `terraf
 scripts/render-aws-env.sh --generation gen-1
 ```
 
-It prints five lines (`AWS_REGION`, `PKI_GENERATION`, `RA_TRUST_ANCHOR_ARN`, `RA_HOST_PROFILE_ARN`, `RA_HOST_ROLE_ARN`). They identify the AWS account, so they
+It prints five lines (`AWS_REGION`, `PKI_GENERATION`, `RA_TRUST_ANCHOR_ARN`, `RA_HOST_PROFILE_ARN`, `RA_HOST_ROLE_ARN`), plus `ALERT_TOPIC_ARN` (K4) and `BACKUP_S3_BUCKET` (K5) once those parts of the stack are applied; add `--age-recipient age1...` for `BACKUP_AGE_RECIPIENT` (K5, `authentik-backup.md` section 1). They identify the AWS account, so they
 are only for the Pi. Copy them, then on the Pi:
 
 ```bash

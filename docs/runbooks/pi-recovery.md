@@ -1,9 +1,10 @@
 # Runbook: Pi recovery (plan section 11.3, QA review gap)
 
 Audience: the owner. For a dead SD card or SSD, a replaced Pi, or a lost or stolen Pi. Placeholders only; real values come from the password manager, the HCP workspace and the
-bootstrap outputs. Exercise it as a drill (plan Q20, Q24) and record the date at the end of this file.
+bootstrap outputs. Exercise it as a drill (plan Q20, Q24) following the drill checklist at the end of this file, and record it in the drill log.
 
-What survives: AWS (Route 53, SSM secrets, the identity stack), GitHub, the offline CA (laptop and its encrypted backup), the password manager. What is lost with the SD card:
+What survives: AWS (Route 53, SSM secrets, the identity stack, the encrypted Authentik backups in S3), GitHub, the offline CA (laptop and its backups: the password manager attachment and a USB stick,
+`ca-backup.md`), the password manager (which also holds the Authentik backup age identity). What is lost with the SD card:
 `/etc/home-lab` (aws.env, the two private keys and certificates), `/apps` (Let's Encrypt state, Tailscale node key, Authentik database), the checkout.
 
 ## 0. Decide: replaced Pi, or lost or stolen Pi?
@@ -32,7 +33,7 @@ Fastest first (minutes), then the tidy version:
 ## 3. New keys and certificates [Pi, then Laptop, then Pi]
 
 1. On the Pi: `sudo scripts/pki/pi-csr.sh` (new keys; add `--generation gen-2` style flags exactly as in `m2-pi-setup.md` step 5).
-2. On the laptop, with the offline CA from its encrypted backup (restore it first if the laptop was also lost, and test it): sign both CSRs (`scripts/pki/sign.sh`, step 6).
+2. On the laptop, with the offline CA from its backup (restore it first if the laptop was also lost, and test it with `scripts/pki/test-ca-restore.sh`: `ca-backup.md` sections 3 and 4): sign both CSRs (`scripts/pki/sign.sh`, step 6).
 3. On the Pi: `sudo scripts/pki/pi-install-cert.sh traefik ...` and `host ...` (step 7). The installer refuses a certificate that is not valid yet: fix the clock first (`timedatectl`).
 4. If you disabled the trust anchor in section 1, re-enable it now (`aws rolesanywhere enable-trust-anchor ...`).
 
@@ -50,9 +51,17 @@ then `scripts/set-secret.sh --unset tailscale/auth-key` and `sudo scripts/deploy
 
 ## 6. Authentik
 
-The database lives on the card: **users and MFA devices are gone** until backups exist (a later phase). The blueprint rebuilds groups, providers, applications and the MFA policy.
-Set `authentik/bootstrap-password` (`set-secret.sh`), `sudo scripts/deploy.sh --recreate authentik`, log in as `akadmin`, create your named admin, enrol MFA, deactivate `akadmin` again, set the bootstrap password back to UNSET
-(`m4-authentik.md` section 8, then `sudo scripts/deploy.sh --recreate authentik` again). Re-create the family accounts and re-enrol their MFA.
+The database lives on the card, but a nightly encrypted copy is in S3 (K5, `authentik-backup.md`). Users, password hashes and MFA devices come back from it.
+
+1. **With a backup (normal path):** `deploy.sh` first starts a fresh, empty Authentik, then follow `authentik-backup.md` section 4: you download the newest dump that has its `.ok` marker,
+   decrypt it on the laptop with the age identity from the password manager, stop `authentik-server` and `authentik-worker`, `pg_restore --clean --if-exists` into the postgres container, start again, and log in with your existing MFA device.
+   Restore into the same Authentik version or newer, and keep the SSM `authentik/secret-key` unchanged.
+2. **Fallback, no usable backup (blueprint path):** the blueprint rebuilds groups, providers, applications and the MFA policy, but **users and MFA devices are gone**.
+   Set `authentik/bootstrap-password` (`set-secret.sh`), `sudo scripts/deploy.sh --recreate authentik`, log in as `akadmin`, create your named admin, enrol MFA, deactivate `akadmin` again, set the bootstrap password back to UNSET
+   (`m4-authentik.md` section 8, then `sudo scripts/deploy.sh --recreate authentik` again). Re-create the family accounts and re-enrol their MFA.
+
+After a restore, the backup timer carries on by itself, but a rebuilt Pi needs `age` and the two `BACKUP_*` lines in `aws.env` again: `bootstrap.sh` installs age, and `render-aws-env.sh --age-recipient age1...` prints the lines
+(`authentik-backup.md` section 1, step 3). Preflight shows `backup-last` WARN "never" until the first nightly run or a manual `sudo systemctl start home-lab-backup-authentik.service`.
 
 ## 7. Let's Encrypt certificate
 
@@ -62,7 +71,7 @@ certificates per week): if you rebuild repeatedly while testing, switch `ACME_EN
 ## 8. Verify
 
 `sudo scripts/preflight.sh --stage full`, `sudo scripts/s17-identity-tests.sh`, `sudo scripts/cert-expiry.sh`, browse `traefik.<domain>` and `dashboard.<domain>`, and
-`sudo scripts/breakglass.sh on 10` then `off`. Then record the drill below.
+`sudo scripts/breakglass.sh on 10` then `off`. Then run the drill checklist and record the drill below.
 
 ## 9. Offline boot drill (plan Q19)
 
@@ -78,8 +87,19 @@ physical destruction for a failed card). Removing the node from Tailscale and re
 coarse by design (bump `pki_generation`, or disable the trust anchor, which stops both identities); a CRL per certificate was considered and not built: for two certificates and one owner the
 generation bump is the simpler, tested path, and 365 day certificates bound the exposure of an unnoticed theft.
 
+## Drill checklist
+
+Run this at every drill (at least once a year, and once before the first real certificate renewal), then add one row to the log below. A drill without all the lines is partial; say which line was skipped.
+
+1. **Tabletop or spare-card walk through** of sections 0 to 8 (plan Q20): what would you do, in what order, with which secret from which place?
+2. **CA restore test** (K5): restore the offline CA from BOTH copies (password manager attachment and USB stick) into scratch directories and run `scripts/pki/test-ca-restore.sh --ca-dir <dir>` on each (`ca-backup.md` section 3).
+   Record PASS or FAIL per copy, whether the copy's `issued.tsv` checksum matched the live one, and the CA certificate's expiry date. Refresh the copies if `issued.tsv` is stale.
+3. **Authentik restore test** (K5): download the newest dump with its `.ok` marker, decrypt it on the laptop, restore it into a throwaway PostgreSQL container and compare the user count with the live database (`authentik-backup.md` section 3).
+   Record the dump timestamp and the user counts. Check that `sudo scripts/preflight.sh --stage full` shows `backup-last` PASS.
+4. **Offline boot drill** (section 9), when a Pi can be unplugged safely.
+
 ## Drill log
 
-| Date | Kind (tabletop, spare SD, real) | Who | Result and notes |
-|------|---------------------------------|-----|------------------|
-| (not run yet) | | | |
+| Date | Kind (tabletop, spare SD, real) | Who | CA restore test (PASS or FAIL; copy A, copy B) | Authentik restore test (dump time, users live vs restored) | Result and notes |
+|------|---------------------------------|-----|------------------------------------------------|-------------------------------------------------------------|------------------|
+| (not run yet) | | | | | |
