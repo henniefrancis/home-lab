@@ -202,6 +202,14 @@ data "aws_iam_policy_document" "pi_host" {
     }
   }
 
+  # K4: the only SNS right in the whole stack. Publish to the one alert topic, nothing else (no Subscribe, no topic management).
+  statement {
+    sid       = "PublishHomeLabAlerts"
+    effect    = "Allow"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.alerts.arn]
+  }
+
   # Migration window only (allow_legacy_ssm_key): secrets not yet re-set still sit under the AWS-managed key.
   dynamic "statement" {
     for_each = var.allow_legacy_ssm_key ? [1] : []
@@ -224,7 +232,7 @@ resource "aws_iam_role" "pi_host" {
   count = local.enable_identity ? 1 : 0
 
   name                 = "home-lab-pi-host"
-  description          = "Pi host deploy-time secret fetch for home-lab via Roles Anywhere - read-only SSM under /home-lab"
+  description          = "Pi host deploy-time secret fetch for home-lab via Roles Anywhere - read-only SSM under /home-lab and publish to the alert topic"
   assume_role_policy   = data.aws_iam_policy_document.ra_trust["host"].json
   max_session_duration = 3600
 

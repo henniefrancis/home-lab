@@ -21,3 +21,6 @@ owner_role_arn_pattern = "arn:aws:iam::111111111111:role/aws-reserved/sso.amazon
 #   pi_host_profile_id = "00000000-0000-0000-0000-000000000000"
 # }
 # enable_audit_logging = true    # N7, optional: CloudTrail trail + private bucket + Access Analyzer (see docs/runbooks/hcp-terraform-bootstrap.md, "Audit logging"); default false
+
+# Alerting (K4). Real address only in the gitignored terraform.tfvars. AWS emails a confirmation link: click it once.
+alert_email = "alerts@example.com"

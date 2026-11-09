@@ -152,3 +152,14 @@ variable "enable_audit_logging" {
   type        = bool
   default     = false
 }
+
+variable "alert_email" {
+  description = "Email address that receives the home-lab alerts (SNS topic home-lab-alerts, K4). Supplied via the gitignored terraform.tfvars, never committed. AWS sends a confirmation mail that must be clicked once."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^[^@[:space:]]+@[^@[:space:]]+[.][^@[:space:]]+$", var.alert_email))
+    error_message = "alert_email must look like an email address."
+  }
+}

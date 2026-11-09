@@ -42,3 +42,8 @@ output "ssm_kms_key_alias" {
   description = "Alias of the customer-managed key for the /home-lab SecureStrings (used by terraform/edge and scripts/set-secret.sh)."
   value       = aws_kms_alias.ssm.name
 }
+
+output "alert_topic_arn" {
+  description = "ARN of the SNS alert topic. Feeds scripts/render-aws-env.sh (ALERT_TOPIC_ARN in the Pi's /etc/home-lab/aws.env)."
+  value       = aws_sns_topic.alerts.arn
+}

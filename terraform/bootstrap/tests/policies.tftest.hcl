@@ -104,6 +104,17 @@ override_resource {
   target = aws_iam_service_linked_role.rolesanywhere
 }
 
+override_resource {
+  target = aws_sns_topic.alerts
+  values = {
+    arn = "arn:aws:sns:af-south-1:111111111111:home-lab-alerts"
+  }
+}
+
+override_resource {
+  target = aws_sns_topic_subscription.alerts_email
+}
+
 variables {
   hcp_organization       = "example-org"
   domain                 = "example.com"
@@ -111,6 +122,7 @@ variables {
   duplicate_zone_ids     = []
   owner_role_arn_pattern = "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_Admin_*"
   ca_cert_pem            = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+  alert_email            = "alerts@example.com"
 }
 
 run "apply_role_cannot_change_identity" {
@@ -227,6 +239,35 @@ run "pi_host_and_dns01_policies" {
   assert {
     condition     = length(aws_iam_role.pi_host) == 1 && length(aws_iam_role.traefik_dns01) == 1
     error_message = "both lab roles exist in the bootstrap stack"
+  }
+}
+
+run "alerts_only_pi_host_can_publish" {
+  command = apply
+
+  assert {
+    condition     = aws_sns_topic.alerts.name == "home-lab-alerts" && aws_sns_topic.alerts.kms_master_key_id == "alias/aws/sns"
+    error_message = "one encrypted topic named home-lab-alerts, on the AWS-managed SNS key (the home-lab CMK denies SNS Decrypt)"
+  }
+
+  assert {
+    condition     = can(regex("\"sns:Publish\"", data.aws_iam_policy_document.pi_host.json)) && can(regex("arn:aws:sns:af-south-1:111111111111:home-lab-alerts", data.aws_iam_policy_document.pi_host.json))
+    error_message = "the Pi host role may sns:Publish to the alert topic ARN"
+  }
+
+  assert {
+    condition     = length(regexall("\"sns:", data.aws_iam_policy_document.pi_host.json)) == 1 && !can(regex("sns:(Subscribe|SetTopicAttributes|DeleteTopic|CreateTopic|[*])", data.aws_iam_policy_document.pi_host.json))
+    error_message = "the Pi host role has exactly one SNS action (Publish) and no topic management"
+  }
+
+  assert {
+    condition     = !can(regex("sns:", data.aws_iam_policy_document.write.json)) && !can(regex("sns:", data.aws_iam_policy_document.read.json)) && !can(regex("sns:", data.aws_iam_policy_document.dns01.json)) && !can(regex("sns:", data.aws_iam_policy_document.ssm_key.json))
+    error_message = "no other policy (HCP plan and apply roles, DNS-01 role, key policy) gains any SNS right"
+  }
+
+  assert {
+    condition     = aws_sns_topic_subscription.alerts_email.protocol == "email"
+    error_message = "the subscription is an email subscription"
   }
 }
 
