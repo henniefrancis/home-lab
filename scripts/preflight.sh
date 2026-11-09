@@ -284,6 +284,28 @@ https_check() { # https_check <label> <url> <fail|warn>
   fi
 }
 
+# K7: the ACME directory the lab is configured for (config/lab.env ACME_CA_SERVER) must be reachable. Production is the goal; staging
+# (the M3 default) only warns, because its certificates are not trusted by browsers.
+check_acme_endpoint() {
+  local url
+  url="$(lab_env_get "$LAB_ENV" ACME_CA_SERVER)"
+  case "$url" in
+    https://acme-v02.api.letsencrypt.org/directory)
+      https_check letsencrypt-prod "$url" fail
+      ;;
+    https://acme-staging-v02.api.letsencrypt.org/directory)
+      https_check letsencrypt-stg "$url" fail
+      warnx acme-env "ACME_CA_SERVER is the Let's Encrypt STAGING directory: browsers do not trust the certificate (switch at M6, docs/runbooks/m6-go-live.md)"
+      ;;
+    '')
+      fail acme-env "ACME_CA_SERVER is not set in config/lab.env"
+      ;;
+    *)
+      fail acme-env "ACME_CA_SERVER is neither the Let's Encrypt production nor the staging directory: $url"
+      ;;
+  esac
+}
+
 check_outbound() {
   local region
   region="$(lab_env_get "$LAB_ENV" AWS_SSM_REGION af-south-1)"
@@ -296,7 +318,7 @@ check_outbound() {
   https_check awscli-download "https://awscli.amazonaws.com/" fail
   https_check helper-download "https://rolesanywhere.amazonaws.com/" fail
   https_check tailscale "https://controlplane.tailscale.com/" fail
-  https_check letsencrypt-stg "https://acme-staging-v02.api.letsencrypt.org/directory" fail
+  check_acme_endpoint
   https_check dockerhub "https://registry-1.docker.io/v2/" warn
   https_check ghcr "https://ghcr.io/v2/" warn
   https_check github "https://github.com/" warn
@@ -479,6 +501,31 @@ check_hardening() {
   fi
 }
 
+# K4: the certificate Traefik really serves, and the alert path.
+check_alerting() {
+  local line rc=0 topic
+  if [ -x "$SCRIPT_DIR/served-cert-check.sh" ]; then
+    line="$("$SCRIPT_DIR/served-cert-check.sh" 2> /dev/null)" || rc=$?
+    case "$line" in
+      '[PASS]'*) pass served-cert "${line#\[PASS\] served-cert: }" ;;
+      '[WARN]'*) warnx served-cert "${line#\[WARN\] served-cert: }" ;;
+      '[FAIL]'*)
+        # rc 3 = nothing answered on 127.0.0.1:443: Traefik is not up yet (early milestones), not a certificate problem.
+        if [ "$rc" -eq 3 ]; then warnx served-cert "${line#\[FAIL\] served-cert: }"; else fail served-cert "${line#\[FAIL\] served-cert: }"; fi
+        ;;
+      *) warnx served-cert "served-cert-check.sh gave no result" ;;
+    esac
+  else
+    warnx served-cert "scripts/served-cert-check.sh missing or not executable"
+  fi
+  topic="$(lab_env_get "$ETC_DIR/aws.env" ALERT_TOPIC_ARN)"
+  if [[ "$topic" =~ ^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+$ ]]; then
+    pass alert-topic "ALERT_TOPIC_ARN is set in $ETC_DIR/aws.env (send a test mail: sudo scripts/alert.sh test)"
+  else
+    warnx alert-topic "ALERT_TOPIC_ARN is not set in $ETC_DIR/aws.env: no alert reaches a person (docs/runbooks/alerting.md)"
+  fi
+}
+
 check_repo_hygiene() {
   local bad
   [ -d "$REPO_DIR/.git" ] || {
@@ -516,6 +563,7 @@ if [ "$STAGE" = full ]; then
   check_aws_env
   check_pki
   check_hardening
+  check_alerting
   check_repo_hygiene
 fi
 

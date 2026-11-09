@@ -145,6 +145,9 @@ jobs:
       - name: Self-test - ops scripts (deploy args, signed-deploy check, cert expiry, break-glass, preflight args, pki)
         run: bash scripts/test-ops-scripts.sh
 
+      - name: Self-test - alert path (served-cert-check.sh against a local TLS server, alert.sh with a mock aws, rate limit; the mock is proven before use)
+        run: bash scripts/test-alert.sh
+
       - name: Self-test - aws-preflight.sh --snapshot against a mock aws (CRLF, empty duplicate list, TXT quotes; the mock is proven before use)
         run: bash scripts/test-aws-preflight.sh
 

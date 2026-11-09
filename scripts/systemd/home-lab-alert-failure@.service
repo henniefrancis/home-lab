@@ -1,0 +1,19 @@
+# Installed by scripts/bootstrap.sh (the path below is rewritten to this checkout). K4: started by OnFailure= of another home-lab unit.
+# %i is the failed unit. scripts/alert.sh unit-failed mails once per unit per day, and not at all when `alert.sh check` already
+# mailed the specific finding.
+[Unit]
+Description=home-lab alert: %i failed
+Documentation=file:@REPO_DIR@/docs/runbooks/alerting.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@REPO_DIR@/scripts/alert.sh unit-failed %i
+SyslogIdentifier=home-lab-alert
+StateDirectory=home-lab
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true

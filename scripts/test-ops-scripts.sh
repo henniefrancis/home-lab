@@ -155,7 +155,7 @@ check "a certificate that is not valid yet (Pi clock years behind): exit 2, [FAI
 rc=0
 HOME_LAB_PKI_DIR="$T/pki" bash scripts/cert-expiry.sh > "$T/o" 2>&1 || rc=$?
 check "the same certificates are fine with the correct clock: exit 0, no NOT VALID YET" bash -c 'test "$1" -eq 0 && ! grep -q "NOT VALID YET" "$2"' _ "$rc" "$T/o"
-check "the systemd unit runs cert-expiry.sh and a timer fires it daily" bash -c 'grep -q "cert-expiry.sh" scripts/systemd/home-lab-cert-expiry.service && grep -q "OnCalendar=daily" scripts/systemd/home-lab-cert-expiry.timer && grep -q "Persistent=true" scripts/systemd/home-lab-cert-expiry.timer'
+check "the systemd unit runs the checks (alert.sh check calls cert-expiry.sh) and a timer fires it daily" bash -c 'grep -q "alert.sh check" scripts/systemd/home-lab-cert-expiry.service && grep -q "cert-expiry.sh" scripts/alert.sh && grep -q "OnCalendar=daily" scripts/systemd/home-lab-cert-expiry.timer && grep -q "Persistent=true" scripts/systemd/home-lab-cert-expiry.timer'
 
 # ---------------------------------------------------------------- preflight.sh --stage (QA-L-1)
 rc=0

@@ -151,7 +151,7 @@ else
 fi
 
 # Daily certificate expiry check (QA-M-4): a systemd timer; a failing run shows in `systemctl --failed` and the journal.
-for u in home-lab-cert-expiry.service home-lab-cert-expiry.timer home-lab-breakglass-reset.service; do
+for u in home-lab-cert-expiry.service home-lab-cert-expiry.timer home-lab-alert-failure@.service home-lab-breakglass-reset.service; do
   sed "s#@REPO_DIR@#$REPO_DIR#g; s#@APPS_ROOT@#$APPS_ROOT#g" "$SCRIPT_DIR/systemd/$u" > "/etc/systemd/system/$u"
   chmod 0644 "/etc/systemd/system/$u"
 done

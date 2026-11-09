@@ -3,7 +3,7 @@
 #
 # Usage: scripts/render-aws-env.sh [--generation gen-1]
 #
-# Reads the outputs of terraform/bootstrap (the identity stack, SEC-H1). Prints five KEY=VALUE lines to stdout (nothing is written to disk). The values identify the AWS account, so they are
+# Reads the outputs of terraform/bootstrap (the identity stack, SEC-H1). Prints five KEY=VALUE lines (six with ALERT_TOPIC_ARN, K4, once the stack with the SNS topic is applied) to stdout (nothing is written to disk). The values identify the AWS account, so they are
 # never committed: paste them into the Pi shell as shown in docs/runbooks/m2-pi-setup.md. Needs `terraform login` and
 # TF_CLOUD_ORGANIZATION (see docs/runbooks/hcp-terraform-bootstrap.md); it only reads outputs from HCP state.
 set -euo pipefail
@@ -37,6 +37,7 @@ out() { terraform -chdir="$TF_DIR" output -raw "$1" 2> /dev/null | tr -d '\r'; }
 ta="$(out trust_anchor_arn || true)"
 profile="$(out host_profile_arn || true)"
 role="$(out host_role_arn || true)"
+alert_topic="$(out alert_topic_arn || true)"
 [[ "$ta" =~ ^arn:aws[a-z-]*:rolesanywhere:[a-z0-9-]+:[0-9]+:trust-anchor/[0-9a-f-]+$ ]] || {
   echo "trust_anchor_arn output missing: has the owner applied terraform/bootstrap with ca_cert_pem set? Is 'terraform init' done there?" >&2
   exit 1
@@ -55,3 +56,9 @@ printf 'PKI_GENERATION=%s\n' "$GEN"
 printf 'RA_TRUST_ANCHOR_ARN=%s\n' "$ta"
 printf 'RA_HOST_PROFILE_ARN=%s\n' "$profile"
 printf 'RA_HOST_ROLE_ARN=%s\n' "$role"
+# K4: the SNS alert topic (scripts/alert.sh). Optional until terraform/bootstrap with alerts.tf has been applied.
+if [[ "$alert_topic" =~ ^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+$ ]]; then
+  printf 'ALERT_TOPIC_ARN=%s\n' "$alert_topic"
+else
+  echo "note: no alert_topic_arn output yet (apply terraform/bootstrap with alert_email set); ALERT_TOPIC_ARN not printed" >&2
+fi

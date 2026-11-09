@@ -1,15 +1,22 @@
-# Installed by scripts/bootstrap.sh (the path below is rewritten to this checkout). QA-M-4.
+# Installed by scripts/bootstrap.sh (the path below is rewritten to this checkout). QA-M-4, K4.
 [Unit]
-Description=home-lab Pi certificate expiry check
-Documentation=file:@REPO_DIR@/docs/runbooks/m2-pi-setup.md
+Description=home-lab certificate checks and alerts (Pi Roles Anywhere certificates, certificate served by Traefik)
+Documentation=file:@REPO_DIR@/docs/runbooks/alerting.md
+After=network-online.target
+Wants=network-online.target
+# K4: if this unit fails for any reason, home-lab-alert-failure@.service mails it (unless alert.sh check already did).
+OnFailure=home-lab-alert-failure@%n.service
 
 [Service]
 Type=oneshot
-# Exit 1 = a certificate expires within 30 days, 2 = missing or expired or within 14 days. Either makes THIS UNIT FAIL, which
-# shows up in `systemctl --failed`, `systemctl status home-lab-cert-expiry` and the journal, with no external service needed.
-ExecStart=@REPO_DIR@/scripts/cert-expiry.sh
+# alert.sh check runs cert-expiry.sh and served-cert-check.sh and emails once per check per day on a WARN or FAIL. Exit 1 = a
+# certificate is getting old (warn), 2 = missing, expired or nearly expired. Either makes THIS UNIT FAIL, which also shows up in
+# `systemctl --failed`, `systemctl status home-lab-cert-expiry` and the journal, even if the email could not be sent.
+ExecStart=@REPO_DIR@/scripts/alert.sh check
 ExecStartPost=/bin/sh -c 'logger -t home-lab-cert-expiry -p user.info "certificates checked: ok"'
 SyslogIdentifier=home-lab-cert-expiry
+StateDirectory=home-lab
+StateDirectoryMode=0700
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
