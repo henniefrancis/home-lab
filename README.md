@@ -2,79 +2,127 @@
 
 A hardened, reproducible edge layer for a Raspberry Pi 4B home lab, built in the open.
 
-Every service is reachable by name over HTTPS with a real Let's Encrypt certificate, never by typing a
-port, and only from the home LAN or over Tailscale. Everything is behind single sign-on with MFA.
-All AWS infrastructure is Terraform.
+Every service is reachable by name over HTTPS with a real Let's Encrypt wildcard certificate, never by typing a port, and only from the home LAN or over Tailscale.
+Everything sits behind single sign-on with MFA. All AWS infrastructure is Terraform, and the Pi only runs commits that carry the owner's signature.
 
-> Status: **milestone M0** (repository skeleton and hygiene). Service and infrastructure code arrives
-> milestone by milestone, each reviewed before the next starts. The single source of truth is
-> [`docs/plan/phase-1-traefik.md`](docs/plan/phase-1-traefik.md).
+This repository is a reference you can read, copy and adapt. It is a personal project maintained on a best-effort basis.
 
-## What it will run
+## What runs today
 
 | Layer | Component |
 |-------|-----------|
-| Reverse proxy | Traefik v3 on ports 80/443 only, non-root, all routes defined in files (no Docker provider, no Docker socket anywhere) |
-| TLS | Let's Encrypt wildcard certificate for `*.${DOMAIN}` via DNS-01 on Route 53 |
-| Identity | Authentik SSO with MFA and per-app forward auth (host-only cookies) |
-| Networking | Tailscale for remote access, no router port-forwards |
-| Dashboard | Homepage at `https://dashboard.${DOMAIN}` |
-| DNS and AWS | Route 53 zone managed by Terraform, IAM Roles Anywhere for the Pi (no long-lived keys), budget alert |
-| Terraform | HCP Terraform: remote execution, OIDC dynamic credentials with split plan/apply roles, no AWS keys stored |
+| Reverse proxy | Traefik v3 on ports 80 and 443 only, non-root. Routes come from the **file provider** (`traefik/dynamic/`); there is no Docker provider and no Docker socket anywhere |
+| TLS | Let's Encrypt wildcard certificate for `*.<domain>` by DNS-01 on Route 53. A small helper (`ra-helper`) gives Traefik short-lived AWS credentials through **IAM Roles Anywhere**, so no AWS key is stored on the Pi |
+| Identity | **Authentik** SSO with enforced MFA. Traefik does **forward auth** to Authentik for every app; the Traefik dashboard and Homepage both use it. A rate-limited break-glass login exists for the Traefik dashboard only and never survives a reboot |
+| Dashboard | **Homepage** at `https://dashboard.<domain>` |
+| Remote access | **Tailscale** (no router port-forwards). Services are allowed from the LAN and tailnet ranges only |
+| Secrets | AWS **SSM Parameter Store** SecureStrings encrypted with a customer-managed key; only the Pi's role can decrypt. Set by the owner with `scripts/set-secret.sh`, fetched at deploy time into `/apps/secrets`, never in git, CI or Terraform state |
+| Deploys | **Signed deploys**: `scripts/deploy.sh` merges and runs only a commit whose SSH signature verifies against a root-owned trust file on the Pi |
+| AWS | Route 53 zone, Roles Anywhere identities, KMS key, budget alert and an SNS alert topic, all in Terraform (HCP Terraform with OIDC dynamic credentials and split plan and apply roles) |
+| Alerting | A daily check mails you (SNS email) when the certificate Traefik actually serves, or a Pi certificate, is close to expiry |
 
-Routing is by subdomain. The apex `${DOMAIN}` and `www` are reserved for a separate future public site and
-are never served from the Pi.
+Routing is by subdomain. The apex and `www` are reserved for a separate future public site and are never served from the Pi.
+**Rule: no console or CLI changes to AWS infrastructure.** Every change goes through Terraform.
 
-**Rule: no console or CLI changes to Route 53.** Every DNS change goes through Terraform.
+## Architecture
 
-## Milestones (Phase 1)
+```mermaid
+flowchart LR
+  user["Browser on LAN or tailnet"] -->|HTTPS 443| traefik
+  subgraph Pi["Raspberry Pi 4B (Docker Compose)"]
+    traefik["Traefik (file provider)"]
+    authentik["Authentik server, worker, PostgreSQL"]
+    homepage["Homepage"]
+    helper["ra-helper (Roles Anywhere)"]
+    ts["Tailscale"]
+    traefik -->|forward auth| authentik
+    traefik --> homepage
+    traefik -->|DNS-01 credentials| helper
+  end
+  helper -->|short-lived session| aws
+  subgraph aws["AWS (Terraform)"]
+    r53["Route 53 zone"]
+    ssm["SSM SecureStrings + KMS key"]
+    ra["Roles Anywhere trust anchor"]
+    sns["SNS alert topic"]
+  end
+  traefik -->|TXT _acme-challenge| r53
+  deploy["scripts/deploy.sh (signed commit, root)"] -->|read-only fetch| ssm
+  alert["daily cert check"] -->|publish| sns
+  sns -->|email| owner["Owner"]
+  ts --- user
+```
 
-| Milestone | Scope |
-|-----------|-------|
-| M0 | Repo reset: hygiene files, README, CI, gitleaks, Dependabot, placeholders |
-| M1 | HCP Terraform and AWS foundation; adopt the existing Route 53 zone, records and registered-domain nameservers into Terraform |
-| M2 | Pi preflight, bootstrap, Tailscale, private CA for Roles Anywhere, wildcard DNS record |
-| M3 | Traefik and Roles Anywhere helper (Let's Encrypt staging; the socket proxy of the first design was removed in the 2026-11 security remediation) |
-| M4 | Authentik SSO with enforced MFA; forward auth in front of the Traefik dashboard (blueprint as code, break-glass kept) |
-| M5 | Homepage on `dashboard.${DOMAIN}` |
-| M6 | Production certificate, hardening, repo made public |
+Request path in words: browser -> Traefik (TLS, wildcard certificate) -> allowlist (LAN and tailnet only) -> Authentik forward auth (MFA) -> the app.
+Certificate path: Traefik asks Let's Encrypt, proves the domain by writing one TXT record in Route 53 using a session that Roles Anywhere issued to the Pi's certificate.
+Deploy path: the owner signs one release commit, the Pi verifies the signature before merging, fetches secrets with a read-only role, then `docker compose up`.
 
-Later phases (not scheduled): Route 53 DNSSEC signing, more services (`ha.`, `tools.`, `links.`,
-`netdata.`, `pihole.`, `portainer.`), and managing HCP objects with the `tfe` provider.
+## Repository layout
 
-## Configuration and secrets
+| Path | What is in it |
+|------|---------------|
+| `compose.yaml` | Root Compose project; includes the four stacks below |
+| `traefik/`, `authentik/`, `homepage/`, `tailscale/` | One directory per stack (compose file, config, Traefik file-provider routes, Authentik blueprint as code) |
+| `config/` | `lab.env` (public, non-secret settings), `secrets-manifest.tsv` (names, paths and modes of secrets, never values), `allowed_signers.example` |
+| `terraform/bootstrap/` | Owner-applied stack: OIDC provider, HCP plan and apply roles, the Pi's Roles Anywhere identities, the KMS key, the alert topic. Has offline policy tests |
+| `terraform/edge/` | HCP-applied stack: Route 53, records, budget, the non-secret `/home-lab/config/*` parameters |
+| `scripts/` | Pi and laptop scripts (`deploy.sh`, `fetch-secrets.sh`, `preflight.sh`, `alert.sh`, `set-secret.sh`, ...), their self-tests (`test-*.sh`), `lib/` helpers, `systemd/` units, `pki/` offline CA tooling |
+| `ci/` | Pinned CI tool images (`ci/images/<tool>/Dockerfile`) and `requirements-ci.txt` |
+| `docs/plan/` | The approved design (the single source of truth) |
+| `docs/runbooks/` | Setup, release, secrets, rotation, alerting, recovery and the M6 go-live runbooks |
+| `.github/` | CI workflows and Dependabot configuration |
 
-- This repo is public and every committed file is public-safe. Non-secret lab settings live in
-  [`config/lab.env`](config/lab.env). Account-identifying values (domain, zone ID, AWS account, HCP organization,
-  role ARNs, email) are HCP Terraform workspace variables or SSM String parameters, never committed.
-  `*.tfvars` and `*.auto.tfvars` files are never committed.
-- Runtime secrets live in AWS SSM Parameter Store (SecureString). The owner sets them with
-  `scripts/set-secret.sh`; the Pi fetches them at deploy time into `/apps/secrets` (outside the repo).
-  See [`docs/runbooks/secrets-ssm.md`](docs/runbooks/secrets-ssm.md). The password manager is the offline copy.
-- Placeholders in docs and examples are `example.com` and `you@example.com`.
+## How CI works
 
-## Prerequisites (filled in during M1-M2)
+- Workflow `ci` (job `checks`) and workflow `secret-scan` (job `secret-scan`) run on every push and pull request. They have **no cloud or HCP credentials**, and a guard fails the build if any workflow ever asks for an OIDC token, `write-all` or AWS credentials.
+- **Pinned tools.** Third-party tool images (gitleaks, tflint, trivy, terraform) come from `ci/images/<tool>/Dockerfile`, pinned by digest, and Python tooling from `ci/requirements-ci.txt`. They live outside `.github/` because Dependabot is refused there. The terraform image is bumped by hand together with `required_version` in the stacks; the others are bumped by Dependabot.
+- **Dependabot** (weekly, grouped, with a few days of cooldown) covers GitHub Actions, Terraform providers, Compose and Docker images, pip and pre-commit. Pull requests are merged locally and covered by a signed release commit (see `docs/runbooks/release-and-deploy.md`).
+- **Secret scan.** gitleaks runs over the full history and the working tree with the public rules in `.gitleaks.toml`; the rules have their own test (`scripts/test-gitleaks-rules.sh`). A private denylist of your real identifiers is checked locally with `scripts/check-private-denylist.sh` and never leaves your machine.
+- **Self-tests** run the shell scripts against mock `aws` and local servers, check Traefik, Authentik and Homepage configuration, run the Terraform IAM and KMS policy tests offline, run shellcheck, yamllint and tflint, and scan the images.
 
-- AWS account with IAM Identity Center, and an HCP Terraform organization (free tier is sufficient).
-- Raspberry Pi 4B, 64-bit Raspberry Pi OS, Docker with Compose 2.20 or newer.
-- A domain registered with Route 53 Domains (or otherwise delegated to a Route 53 hosted zone).
+## Fork guide: what to change
+
+1. **Domain.** Register or delegate a domain to a Route 53 hosted zone. The domain is a Terraform variable (HCP workspace variable `domain` for the edge stack, the gitignored `terraform.tfvars` for bootstrap); it is stored in SSM as `/home-lab/config/domain`. Replace every `example.com` placeholder you want to keep.
+2. **Tailnet.** Edit `TAILNET_CIDR` and `LAN_CIDR` in `config/lab.env` and the allowlist in `traefik/dynamic/middlewares.yml`; adapt `tailscale/policy.example.hujson` and create your own auth key (`tag:homelab`).
+3. **AWS account.** Create an IAM Identity Center admin, set `owner_role_arn_pattern` and the other variables from `terraform/*/terraform.tfvars.example` in a gitignored `terraform.tfvars`, and follow `docs/runbooks/hcp-terraform-bootstrap.md`. Account IDs, zone IDs and ARNs never go in git.
+4. **HCP Terraform.** Create your organisation, project and workspace; set the names in the bootstrap variables. Change the `Repo` and `Owner` tags in `terraform/bootstrap/providers.tf`.
+5. **Certificate authority.** The Pi's two Roles Anywhere certificates come from a small **offline** CA you create (`scripts/pki/`, `pki/README.md`). Keep the CA key off the Pi and off the network. For the public certificate, `ACME_ENV` and `ACME_CA_SERVER` in `config/lab.env` select Let's Encrypt staging or production.
+6. **Signing key.** Create an SSH signing key, put the public key in `/etc/home-lab/allowed_signers` on the Pi (see `config/allowed_signers.example`), and sign one release commit per deploy.
+7. **Alerts.** Set `alert_email` in the bootstrap `terraform.tfvars`, confirm the SNS subscription mail, and run `sudo scripts/alert.sh test` (`docs/runbooks/alerting.md`).
+8. **Accounts and secrets.** Create the SecureStrings with `scripts/set-secret.sh --create`, then set them (`docs/runbooks/secrets-ssm.md`). Replace the Authentik blueprint users and groups to match your household.
+9. **Repository settings.** Follow `docs/runbooks/m6-go-live.md` before making your fork public: private denylist, ruleset, secret scanning, push protection.
+
+## Security model in short
+
+- Reachable only from the LAN and tailnet; no inbound port-forwards; MFA at Authentik for everything.
+- No long-lived AWS keys anywhere: the Pi uses Roles Anywhere sessions, CI has no AWS access, HCP uses OIDC with separate plan and apply roles.
+- The HCP apply role cannot change any IAM role, trust policy or Roles Anywhere object; the lab roles are owner-applied.
+- SecureStrings are encrypted with a customer-managed key whose policy lets only the Pi decrypt; they are not Terraform-managed and never in state.
+- Signed deploys, a root-owned checkout, no Docker socket exposure, no Docker group for the login user, containers run non-root with their own service IDs.
+- Findings and reporting: [`SECURITY.md`](SECURITY.md). Report vulnerabilities privately through GitHub's private vulnerability reporting.
+
+## Status
+
+| Milestone | Scope | Status |
+|-----------|-------|--------|
+| M0 | Repository hygiene, CI, gitleaks, Dependabot | Done |
+| M1 | HCP Terraform and AWS foundation; Route 53 adopted into Terraform | Done |
+| M2 | Pi bootstrap, Tailscale, offline CA, Roles Anywhere identity, signed deploys | Done |
+| M3 | Traefik and the Roles Anywhere helper (Let's Encrypt staging) | Done |
+| M4 | Authentik SSO with enforced MFA and forward auth | Done |
+| M5 | Homepage dashboard | Done |
+| M6 | Production certificate, alerting, hardening, repository made public | In progress (`docs/runbooks/m6-go-live.md`) |
+
+Later phases (not scheduled): DNSSEC for the zone, backups and a recovery drill, more services behind the same pattern.
 
 ## Development
 
 ```sh
-pip install pre-commit yamllint
+pip install pre-commit -r ci/requirements-ci.txt
 pre-commit install          # gitleaks, yaml, shellcheck hooks on every commit
 yamllint --strict .
+bash scripts/test-ops-scripts.sh && bash scripts/test-alert.sh   # offline self-tests, no AWS
 ```
-
-CI is a single lean job on pushes to `main` and on pull requests (docs-only changes are skipped). It
-runs gitleaks over the full history, yamllint, shellcheck, `docker compose config` and the repo guards
-(no tracked `*.tfvars`, no `aws_route53domains_domain`). It has no cloud or HCP credentials. While the
-repo is private the GitHub Actions budget is capped at 100 minutes a month, so keep CI lean.
-
-## Security
-
-See [`SECURITY.md`](SECURITY.md). Report vulnerabilities privately.
 
 ## Licence
 
