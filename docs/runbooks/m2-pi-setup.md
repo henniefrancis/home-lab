@@ -569,8 +569,7 @@ no-leak checks for `fetch-secrets.sh` run in CI (`scripts/test-fetch-secrets.sh`
 - Certificates last 365 days. `scripts/cert-expiry.sh` (also run by `deploy.sh` and the full preflight) WARNs under 30 days and fails under 14; the daily `home-lab-cert-expiry.timer` runs it too (a failing run shows in `systemctl --failed`, `systemctl status home-lab-cert-expiry` and `journalctl -t home-lab-cert-expiry`). **Put a calendar reminder at about day 300** (about 65 days before expiry), because ACME renewal fails first. To renew, repeat steps 5 to 7: `pi-csr.sh` reuses the
   existing keys, you sign on the laptop and install. After a lost or stolen Pi: reissue with a new generation (bump `pki_generation` in `terraform/bootstrap`, apply it with admin SSO, use `--generation gen-2` in
   steps 5 to 7, write `PKI_GENERATION=gen-2` into `aws.env`).
-- After any secret changes: `scripts/set-secret.sh <name>` on the laptop, `sudo scripts/deploy.sh` on the Pi, then recreate the consuming service
-  (`sudo docker compose -p home-lab -f /opt/home-lab/compose.yaml --env-file /opt/home-lab/config/lab.env --env-file /apps/secrets/runtime.env up -d --force-recreate <service>`); files are replaced, not edited in place.
+- After any secret changes: `scripts/set-secret.sh <name>` on the laptop, then `sudo scripts/deploy.sh --recreate <stack>` on the Pi (a plain deploy replaces the secret files but does not restart containers; see `rotate-secrets.md`).
 - `sudo scripts/deploy.sh --offline` starts from the last-good secrets when AWS or the internet is unavailable. Without `--offline` a failed fetch aborts the deploy.
 - The AWS CLI GPG key in `scripts/pubkeys/awscli-team.asc` expires 2027-07-01.
 
@@ -583,7 +582,7 @@ no-leak checks for `fetch-secrets.sh` run in CI (`scripts/test-fetch-secrets.sh`
 | exit 3 `AccessDenied` on `GetParametersByPath` | The pi-host policy needs the path-root ARN (`parameter/home-lab`); verify `terraform/bootstrap` (identity.tf) was applied. First real test of this is step 13. |
 | exit 4 `still holds the UNSET placeholder` | Run `scripts/set-secret.sh <name>` for the named parameter (step 11). |
 | exit 4 `type is String, expected SecureString` | The parameter was recreated outside Terraform; investigate before continuing. |
-| Tailscale `invalid key` or the machine is not tagged | Key expired, was reusable/ephemeral, or lacks `tag:homelab`, or the tag is missing in `tagOwners`. Create a new key, `set-secret.sh tailscale/auth-key`, `deploy.sh --only tailscale`, then unset. |
+| Tailscale `invalid key` or the machine is not tagged | Key expired, was reusable/ephemeral, or lacks `tag:homelab`, or the tag is missing in `tagOwners`. Create a new key, `set-secret.sh tailscale/auth-key`, `sudo scripts/deploy.sh --recreate tailscale`, then unset (`set-secret.sh --unset`) and recreate again. |
 | `docker: permission denied` | Expected: your login user is not in the docker group (SEC-M3). Use `sudo docker ...`. |
 
 ## What was and was not verified when this runbook was written

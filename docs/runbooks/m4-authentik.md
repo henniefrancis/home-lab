@@ -253,7 +253,7 @@ sudo docker start authentik-server                   # back up; https://traefik.
 | The Pi is unreachable on the network | Raspberry Pi Connect terminal (works without SSH), then the rows above. |
 | Database or data directory lost (new SD card) | The blueprint rebuilds groups, applications and providers; **users and MFA devices are gone** until backups exist (a later phase). `scripts/bootstrap.sh`, set `authentik/bootstrap-password`, `sudo scripts/deploy.sh`, log in as `akadmin`, enrol MFA again. |
 
-Authentik secret-key rotation invalidates every session and is not a routine operation; the Postgres password is changed with `ALTER USER` first, then SSM, then `deploy.sh --recreate authentik` (`rotate-secrets.md`, plan R48).
+Authentik secret-key rotation invalidates every session and is not a routine operation; the Postgres password is changed in the database first (`password authentik` in psql, which runs `ALTER USER` without putting the value in argv), then SSM, then `deploy.sh --recreate authentik` (`rotate-secrets.md`, plan R48).
 
 ## 7. Rollback
 
@@ -273,7 +273,7 @@ Live Authentik state cannot be audited offline, so these are checks the owner do
 1. **Named admin, then retire `akadmin`.** Create your own user, add it to `homelab-admins` and to the Authentik `authentik Admins` group, enrol MFA for it, log in as that user and
    confirm the dashboards work. Then deactivate `akadmin` (Directory, Users, `akadmin`, Deactivate) so the well-known name is not a standing superuser target. Keep the recovery path
    (`sudo docker exec authentik-server ak create_recovery_key 15 <your user>`) in mind: it works for any user.
-2. **Set `authentik/bootstrap-password` back to UNSET** (`scripts/set-secret.sh --unset authentik/bootstrap-password`), then `sudo scripts/deploy.sh` so the worker no longer exports it.
+2. **Set `authentik/bootstrap-password` back to UNSET** (`scripts/set-secret.sh --unset authentik/bootstrap-password`), then `sudo scripts/deploy.sh --recreate authentik` so the worker is recreated and no longer exports it (a plain deploy leaves the running container with the old secret file: `rotate-secrets.md`).
 3. **No second path past MFA.** The blueprint patches the stock authentication flow, so the stock flow is the only one. Check in Admin, Flows and Stages, Flows: the brand's
    authentication flow is `default-authentication-flow`; **no recovery flow is attached to the brand** (Brands, the default brand, Default flows, "Recovery flow" empty) and no
    passwordless or "WebAuthn only" authentication flow is bound anywhere. If you ever add one, it must still contain the MFA validation stage. Re-run

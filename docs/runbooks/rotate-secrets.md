@@ -19,7 +19,7 @@ If a deploy refuses on a signature, fix that first (`release-and-deploy.md`); ro
 Used by: `authentik-postgresql`, `authentik-server`, `authentik-worker` (stack `authentik`). Postgres only reads its password file when it first creates the data directory, so the **database must be changed in-app first**.
 
 1. Generate a value under 99 characters, letters and digits only (no quotes, spaces or backslashes), store it in the password manager.
-2. In-app, on the Pi, with a password prompt so nothing lands in argv or history: `sudo docker exec -it authentik-postgresql psql -U authentik -d authentik`, then `\password authentik`, type the new value twice, `\q`. Running Authentik connections keep working; new ones need the new value.
+2. In-app (this is the `ALTER USER` step; `password` runs it with a hidden prompt so the value never lands in argv or history), on the Pi: `sudo docker exec -it authentik-postgresql psql -U authentik -d authentik`, then `\password authentik`, type the new value twice, `\q`. Running Authentik connections keep working; new ones need the new value.
 3. `scripts/set-secret.sh authentik/postgres-password` (the same value).
 4. `sudo scripts/deploy.sh --recreate authentik` (recreates Postgres, server and worker; Postgres data lives in `/apps/authentik/postgres`, expect about a minute).
 5. **Verify:** `sudo docker compose -p home-lab ps` shows the three containers healthy; `sudo docker logs authentik-server --since 5m | grep -i -E 'password|fatal|error'` shows nothing; log in at `https://auth.<domain>`.

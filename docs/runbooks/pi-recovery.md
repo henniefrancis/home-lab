@@ -18,8 +18,8 @@ Fastest first (minutes), then the tidy version:
 1. Disable the trust anchor so no certificate works: `aws rolesanywhere disable-trust-anchor --trust-anchor-id <uuid> --region af-south-1` (admin SSO), or set `enabled = false` on
    `aws_rolesanywhere_trust_anchor.ca` in `terraform/bootstrap` and apply. This stops BOTH identities (secret fetch and ACME) until you re-enable it in step 3.
 2. In the Tailscale admin console, remove the old `homelab-pi` node and (if the node key could have leaked) expire it.
-3. Treat every secret as exposed: rotate them as you can afford (`set-secret.sh`; the Authentik secret key rotation invalidates sessions, the Postgres password is changed with `ALTER USER`
-   first). The break-glass password should be changed (`htpasswd -nBi -C 12 admin`).
+3. Treat every secret as exposed: rotate them as you can afford (`set-secret.sh`; the Authentik secret key rotation invalidates sessions, the Postgres password is changed in the database first (`password authentik` in psql, which runs `ALTER USER`
+   without the value in argv; see `rotate-secrets.md`). The break-glass password should be changed (`htpasswd -nBi -C 12 admin`).
 4. Tidy revocation: bump `pki_generation` (for example `gen-2`) in `terraform/bootstrap/terraform.tfvars` and apply with admin SSO. The roles' trust policy pins the OU, so old certificates
    stop working for good; re-enable the trust anchor. (Cost: both new certificates must carry `OU=gen-2`.)
 
@@ -44,15 +44,15 @@ Fastest first (minutes), then the tidy version:
 
 ## 5. Tailscale [Laptop, Pi]
 
-New one-off key: Tailscale console (tag `tag:homelab`, one-off, expires in a day), `scripts/set-secret.sh tailscale/auth-key`, `sudo scripts/deploy.sh --only tailscale`, check `status`,
-then `scripts/set-secret.sh --unset tailscale/auth-key` and `sudo scripts/fetch-secrets.sh`. Remove the old node in the admin console. The tailnet address changes: update the edge variable
+New one-off key: Tailscale console (tag `tag:homelab`, one-off, expires in a day), `scripts/set-secret.sh tailscale/auth-key`, `sudo scripts/deploy.sh --recreate tailscale`, check `status`,
+then `scripts/set-secret.sh --unset tailscale/auth-key` and `sudo scripts/deploy.sh --recreate tailscale` (the secret file is replaced, the container only changes when recreated). Remove the old node in the admin console. The tailnet address changes: update the edge variable
 `pi_tailnet_ipv4` and apply `terraform/edge` (the wildcard A record).
 
 ## 6. Authentik
 
 The database lives on the card: **users and MFA devices are gone** until backups exist (a later phase). The blueprint rebuilds groups, providers, applications and the MFA policy.
-Set `authentik/bootstrap-password` (`set-secret.sh`), deploy, log in as `akadmin`, create your named admin, enrol MFA, deactivate `akadmin` again, set the bootstrap password back to UNSET
-(`m4-authentik.md` section 8). Re-create the family accounts and re-enrol their MFA.
+Set `authentik/bootstrap-password` (`set-secret.sh`), `sudo scripts/deploy.sh --recreate authentik`, log in as `akadmin`, create your named admin, enrol MFA, deactivate `akadmin` again, set the bootstrap password back to UNSET
+(`m4-authentik.md` section 8, then `sudo scripts/deploy.sh --recreate authentik` again). Re-create the family accounts and re-enrol their MFA.
 
 ## 7. Let's Encrypt certificate
 

@@ -60,7 +60,7 @@ Adding a SecureString means a row in `config/secrets-manifest.tsv`, then `set-se
 
 ## Rotation and revocation
 
-Rotate with `set-secret.sh` for the parameter, then `sudo scripts/deploy.sh --recreate <stack>`: a plain redeploy fetches the new file but does not restart containers, which keep the file they were created with. Each secret has its own steps (including in-app ones such as `ALTER USER` for the Postgres password, verification and rollback) in `rotate-secrets.md`. If a Pi is lost, follow `pi-recovery.md` (bump `pki_generation` in `terraform/bootstrap` and apply with admin SSO, reissue the certificates).
+Rotate with `set-secret.sh` for the parameter, then `sudo scripts/deploy.sh --recreate <stack>`: a plain redeploy fetches the new file but does not restart containers, which keep the file they were created with. Each secret has its own steps (including in-app ones such as changing the Postgres password in the database first with `password authentik`, which runs `ALTER USER`, verification and rollback) in `rotate-secrets.md`. If a Pi is lost, follow `pi-recovery.md` (bump `pki_generation` in `terraform/bootstrap` and apply with admin SSO, reissue the certificates).
 
 ## Key migration and the move to owner-managed SecureStrings (2026-11-08)
 

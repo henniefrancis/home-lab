@@ -102,7 +102,7 @@ On the LAN or the tailnet (the allowlist), in a private window. The staging cert
 **Container status dots: removed.** See the decision in "What M5 deploys"; there is no switch to turn them back on.
 
 **Authentik widget (needs the optional SSM parameter `homepage/authentik-token`).** Not enabled in the committed config, because an unset token must not leave a broken tile.
-To add it later: create a read-only Authentik API token for a service account (Directory, Tokens), `scripts/set-secret.sh homepage/authentik-token`, `sudo scripts/deploy.sh`
+To add it later: create a read-only Authentik API token for a service account (Directory, Tokens), `scripts/set-secret.sh homepage/authentik-token`, `sudo scripts/deploy.sh --recreate homepage` (a plain deploy does not restart the container)
 (the file appears as `/apps/secrets/homepage/authentik-token`, 10003:10003 0400), then in a commit add to `homepage/compose.yaml`
 `secrets: [authentik_token]` and `HOMEPAGE_FILE_AUTHENTIK_TOKEN: /run/secrets/authentik_token` (top-level secret `file: ${APPS_ROOT}/secrets/homepage/authentik-token`), and to the
 Authentik tile in `homepage/config/services.yaml`:
