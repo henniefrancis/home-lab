@@ -92,7 +92,7 @@ sudo docker rm -f tailscale
 sudo scripts/deploy.sh
 ```
 
-`deploy.sh` pulls the repo, fetches secrets from SSM, pulls the images, builds `ra-helper` (needs `deb.debian.org` and `rolesanywhere.amazonaws.com`;
+`deploy.sh` pulls the repo, fetches secrets from SSM, pulls the images, builds `ra-helper` (needs Docker Hub for the two digest-pinned base images and `rolesanywhere.amazonaws.com` for the helper; no apt runs in the build (N8);
 the build fails if the binary checksum is wrong) and starts everything. Wait about two minutes for the first DNS-01 issuance.
 
 ```bash

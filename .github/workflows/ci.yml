@@ -152,7 +152,7 @@ jobs:
           bad="$(git grep -hE '^[[:space:]]+image:[[:space:]]' -- $files | grep -v 'home-lab/ra-helper' | grep -Ev '@sha256:[0-9a-f]{64}' || true)"
           if [ -n "$bad" ]; then echo "Images must be pinned tag@sha256:"; echo "$bad"; exit 1; fi
 
-      - name: Guard - ra-helper version and checksum match scripts/lib/pins.sh
+      - name: Guard - ra-helper version and checksum match scripts/lib/pins.sh, and its build has no mutable input (N8)
         run: |
           set -eu
           . scripts/lib/pins.sh
@@ -160,6 +160,12 @@ jobs:
           grep -qx "ARG HELPER_SHA256=${HELPER_SHA256}" traefik/ra-helper/Dockerfile || { echo "Dockerfile HELPER_SHA256 differs from pins.sh"; exit 1; }
           grep -q "image: home-lab/ra-helper:${HELPER_VERSION}\$" traefik/compose.yaml ||
             { echo "traefik/compose.yaml ra-helper tag differs from pins.sh"; exit 1; }
+          # N8: every FROM is pinned by digest and nothing is installed from a package mirror at build time.
+          bad="$(grep -E "^FROM " traefik/ra-helper/Dockerfile | grep -Ev "@sha256:[0-9a-f]{64}" || true)"
+          if [ -n "$bad" ]; then echo "ra-helper FROM lines must be pinned by digest:"; echo "$bad"; exit 1; fi
+          if grep -nE "(apt|apt-get|apk|pip|npm|curl|wget)[[:space:]]" traefik/ra-helper/Dockerfile | grep -v "^[0-9]*:#"; then
+            echo "ra-helper must not install packages or download anything except the checksummed ADD (N8)."; exit 1
+          fi
 
       - name: docker compose config - root project (dummy env, no secrets)
         run: |
