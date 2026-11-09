@@ -370,13 +370,18 @@ run "backup_bucket_is_write_only_for_the_pi" {
   }
 
   assert {
-    condition     = length(aws_s3_bucket_lifecycle_configuration.backup.rule) == 2 && alltrue([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r.status == "Enabled"])
-    error_message = "two enabled lifecycle rules"
+    condition     = length(aws_s3_bucket_lifecycle_configuration.backup.rule) == 3 && alltrue([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r.status == "Enabled"])
+    error_message = "three enabled lifecycle rules (dumps, restore copies, housekeeping)"
   }
 
   assert {
-    condition     = one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-authentik-dumps"][0].noncurrent_version_expiration).noncurrent_days == 35 && one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-authentik-dumps"][0].expiration).days == 400
-    error_message = "noncurrent versions expire after 35 days and current dumps after 400 days"
+    condition     = one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-authentik-dumps"][0].noncurrent_version_expiration).noncurrent_days == 90 && one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-authentik-dumps"][0].expiration).days == 400 && one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-authentik-dumps"][0].filter).prefix == "authentik/"
+    error_message = "authentik/: noncurrent versions expire after 90 days (SEC M-2) and current dumps after 400 days"
+  }
+
+  assert {
+    condition     = one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-restore-copies"][0].expiration).days == 1 && one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-restore-copies"][0].noncurrent_version_expiration).noncurrent_days == 1 && one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-restore-copies"][0].filter).prefix == "restore/"
+    error_message = "restore/ copies and their versions expire after one day"
   }
 
   assert {
@@ -384,24 +389,41 @@ run "backup_bucket_is_write_only_for_the_pi" {
     error_message = "incomplete multipart uploads are aborted after 1 day"
   }
 
+  # ---- the Pi identity policy, exactly (QA L-4)
   assert {
-    condition     = can(regex("DenyInsecureTransport", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("aws:SecureTransport", data.aws_iam_policy_document.backup_bucket.json))
-    error_message = "the backup bucket refuses plain HTTP"
+    condition     = [for s in jsondecode(data.aws_iam_policy_document.pi_host.json).Statement : s if s.Sid == "WriteAuthentikBackups"][0].Effect == "Allow" && flatten([[for s in jsondecode(data.aws_iam_policy_document.pi_host.json).Statement : s if s.Sid == "WriteAuthentikBackups"][0].Action]) == ["s3:PutObject"] && flatten([[for s in jsondecode(data.aws_iam_policy_document.pi_host.json).Statement : s if s.Sid == "WriteAuthentikBackups"][0].Resource]) == ["arn:aws:s3:::home-lab-backup-111111111111-af-south-1/authentik/*"]
+    error_message = "WriteAuthentikBackups is exactly Allow s3:PutObject on the authentik/ prefix"
+  }
+
+  # ---- the bucket policy, value by value (QA L-4: the earlier substring checks let two mutants survive)
+  assert {
+    condition     = toset(flatten([([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyInsecureTransport"][0]).Action])) == toset(["s3:*"]) && ([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyInsecureTransport"][0]).Effect == "Deny" && flatten([([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyInsecureTransport"][0]).Condition.Bool["aws:SecureTransport"]]) == ["false"] && toset(flatten([([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyInsecureTransport"][0]).Resource])) == toset(["arn:aws:s3:::home-lab-backup-111111111111-af-south-1", "arn:aws:s3:::home-lab-backup-111111111111-af-south-1/*"])
+    error_message = "DenyInsecureTransport: Deny s3:* on the bucket and its objects when aws:SecureTransport is false"
   }
 
   assert {
-    condition     = can(regex("DenyDeleteAndManagementExceptOwner", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("s3:DeleteObjectVersion", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("s3:PutLifecycleConfiguration", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("s3:PutBucketPolicy", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("AWSReservedSSO_Admin_", data.aws_iam_policy_document.backup_bucket.json)) && can(regex(":root", data.aws_iam_policy_document.backup_bucket.json))
-    error_message = "delete and bucket management are denied to everyone except the owner role and the account root"
+    condition     = ([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyDeleteAndManagementExceptOwner"][0]).Effect == "Deny" && toset(flatten([([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyDeleteAndManagementExceptOwner"][0]).Action])) == toset(["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutLifecycleConfiguration", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration", "s3:PutBucketPublicAccessBlock", "s3:PutBucketOwnershipControls", "s3:PutBucketAcl", "s3:PutObjectAcl", "s3:PutObjectVersionAcl", "s3:PutReplicationConfiguration", "s3:DeleteBucket"]) && toset(flatten([([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyDeleteAndManagementExceptOwner"][0]).Condition.ArnNotLike["aws:PrincipalArn"]])) == toset(["arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_Admin_*", "arn:aws:iam::111111111111:root"])
+    error_message = "DenyDeleteAndManagementExceptOwner: exactly these actions, exempting only the owner pattern and the account root"
   }
 
   assert {
-    condition     = can(regex("DenyReadAndListExceptOwner", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("s3:GetObject", data.aws_iam_policy_document.backup_bucket.json))
-    error_message = "reads and listing are denied to everyone except the owner role and the account root"
+    condition     = ([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyReadAndListExceptOwner"][0]).Effect == "Deny" && toset(flatten([([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyReadAndListExceptOwner"][0]).Action])) == toset(["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket", "s3:ListBucketVersions"]) && toset(flatten([([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyReadAndListExceptOwner"][0]).Condition.ArnNotLike["aws:PrincipalArn"]])) == toset(["arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_Admin_*", "arn:aws:iam::111111111111:root"])
+    error_message = "DenyReadAndListExceptOwner: Get, GetVersion, List and ListVersions, exempting only the owner pattern and the account root"
   }
 
   assert {
-    condition     = !can(regex("\"Effect\": \"Allow\"", data.aws_iam_policy_document.backup_bucket.json))
-    error_message = "the bucket policy has no Allow statement: every grant comes from an identity policy"
+    condition     = ([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyCustomerProvidedKeyEncryption"][0]).Effect == "Deny" && flatten([([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyCustomerProvidedKeyEncryption"][0]).Action]) == ["s3:PutObject"] && flatten([([for s in jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement : s if s.Sid == "DenyCustomerProvidedKeyEncryption"][0]).Condition.Null["s3:x-amz-server-side-encryption-customer-algorithm"]]) == ["false"]
+    error_message = "SSE-C uploads are denied (an object only a thief's key can read)"
+  }
+
+  assert {
+    condition     = length(jsondecode(data.aws_iam_policy_document.backup_bucket.json).Statement) == 4 && !can(regex("\"Effect\": \"Allow\"", data.aws_iam_policy_document.backup_bucket.json))
+    error_message = "the bucket policy has exactly four Deny statements and no Allow: every grant comes from an identity policy"
+  }
+
+  assert {
+    condition     = aws_budgets_budget.backup_storage.limit_amount == "1" && aws_budgets_budget.backup_storage.budget_type == "COST" && one(aws_budgets_budget.backup_storage.cost_filter).name == "Service" && toset(one(aws_budgets_budget.backup_storage.cost_filter).values) == toset(["Amazon Simple Storage Service"])
+    error_message = "a USD 1 monthly cost budget on S3 alerts on storage abuse (CloudWatch cannot publish to the aws/sns topic)"
   }
 }
 
@@ -517,4 +539,8 @@ override_resource {
 
 override_resource {
   target = aws_s3_bucket_policy.backup
+}
+
+override_resource {
+  target = aws_budgets_budget.backup_storage
 }
