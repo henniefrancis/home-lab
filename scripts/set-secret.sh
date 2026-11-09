@@ -38,6 +38,16 @@ usage() { sed -n '2,23p' "$0"; }
 
 MANIFEST="${SECRETS_MANIFEST:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/secrets-manifest.tsv}"
 expected_names() { grep -vE '^(#|$)' "$MANIFEST" | cut -f1 | tr -d '\r' | grep -v '^config/'; }
+# NEW-10: read the list ONCE into a variable. A process substitution hid a failing expected_names (a missing manifest made --check
+# print "check OK" with nothing checked), and `expected_names | grep -q` under pipefail could fail on SIGPIPE for a large manifest.
+EXPECTED=""
+load_expected() {
+  EXPECTED="$(expected_names 2> /dev/null)" || EXPECTED=""
+  [ -n "$EXPECTED" ] || {
+    echo "Cannot read any SecureString row from $MANIFEST (missing, empty or comments only); refusing to continue." >&2
+    exit 2
+  }
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -83,7 +93,8 @@ if [ "$MODE" != check ] && { ! [[ "$NAME" =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]] || [[ "$
   echo "Refusing '$NAME': expected <service>/<name> (lowercase letters, digits, hyphen), never config/*." >&2
   exit 2
 fi
-if [ "$MODE" = create ] && ! expected_names | grep -qxF "$NAME"; then
+if [ "$MODE" = create ]; then load_expected; fi
+if [ "$MODE" = create ] && ! grep -qxF -- "$NAME" <<< "$EXPECTED"; then
   echo "Refusing to create '$NAME': it is not a SecureString row of config/secrets-manifest.tsv (add it there first)." >&2
   exit 2
 fi
@@ -123,8 +134,13 @@ fi
 
 if [ "$MODE" = check ]; then
   # Metadata only (name, type, key, version): describe-parameters never returns a value.
+  load_expected
   listing="$(aws_ ssm describe-parameters --parameter-filters "Key=Path,Option=Recursive,Values=/home-lab" \
     --query 'Parameters[].{n:Name,t:Type,k:KeyId,v:Version}' --output json)"
+  jq -e 'type == "array"' <<< "$listing" > /dev/null 2>&1 || {
+    echo "Unexpected describe-parameters output (not a JSON list); check FAILED." >&2
+    exit 1
+  }
   bad=0
   printf '%-40s %-22s %s\n' "parameter" "key" "version"
   while IFS= read -r want; do
@@ -142,7 +158,7 @@ if [ "$MODE" = check ]; then
     if [ "$rtype" != SecureString ]; then flag=" (NOT a SecureString)"; bad=1; fi
     if [ "$rkey" != "$KEY_ID" ]; then flag="$flag (NOT on $KEY_ID)"; bad=1; fi
     printf '%-40s %-22s %s%s\n' "$want" "$rkey" "$rver" "$flag"
-  done < <(expected_names)
+  done <<< "$EXPECTED"
   if [ "$bad" -ne 0 ]; then
     echo "check FAILED: fix with scripts/set-secret.sh --create <name> (missing) or by setting the value again (wrong key)." >&2
     exit 1
