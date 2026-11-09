@@ -26,6 +26,7 @@ Rules for the whole runbook:
 | 1 | Pi | `preflight.sh` |
 | 2 | Pi | Fix the findings |
 | 3 | Pi | `bootstrap.sh`, then `preflight.sh --stage bootstrap` |
+| 3a | Laptop and Pi | **Signed deploys (section 3.1): signing key, `allowed_signers`, root-owned checkout, no docker group. Do this before any `deploy.sh` (steps 14, M3, M4); every deploy is refused without it** |
 | 4 | Laptop | Create the offline CA |
 | 5 | Pi | Generate the two keys and CSRs |
 | 6 | Laptop | Sign both CSRs |
@@ -40,9 +41,8 @@ Rules for the whole runbook:
 | 15 | Laptop | Set the Tailscale key back to UNSET |
 | 16 | Lead | Set `pi_tailnet_ipv4`, plan and apply the wildcard record |
 | 17 | Pi | Verify (preflight full, S17 identity tests, S19 permissions) |
-| 18 | Laptop and Pi | Signed deploys: signing key, `allowed_signers`, root-owned checkout, no docker group (section 3.1) |
 
-Steps 4 to 8 do not depend on steps 1 to 3 finishing, so the CA can be created while the Pi is being prepared.
+Steps 4 to 8 do not depend on steps 1 to 3 finishing, so the CA can be created while the Pi is being prepared. Step 3a is not optional and comes first: with no `allowed_signers` file `deploy.sh` refuses everything (NEW-7).
 
 ---
 
@@ -87,7 +87,7 @@ trixie. Bookworm is supported and fine for this build.
 
 ### 0.3 Docker Engine and Compose from Docker's repository
 
-If 0.1 listed `docker-ce` from Docker's repository, the `full-upgrade` above already updated it: just re-check `docker compose version`.
+If 0.1 listed `docker-ce` from Docker's repository, the `full-upgrade` above already updated it: just re-check `sudo docker compose version`.
 If it listed `docker.io`, `docker-compose` or `podman-docker` (Debian's packages), or nothing, install Docker's own packages
 (https://docs.docker.com/engine/install/debian/):
 
@@ -243,18 +243,29 @@ The stage `bootstrap` preflight confirms the tools, the directory modes, the Doc
 
 ### 3.1 Who can reach root, and signed deploys [Laptop, then Pi] (SEC-M3, SEC-M7)
 
-**Login user and docker.** `docker` group membership is root-equivalent, so the login user is not in it and uses `sudo docker`. Check and fix:
+Do this section right after `bootstrap.sh` and before the first `deploy.sh`: with no `allowed_signers` file every deploy is refused.
+
+**Login user, docker and the checkout.** `docker` group membership is root-equivalent, so the login user is not in it and uses `sudo docker`. The checkout is
+root-owned and `deploy.sh` REFUSES to run unless the whole tree (`.git` included) is root-owned and not writable by others (NEW-1). Check and fix:
 
 ```bash
 id -nG "$USER" | tr ' ' '\n' | grep -x docker && sudo gpasswd -d "$USER" docker   # then log out and in; no output means already clean
-sudo stat -c '%U:%G %a' /opt/home-lab                                              # expect root:root 755
+sudo find /opt/home-lab \( -not -user root -o \( -not -type l -a -perm /022 \) \) -print -quit   # expect NO output
+# if it prints a path:  sudo chown -R root:root /opt/home-lab && sudo chmod -R go-w /opt/home-lab
 ```
 
-The real boundary is the Raspberry Pi Connect account (a cloud-brokered shell) plus your sudo password: turn on 2FA with a passkey or security key on the Raspberry
-Pi ID, turn Pi Connect remote shell off when you do not need it, and confirm `sudo -l` asks for a password (`NOPASSWD` entries would void all of this).
+The real boundary is the Raspberry Pi Connect account (a cloud-brokered shell) plus your sudo password (N4): turn on 2FA with a passkey or security key on the Raspberry
+Pi ID, turn Pi Connect remote shell off when you do not need it, and confirm that sudo asks for a password. Raspberry Pi OS ships a `NOPASSWD` rule for the first user,
+which would void everything in this section:
+
+```bash
+sudo -k; sudo -l                                                         # must ask for your password
+sudo sh -c 'grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/'              # expect no output; if a file is listed: sudo visudo -f <that file>
+```
 
 **Signed deploys.** `scripts/deploy.sh` merges and runs only a commit whose SSH signature verifies against `/etc/home-lab/allowed_signers`, a file OUTSIDE the
-checkout (so a pushed commit cannot change who is trusted). There is no bypass flag; with no or a bad file it refuses.
+checkout (so a pushed commit cannot change who is trusted). The file must be owned by root, in a root-owned directory, not writable by others and not a symlink. There is
+no bypass flag; with no or a bad file it refuses. **The Pi is the only place signatures are enforced:** GitHub does not require signed commits (decision 2026-11-09).
 
 On the laptop, once:
 
@@ -262,25 +273,41 @@ On the laptop, once:
 ssh-keygen -t ed25519 -f ~/.ssh/home-lab-signing -C "home-lab commit signing"   # use a passphrase; or a hardware key: ssh-keygen -t ed25519-sk
 git config --global gpg.format ssh
 git config --global user.signingkey ~/.ssh/home-lab-signing.pub
-git config --global commit.gpgsign true          # or set it only inside the repo with --local
+printf 'owner@example.invalid %s\n' "$(cut -d' ' -f1,2 ~/.ssh/home-lab-signing.pub)" > ~/.ssh/allowed_signers      # so your own git can show G for a good signature
+git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
 cat ~/.ssh/home-lab-signing.pub                  # one line: ssh-ed25519 AAAA... home-lab commit signing
 ```
 
-Add the same public line to GitHub as a **signing key** (Settings, SSH and GPG keys, New SSH key, type "Signing Key"), so commits show as Verified, and turn on the
-ruleset "Require signed commits" for `main` when the repo goes public. The public key is not secret but the real one is not committed here
-(`config/allowed_signers.example` is only a template). On the Pi, install it (replace the key text):
+Do NOT turn on `commit.gpgsign`: agents and tools commit as you without your key, and that is intended. You sign ONE release commit per deploy with `-S` (below).
+Optionally add the same public line to GitHub as a **signing key** (Settings, SSH and GPG keys, New SSH key, type "Signing Key") so the release commit shows as Verified. The
+public key is not secret but the real one is not committed here (`config/allowed_signers.example` is only a template). On the Pi, install it (replace the key text; keep ONLY
+real key lines in the file, no placeholder line):
 
 ```bash
 sudo install -m 0644 -o root -g root /dev/null /etc/home-lab/allowed_signers
-sudo tee /etc/home-lab/allowed_signers > /dev/null <<'EOF'
+sudo tee /etc/home-lab/allowed_signers > /dev/null <<'EOF2'
 owner@example.invalid namespaces="git" ssh-ed25519 AAAA...your-public-key... home-lab commit signing
-EOF
-sudo scripts/preflight.sh --stage full | grep -E 'allowed-signers|ssh-keygen'      # both PASS
+EOF2
+sudo scripts/preflight.sh --stage full | grep -E 'allowed-signers|ssh-keygen|checkout-owner'      # all PASS
 ```
 
-Make one signed commit, push it, and run `sudo scripts/deploy.sh`; step 1 prints `HEAD <sha>: signature verified against /etc/home-lab/allowed_signers`. An unsigned commit makes
-step 1 stop with `not signed by an allowed signer`; nothing is merged or started. Rotate the signing key by adding the new line, deploying once, then removing the old
-line. After M6, delete the Pi deploy key and clone over HTTPS (`sudo git remote set-url origin https://github.com/<owner>/home-lab.git`, `sudo rm /root/.ssh/home-lab-deploy`).
+**The release loop (everyday).** Agents and you commit normally, unsigned. When you want a change on the Pi:
+
+1. Review everything since the last deployed release: `git log --oneline <last-deployed>..HEAD` and `git diff <last-deployed>..HEAD`. **A signature attests the whole tree**,
+   not only your own commits: an unsigned commit underneath your signed one is deployed too, so read agent-written code as untrusted input before you sign.
+2. Sign one release commit on top: `git commit --allow-empty -S -m "Release: <what changed>"` (or `git commit -S --amend --no-edit` if the tip is yours and unpushed).
+3. `git push`, then on the Pi `sudo scripts/deploy.sh`. Step 1 prints `HEAD <sha>: signature verified against /etc/home-lab/allowed_signers`.
+
+Never run `git pull` on the Pi: `deploy.sh` fetches, verifies the signature BEFORE merging, merges fast-forward only (so an older signed commit cannot roll the Pi back), then
+refreshes secrets and starts the stack. An unsigned tip stops step 1 with `not signed by an allowed signer`; nothing is merged or started. The short version of this loop is
+in [release-and-deploy.md](release-and-deploy.md).
+
+**Commits made by GitHub are not deployable as they are** (NEW-4, N3): the merge button, squash merge, web edits and Dependabot PRs are signed with GitHub's own key, which is
+not in `allowed_signers`, so the Pi refuses them (fails closed, by design). Do not add GitHub's key to `allowed_signers`: that would trust everyone who can click merge. Instead
+merge locally and sign on top; the exact steps are in [release-and-deploy.md](release-and-deploy.md) ("Dependabot and GitHub-made commits").
+
+Rotate the signing key by adding the new line, deploying once, then removing the old line. After M6, delete the Pi deploy key and clone over HTTPS
+(`sudo git -C /opt/home-lab remote set-url origin https://github.com/<owner>/home-lab.git`, `sudo rm /root/.ssh/home-lab-deploy`).
 
 ## 4. Create the offline CA [Laptop]
 
@@ -525,10 +552,10 @@ sudo scripts/cert-expiry.sh
 Manual checks for S19 and Q18:
 
 ```bash
-sudo stat -c '%U:%G %a %n' /apps/.secrets.d /etc/home-lab /etc/home-lab/pki /etc/home-lab/pki/*.key /etc/home-lab/aws.env /etc/home-lab/aws-config
+sudo sh -c "stat -c '%U:%G %a %n' /apps/.secrets.d /etc/home-lab /etc/home-lab/pki /etc/home-lab/pki/*.key /etc/home-lab/aws.env /etc/home-lab/aws-config"   # sh -c: the glob must expand as root, the pki directory is 0700
 sudo stat -L -c '%U:%G %a %n' /apps/secrets          # expect root:root 700
 sudo find /apps/.secrets.d -maxdepth 1 -name '.staging-*'   # expect no output (no staging dir left behind)
-git -C /opt/home-lab status --ignored --short        # expect nothing secret-looking
+sudo git -C /opt/home-lab status --ignored --short   # expect nothing secret-looking (a root-owned checkout needs sudo; never git pull, deploy.sh does that)
 ```
 
 Expected: `host.key` root:root 400, `traefik.key` 10001:10001 400, `/etc/home-lab`, `/etc/home-lab/pki`, `/apps/.secrets.d` and `/apps/secrets` 700 root, `aws.env` and `aws-config` 600.
@@ -543,7 +570,7 @@ no-leak checks for `fetch-secrets.sh` run in CI (`scripts/test-fetch-secrets.sh`
   existing keys, you sign on the laptop and install. After a lost or stolen Pi: reissue with a new generation (bump `pki_generation` in `terraform/bootstrap`, apply it with admin SSO, use `--generation gen-2` in
   steps 5 to 7, write `PKI_GENERATION=gen-2` into `aws.env`).
 - After any secret changes: `scripts/set-secret.sh <name>` on the laptop, `sudo scripts/deploy.sh` on the Pi, then recreate the consuming service
-  (`docker compose ... up -d --force-recreate <service>`); files are replaced, not edited in place.
+  (`sudo docker compose -p home-lab -f /opt/home-lab/compose.yaml --env-file /opt/home-lab/config/lab.env --env-file /apps/secrets/runtime.env up -d --force-recreate <service>`); files are replaced, not edited in place.
 - `sudo scripts/deploy.sh --offline` starts from the last-good secrets when AWS or the internet is unavailable. Without `--offline` a failed fetch aborts the deploy.
 - The AWS CLI GPG key in `scripts/pubkeys/awscli-team.asc` expires 2027-07-01.
 

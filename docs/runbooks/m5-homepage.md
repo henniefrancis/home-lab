@@ -18,7 +18,7 @@ the real domain is never typed into this runbook or git.
   new has to be applied by the Authentik worker.
 - Config is committed in `homepage/config/` and mounted read-only. The domain comes from `HOMEPAGE_VAR_DOMAIN` (`{{HOMEPAGE_VAR_DOMAIN}}` in the YAML). Live tiles: Traefik and
   Authentik. "Coming soon" tiles (links work once the service exists): Home Assistant (`ha.`), IT Tools (`tools.`), Linkwarden (`links.`), Netdata (`netdata.`), Pi-hole
-  (`pihole.`), Portainer (`portainer.`). The Homepage update check and version display are off; Homepage has no telemetry. Logs go to stdout (`docker logs homepage`), never
+  (`pihole.`), Portainer (`portainer.`). The Homepage update check and version display are off; Homepage has no telemetry. Logs go to stdout (`sudo docker logs homepage`), never
   into the checkout.
 - **No Docker integration at all (decision 2026-11-08, SEC-H2).** The status dots on the live tiles needed Homepage to read the Docker API, and the socket proxy that provided it
   (`tecnativa/docker-socket-proxy:v0.5.0`, `CONTAINERS=1`) allows reading `/containers/{id}/archive`, `/export`, `/logs` and `/top` (reported as CVE-2026-78122, no fixed
@@ -31,8 +31,8 @@ the real domain is never typed into this runbook or git.
 
 ```bash
 cd /opt/home-lab
-git status --short            # expect nothing
-git pull --ff-only
+sudo git -C /opt/home-lab status --short   # expect nothing (the checkout is root-owned: plain git says "dubious ownership")
+sudo scripts/deploy.sh --only tailscale   # brings the checkout to the latest SIGNED release (never git pull: it would skip the signature check)
 sudo scripts/preflight.sh --stage bootstrap | grep -E 'svc-id|FAIL'     # six svc-id lines now include HOMEPAGE_UID and HOMEPAGE_GID: all PASS
 getent passwd 10003 || echo "id 10003 is not a host user (expected)"
 sudo docker ps --format '{{.Names}} {{.Status}}' | grep -E 'traefik|authentik-server'     # both Up, authentik-server healthy
@@ -69,7 +69,7 @@ Expected: `health=healthy user=10003:10003 readonly=true capdrop=[ALL] ports=0 m
 # 3.2 Homepage itself refuses other hosts (HOMEPAGE_ALLOWED_HOSTS): 200 for the dashboard host, 400 for anything else
 DOMAIN="$(sudo sed -n 's/^DOMAIN=//p' /apps/secrets/runtime.env)"
 for h in "dashboard.$DOMAIN" evil.example.test; do
-  printf '%s -> ' "$h"; docker exec homepage wget -S -qO /dev/null --header "Host: $h" http://127.0.0.1:3000/api/services 2>&1 | awk '/^ *HTTP\//{c=$2} END{print c}'
+  printf '%s -> ' "$h"; sudo docker exec homepage wget -S -qO /dev/null --header "Host: $h" http://127.0.0.1:3000/api/services 2>&1 | awk '/^ *HTTP\//{c=$2} END{print c}'
 done
 
 # 3.3 forward auth answers for the dashboard host (from inside the proxy network, bypassing the allowlist)
@@ -128,7 +128,7 @@ To keep it from coming back on the next full deploy, on the laptop `git revert` 
 
 ## 7. What only the Pi can verify (everything else ran in `scripts/test-homepage-config.sh`)
 
-arm64 start time and memory under real use (`docker stats homepage`, limit 384M); the real Authentik outpost answering for `dashboard.<domain>` (the test uses a stub for it;
+arm64 start time and memory under real use (`sudo docker stats homepage`, limit 384M); the real Authentik outpost answering for `dashboard.<domain>` (the test uses a stub for it;
 the real chain is covered by `scripts/test-authentik-config.sh` with a stand-in app); the allowlist with a real LAN or tailnet client; a browser with the staging
 certificate; real owners (`getent passwd 10003` empty).
 

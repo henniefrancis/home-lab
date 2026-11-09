@@ -27,7 +27,7 @@ Fastest first (minutes), then the tidy version:
 
 1. Flash Raspberry Pi OS 64-bit, enable Raspberry Pi Connect, and give it the same DHCP reservation (or a new one: update the router, the Tailscale node address is new anyway).
 2. Follow `m2-pi-setup.md` sections 0 to 3: Docker (login user NOT in the docker group), the root-owned checkout in `/opt/home-lab` with a deploy key, `preflight.sh`, `bootstrap.sh`.
-3. Install `/etc/home-lab/allowed_signers` (`m2-pi-setup.md` 3.1) so deploys verify.
+3. Install `/etc/home-lab/allowed_signers` and check the checkout ownership and `sudo -l` (`m2-pi-setup.md` 3.1) so deploys verify; do this BEFORE the first `deploy.sh`.
 
 ## 3. New keys and certificates [Pi, then Laptop, then Pi]
 
@@ -67,7 +67,7 @@ certificates per week): if you rebuild repeatedly while testing, switch `ACME_EN
 ## 9. Offline boot drill (plan Q19)
 
 Unplug the uplink, reboot the Pi. Everything must come up from the persisted secrets and the cached images (`restart: unless-stopped`); `sudo scripts/deploy.sh` without `--offline` must fail
-at the secret fetch with a clear message and leave the running stack alone; `sudo scripts/deploy.sh --offline` starts from the last-good secrets. Note: `--offline` skips the git fetch but
+in its first step, the `git fetch` (exit 128 and a raw git network error, because the uplink is down; the secret fetch is never reached), and leave the running stack alone (no docker call is made); `sudo scripts/deploy.sh --offline` starts from the last-good secrets. Note: `--offline` skips the git fetch but
 still verifies the signature of the checked-out commit. A certificate that expired meanwhile only shows in `cert-expiry.sh` and the daily timer (check `systemctl --failed`).
 
 ## 10. Disposing of or handing on a Pi or SD card (SEC-L4)

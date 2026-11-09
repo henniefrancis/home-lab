@@ -141,7 +141,7 @@ not a secret) and set the edge variable `acme_account_uri`; the CAA records then
 
 ```bash
 cd /opt/home-lab
-sudo git pull --ff-only                   # first time only: the old deploy.sh has no signature check; from now on use sudo scripts/deploy.sh
+sudo git pull --ff-only                   # ONE-OFF: the old deploy.sh has no signature check, so this pull cannot be verified; from now on only sudo scripts/deploy.sh (never git pull)
 sudo scripts/bootstrap.sh                 # networks (authentik-auth), traefik uid 10004, the systemd units, root-owned checkout, packages
 sudo gpasswd -d "$USER" docker 2>/dev/null; id -nG | tr ' ' '\n' | grep -x docker   # no output
 sudo install -m 0644 -o root -g root /dev/null /etc/home-lab/allowed_signers        # then paste your signing public key (m2-pi-setup.md 3.1)
@@ -156,19 +156,33 @@ Order matters for the last two lines: run `deploy.sh` first (it removes the orph
 
 The ACME storage directory is re-owned to uid 10004 by `bootstrap.sh`; if Traefik logs "permission denied" on `/letsencrypt`, run `sudo chown -R 10004:10004 /apps/traefik/letsencrypt`.
 
-## 7. GitHub, Tailscale and Authentik settings (owner only: cannot be done from the repo)
+## 7. GitHub, Tailscale and Authentik settings (the M6 go-public checklist; owner only: cannot be done from the repo)
 
-- GitHub (when the repo goes public; branch protection is unavailable on a private free repo): ruleset on `main` (block force-push and deletion, require a pull request or owner bypass,
-  **require status checks `checks` and `secret-scan`, require signed commits**); Settings, Code security: Dependabot alerts and security updates, secret scanning and push protection, private
-  vulnerability reporting, code scanning default setup; Actions: allow GitHub-owned and the two pinned third-party actions only (or require SHA pinning), approval for all outside collaborators'
-  fork runs; keep the default workflow token read-only; hardware-key or passkey 2FA on the account; delete the Pi deploy key and clone over HTTPS after M6.
+- **GitHub ruleset on `main`** (when the repo goes public; branch protection is unavailable on a private free repo). Kept simple for a single owner (decision 2026-11-09):
+  **require the status checks `checks` and `secret-scan`, block force-push, block deletion.** Do NOT require signed commits and do not require pull requests: the Pi enforces
+  signatures (`deploy.sh` verifies the tip against `/etc/home-lab/allowed_signers`), agents commit unsigned, and you sign one release commit per deploy
+  ([release-and-deploy.md](release-and-deploy.md)). A "require signed commits" rule would reject the unsigned agent commits on push (N3). If you later enable "require a pull
+  request", remember that the web merge is signed by GitHub, which the Pi does not trust: merge locally instead (same document, "Dependabot and GitHub-made commits").
+  The two checks only count once the `ci` workflow is green on `main`; CI also guards that no workflow ever grants `id-token: write` (below).
+- GitHub, Settings, Code security: Dependabot alerts and security updates, secret scanning and push protection, private vulnerability reporting, code scanning default setup;
+  Actions: allow GitHub-owned and the two pinned third-party actions only (or require SHA pinning), approval for all outside collaborators' fork runs; keep the default workflow
+  token read-only; hardware-key or passkey 2FA on the account; delete the Pi deploy key and clone over HTTPS after M6.
+- **N1 (owner action, ANOTHER Terraform project):** the IAM role `EC2SSM` in the account's other stack trusts the GitHub OIDC subject `repo:henniefrancis/*:*` and holds
+  `ssm:SendCommand` on `*`. Once home-lab is public that wildcard also covers this repo. Pin it in that project to exact `repo:henniefrancis/<repo>:ref:refs/heads/main` (or
+  `environment:` subjects) and scope `SendCommand` to tagged instances. Nothing in home-lab changes for this: home-lab has no AWS OIDC role, and CI fails if any workflow here
+  ever requests `id-token: write` (so home-lab cannot mint a token that role would accept). Do this before M6, or at least before any home-lab workflow needs `id-token`.
+- **N4 (owner, on the Pi):** `sudo -l` asks for a password (no `NOPASSWD`), Raspberry Pi Connect remote shell is off, `allowed_signers` is root-owned (m2-pi-setup.md 3.1).
+- **N7 (owner, optional, a few cents per month):** audit logging. See "Audit logging" in `hcp-terraform-bootstrap.md`; set `enable_audit_logging = true` in the gitignored
+  bootstrap tfvars and apply with admin SSO.
 - Tailscale: confirm the live ACL equals `tailscale/policy.example.hujson` and that device sharing is off.
 - Authentik: `m4-authentik.md` section 8 (named admin, retire `akadmin`, event retention, no recovery flow).
 - Raspberry Pi ID: 2FA with a passkey; disable Pi Connect remote shell when not needed.
+- Private denylist: before flipping to public, run `bash scripts/check-private-denylist.sh` with your own `.gitleaks-private.toml` (real domain, account ID, zone ID, Pi and tailnet
+  addresses, personal emails) against the exact commit that goes public (see `.gitleaks.toml`).
 
 ## Rollback
 
 - Bootstrap: the imports and the key are additive; to go back, restore the edge layout from git history and delete the bootstrap-managed copies from state (`terraform state rm`), never `destroy`
   (the objects have `prevent_destroy`). The key has a 30 day deletion window.
 - Edge: revert the commit; the `removed` blocks only forgot state, so re-importing needs the original import commands (see the old `imports.tf` pattern) and is rarely wanted.
-- Pi: `sudo git checkout <previous signed commit>` then `sudo scripts/deploy.sh --no-git`; the break-glass router and a manual `docker compose up` of the older stack work as before.
+- Pi: `sudo git checkout <previous signed commit>` then `sudo scripts/deploy.sh --no-git`; the break-glass router and a manual `sudo docker compose up` of the older stack work as before.

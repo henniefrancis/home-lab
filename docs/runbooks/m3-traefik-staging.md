@@ -38,7 +38,7 @@ and not open without a password. M4 replaces the basic auth with Authentik (`aut
   no `/home-lab/traefik/acme-email` parameter is created.
 - `aws_signing_helper` is **1.8.6** everywhere (plan text said 1.8.5). 1.8.6 rejects mismatched `Host` headers and exits at start if it cannot get
   credentials, so `ra-helper` restarts until AWS is reachable and the certificate is valid.
-- **Access log (F03/F04): JSON on stdout, rotated by Docker.** `docker logs traefik` carries both the access log and the application log, both JSON (access-log lines have a `DownstreamStatus` field);
+- **Access log (F03/F04): JSON on stdout, rotated by Docker.** `sudo docker logs traefik` carries both the access log and the application log, both JSON (access-log lines have a `DownstreamStatus` field);
   the json-file driver keeps 10 MB x 3, so nothing grows on the SD card and no logrotate is needed. The file `/apps/traefik/logs/access.log` of the first deploy
   was always empty and is no longer used. Root cause of the empty log: Traefik does not access-log requests handled by *internal* routers or services by
   default, and in M3 every request is internal (the dashboard `api@internal`, the HTTP-to-HTTPS redirect `web-to-websecure@internal`). Reproduced locally; fixed with
@@ -56,7 +56,7 @@ and already applied live with `tailscale set --snat-subnet-routes=false` (prefs 
 Permanence: `TS_EXTRA_ARGS` is passed to `tailscale up`, which `TS_AUTH_ONCE=true` skips for an already logged-in node (I could not confirm from Tailscale's docs that
 containerboot re-applies it on restart, so nothing here depends on that). The running node keeps the preference in its persisted state (`/apps/tailscale/state`); a
 rebuilt node (new SD card, pi-recovery) takes it from the compose file. The live and compose values are identical, so a `tailscale up` with these args cannot conflict.
-Check any time: `docker exec tailscale tailscale --socket=/tmp/tailscaled.sock debug prefs | grep NoSNAT` (expect `true`).
+Check any time: `sudo docker exec tailscale tailscale --socket=/tmp/tailscaled.sock debug prefs | grep NoSNAT` (expect `true`).
 
 ## F01: Tailscale `modprobe: can't change directory to '/lib/modules'`
 
@@ -72,7 +72,7 @@ Fallback if the Pi's kernel lacks nf_tables (unlikely on Debian 13): drop the va
 
 ```bash
 cd /opt/home-lab
-git status --short            # expect nothing
+sudo git -C /opt/home-lab status --short   # expect nothing (the checkout is root-owned: plain git says "dubious ownership")
 sudo scripts/preflight.sh --stage bootstrap | tail -15
 sudo test -s /apps/secrets/traefik/breakglass-htpasswd && echo "break-glass htpasswd present"
 sudo ls -l /etc/home-lab/pki/traefik.key /etc/home-lab/pki/traefik.crt
@@ -184,12 +184,12 @@ and that 9911 is not reachable from the host (it exists only inside Traefik's na
 While a client (laptop over Tailscale, or a LAN device) loads `https://traefik.<your domain>/`, run this on the Pi in a second terminal and keep reloading the page:
 
 ```bash
-PID="$(docker inspect -f '{{.State.Pid}}' traefik)"
+PID="$(sudo docker inspect -f '{{.State.Pid}}' traefik)"
 sudo nsenter -t "$PID" -n ss -tnH '( sport = :443 )'
 ```
 
 Expected: the peer (right-hand) address is `100.x.y.z` for tailnet clients and `10.0.0.x` for LAN clients, **never `172.30.0.1`**. If `172.30.0.1` appears, NoSNAT is
-not active: `docker exec tailscale tailscale --socket=/tmp/tailscaled.sock set --snat-subnet-routes=false`.
+not active: `sudo docker exec tailscale tailscale --socket=/tmp/tailscaled.sock set --snat-subnet-routes=false`.
 
 ```bash
 sudo docker logs --tail 200 traefik 2>&1 | jq -r 'select(.DownstreamStatus) | [.ClientHost,.RouterName,.DownstreamStatus] | @tsv' | tail -5   # client, router, status
@@ -207,8 +207,8 @@ sysctl net.ipv4.conf.all.src_valid_mark                                         
 sudo docker logs --since 2m tailscale 2>&1 | grep -c src_valid_mark                      # 0 after the restart; an old line is harmless once the sysctl is 1
 ```
 
-If the old error text is still in `docker logs` it is from before the recreate: judge only by lines after the container's new start time
-(`docker inspect tailscale --format '{{.State.StartedAt}}'`).
+If the old error text is still in `sudo docker logs` it is from before the recreate: judge only by lines after the container's new start time
+(`sudo docker inspect tailscale --format '{{.State.StartedAt}}'`).
 
 ### 3.5b Published ports: IPv4 only, and an optional firewall rule (SEC-L2)
 
@@ -256,7 +256,7 @@ sudo scripts/deploy.sh --only traefik
 | Traefik log: `no EC2 IMDS role found ... 127.0.0.1:9911` | ra-helper is down or lost Traefik's network namespace after a Traefik recreate: `sudo docker compose -p home-lab -f compose.yaml --env-file config/lab.env --env-file /apps/secrets/runtime.env up -d --force-recreate traefik ra-helper` |
 | Log: `AccessDenied` on `ChangeResourceRecordSets` | the ACME role only changes `_acme-challenge.<domain>` TXT: check `AWS_HOSTED_ZONE_ID` (= `ROUTE53_ZONE_ID`) is the zone of `DOMAIN` |
 | DNS-01 timeout or `NXDOMAIN` | Route 53 propagation is slow; wait and restart Traefik (`sudo docker restart traefik`, the helper keeps running); resolvers are 1.1.1.1 and 8.8.8.8 and must be reachable from the Pi |
-| Traefik exits at start | an unknown flag or a bad dynamic file: `docker logs traefik`; `bash scripts/test-traefik-config.sh` reproduces it off the Pi |
+| Traefik exits at start | an unknown flag or a bad dynamic file: `sudo docker logs traefik`; `bash scripts/test-traefik-config.sh` reproduces it off the Pi |
 | 403 over Tailscale, access log shows `172.30.0.1` | Tailscale is SNATing: see F02 (`tailscale set --snat-subnet-routes=false`); verify with the `nsenter ... ss` step in 3.6 |
 | 403 from the laptop | the laptop is outside `10.0.0.0/24` and `100.64.0.0/10` (Wi-Fi guest network, VPN) |
 | Port 80 or 443 already in use | another service on the Pi; `sudo ss -tlnp` |

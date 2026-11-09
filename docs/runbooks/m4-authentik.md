@@ -49,8 +49,8 @@ If you skip it, the parameter stays UNSET, the file is empty and Authentik start
 
 ```bash
 cd /opt/home-lab
-git status --short            # expect nothing
-git pull --ff-only
+sudo git -C /opt/home-lab status --short   # expect nothing (the checkout is root-owned: plain git says "dubious ownership")
+sudo scripts/deploy.sh --only tailscale   # brings the checkout to the latest SIGNED release (never git pull: it would skip the signature check)
 sudo scripts/bootstrap.sh     # idempotent: creates /apps/authentik/data (10002) and /apps/authentik/postgres (70)
 sudo scripts/preflight.sh --stage bootstrap | grep -E 'svc-id|authentik|FAIL' 
 getent passwd 10002 70 || echo "ids 10002 and 70 are not host users (expected)"
@@ -84,8 +84,8 @@ The `dc` function is used by the later steps too (shell functions do not survive
 ```bash
 # 3.1 healthy, identities, memory
 dc ps --format 'table {{.Name}}\t{{.Status}}'
-for c in authentik-server authentik-worker authentik-postgresql; do printf '%s uid=%s\n' "$c" "$(docker exec "$c" id -u)"; done   # 10002 10002 70
-docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}' | grep -E 'authentik|NAME'                                    # well under the limits
+for c in authentik-server authentik-worker authentik-postgresql; do printf '%s uid=%s\n' "$c" "$(sudo docker exec "$c" id -u)"; done   # 10002 10002 70
+sudo docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}' | grep -E 'authentik|NAME'                                    # well under the limits
 
 # 3.2 secret files and data (F02): numeric owners, nothing owned by 1000
 sudo ls -ln /apps/secrets/authentik/        # secret-key 10002 10002 -r--------; postgres-password 10002 10002 -r--r-----; bootstrap-password 10002 10002 -r--------
@@ -105,7 +105,7 @@ Expected from the last line: `AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS=172.30.0.0/2
 # 3.4 the blueprint applied
 printf '%s\n' 'from authentik.blueprints.models import BlueprintInstance as B' \
   'print("BPSTATE", list(B.objects.filter(name__startswith="Home lab").values_list("name", "status")))' \
-  | docker exec -i authentik-worker ak shell 2>/dev/null | grep BPSTATE
+  | sudo docker exec -i authentik-worker ak shell 2>/dev/null | grep BPSTATE
 ```
 
 Expected: `[('Home lab - SSO apps, MFA and embedded outpost', 'successful')]`. (Also visible in the UI: Customization, Blueprints.)
@@ -125,18 +125,18 @@ Check progress (all read-only; run on the Pi):
 # 1. All blueprint instances and their status (successful / unknown / error / orphaned). "unknown" for a few minutes is normal while queued.
 printf '%s\n' 'from authentik.blueprints.models import BlueprintInstance as B' \
   'print("BP", [(b.status, b.name) for b in B.objects.order_by("name")])' \
-  | docker exec -i authentik-worker ak shell 2>/dev/null | grep '^BP'
+  | sudo docker exec -i authentik-worker ak shell 2>/dev/null | grep '^BP'
 # 2. Are the objects there? Providers, applications, the outpost binding, the admin group.
 printf '%s\n' 'from authentik.providers.proxy.models import ProxyProvider as P' 'from authentik.core.models import Application as A, Group as G' \
   'from authentik.outposts.models import Outpost as O' \
   'print("PROV", sorted(P.objects.values_list("name", "mode")))' 'print("APPS", sorted(A.objects.values_list("slug", flat=True)))' \
   'print("OUTPOST", [(o.name, sorted(o.providers.values_list("name", flat=True))) for o in O.objects.all()])' \
   'print("GROUP", list(G.objects.filter(name="homelab-admins").values_list("name", flat=True)))' \
-  | docker exec -i authentik-worker ak shell 2>/dev/null | grep -E '^(PROV|APPS|OUTPOST|GROUP)'
+  | sudo docker exec -i authentik-worker ak shell 2>/dev/null | grep -E '^(PROV|APPS|OUTPOST|GROUP)'
 # 3. MFA enforced: the validation stage must be set to "configure" (not "skip").
 printf '%s\n' 'from authentik.stages.authenticator_validate.models import AuthenticatorValidateStage as S' \
   'print("MFA", list(S.objects.filter(name="default-authentication-mfa-validation").values_list("not_configured_action", "device_classes")))' \
-  | docker exec -i authentik-worker ak shell 2>/dev/null | grep '^MFA'
+  | sudo docker exec -i authentik-worker ak shell 2>/dev/null | grep '^MFA'
 # 4. What the worker is doing right now (it logs every blueprint it applies).
 sudo docker logs --since 5m authentik-worker 2>&1 | grep -i blueprint | cut -c1-200 | tail -8
 ```
@@ -248,7 +248,7 @@ sudo docker start authentik-server                   # back up; https://traefik.
 | Situation | What to do |
 |-----------|------------|
 | Lost phone, another MFA device or key still works | Log in with it, User settings, MFA Devices: delete the lost one, add a new one. |
-| Lost every MFA device, or the `akadmin` password | Create a one-time recovery link (valid for the minutes you pass, here 15) from the Pi, open it, then fix the account: `docker exec authentik-server ak create_recovery_key 15 akadmin` prints `/recovery/use-token/<token>/`; open `https://auth.<domain>` plus that path **within 15 minutes**. You are logged in as `akadmin`: immediately enrol a new MFA device and, if needed, set a new password (User settings). The link is single use and is not stored anywhere else. |
+| Lost every MFA device, or the `akadmin` password | Create a one-time recovery link (valid for the minutes you pass, here 15) from the Pi, open it, then fix the account: `sudo docker exec authentik-server ak create_recovery_key 15 akadmin` prints `/recovery/use-token/<token>/`; open `https://auth.<domain>` plus that path **within 15 minutes**. You are logged in as `akadmin`: immediately enrol a new MFA device and, if needed, set a new password (User settings). The link is single use and is not stored anywhere else. |
 | Authentik is down or broken, you need the dashboard | Break-glass: `sudo scripts/breakglass.sh on 30`, browse `https://bg-traefik.<domain>/` (basic auth, rate limited, LAN or tailnet only). Stop it again with `sudo scripts/breakglass.sh off`. `sudo scripts/breakglass.sh status` and the preflight WARN tell you whether it is on; it never survives a reboot. |
 | The Pi is unreachable on the network | Raspberry Pi Connect terminal (works without SSH), then the rows above. |
 | Database or data directory lost (new SD card) | The blueprint rebuilds groups, applications and providers; **users and MFA devices are gone** until backups exist (a later phase). `scripts/bootstrap.sh`, set `authentik/bootstrap-password`, `sudo scripts/deploy.sh`, log in as `akadmin`, enrol MFA again. |
@@ -269,7 +269,7 @@ Smallest first.
 ## 8. What only the Pi can verify (everything else ran in `scripts/test-authentik-config.sh`)
 
 arm64 behaviour and first-start duration; real owners and modes on `/apps/secrets` and `/apps/authentik` (the local run used Docker named volumes); the allowlist with a real tailnet
-or LAN client in front of forward auth; the memory limits under real use (`docker stats`); a browser with the staging certificate; WebAuthn; the `bg-traefik` flow with the real htpasswd.
+or LAN client in front of forward auth; the memory limits under real use (`sudo docker stats`); a browser with the staging certificate; WebAuthn; the `bg-traefik` flow with the real htpasswd.
 
 ## Troubleshooting
 
@@ -281,10 +281,10 @@ or LAN client in front of forward auth; the memory limits under real use (`docke
 | Login works, then `404` or a loop on `/outpost.goauthentik.io/callback` | The app host has no `<app>-outpost` router. Every host using `authentik@file` needs `Host(<app host>) && PathPrefix(/outpost.goauthentik.io/)` to service `authentik` with `lan-allowlist@file` (see the dashboard labels in `traefik/compose.yaml`). |
 | `403` on the dashboard before any login | The allowlist: the client's address is not LAN/tailnet (see R49 in the plan notes: Tailscale must not SNAT). |
 | `Permission denied` after a good login | The user is not in `homelab-admins` (Directory, Groups). |
-| `ak create_recovery_key` fails with `KeyError: getpwuid()` | The container lost `USER=authentik` from its environment (it is set in `authentik/compose.yaml`); use `docker exec -e USER=authentik ...`. |
+| `ak create_recovery_key` fails with `KeyError: getpwuid()` | The container lost `USER=authentik` from its environment (it is set in `authentik/compose.yaml`); use `sudo docker exec -e USER=authentik ...`. |
 | Secret rotated in SSM but Authentik still uses the old value | Containers keep the secret file they were created with: `dc up -d --force-recreate authentik-server authentik-worker` after `deploy.sh`. |
 | Providers, apps or the outpost binding are missing 5 to 25 minutes after the first deploy | The worker is still applying blueprints (slow on Pi/SD): section 3.4a. Do not restart the worker; use the progress checks and, after ~30 minutes, the manual `ak apply_blueprint` fallback. |
-| Blueprint shows `error` | Admin interface, Customization, Blueprints, open the instance for the message; `docker logs authentik-worker 2>&1 | grep -i blueprint`. |
+| Blueprint shows `error` | Admin interface, Customization, Blueprints, open the instance for the message; `sudo docker logs authentik-worker 2>&1 | grep -i blueprint`. |
 
 ## 8. Account hygiene after the first login (SEC-L8, owner steps)
 
