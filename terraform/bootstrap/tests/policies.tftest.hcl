@@ -255,3 +255,83 @@ run "duplicate_zone_deletion_is_scoped" {
     error_message = "DeleteHostedZone exists only for the listed duplicate zones"
   }
 }
+
+# SEC-L1 / N7: audit logging is opt-in (enable_audit_logging). When it is switched on, the trail must be multi-region with log file
+# validation and the bucket must be private, encrypted, versioned, and refuse plain HTTP. (Nothing is created: all overridden.)
+override_resource {
+  target = aws_s3_bucket.audit
+  values = {
+    id  = "home-lab-audit-111111111111-af-south-1"
+    arn = "arn:aws:s3:::home-lab-audit-111111111111-af-south-1"
+  }
+}
+
+override_resource {
+  target = aws_s3_bucket_public_access_block.audit
+}
+
+override_resource {
+  target = aws_s3_bucket_ownership_controls.audit
+}
+
+override_resource {
+  target = aws_s3_bucket_server_side_encryption_configuration.audit
+}
+
+override_resource {
+  target = aws_s3_bucket_versioning.audit
+}
+
+override_resource {
+  target = aws_s3_bucket_lifecycle_configuration.audit
+}
+
+override_resource {
+  target = aws_s3_bucket_policy.audit
+}
+
+override_resource {
+  target = aws_cloudtrail.audit
+}
+
+override_resource {
+  target = aws_accessanalyzer_analyzer.account
+}
+
+run "audit_logging_is_off_by_default" {
+  command = apply
+
+  assert {
+    condition     = length(aws_cloudtrail.audit) == 0 && length(aws_s3_bucket.audit) == 0 && length(aws_accessanalyzer_analyzer.account) == 0
+    error_message = "no trail, bucket or analyzer unless enable_audit_logging is true (N7: opt-in, nothing is created by default)"
+  }
+}
+
+run "audit_logging_when_enabled_is_hardened" {
+  command = apply
+
+  variables {
+    enable_audit_logging = true
+  }
+
+  assert {
+    condition     = aws_cloudtrail.audit[0].is_multi_region_trail && aws_cloudtrail.audit[0].enable_log_file_validation && aws_cloudtrail.audit[0].include_global_service_events
+    error_message = "the trail is multi-region, validates log files and records global service events"
+  }
+
+  assert {
+    condition     = can(regex("DenyInsecureTransport", data.aws_iam_policy_document.audit_bucket[0].json)) && can(regex("aws:SecureTransport", data.aws_iam_policy_document.audit_bucket[0].json))
+    error_message = "the audit bucket refuses plain HTTP"
+  }
+
+  assert {
+    condition     = can(regex("cloudtrail.amazonaws.com", data.aws_iam_policy_document.audit_bucket[0].json)) && can(regex("aws:SourceArn", data.aws_iam_policy_document.audit_bucket[0].json))
+    error_message = "only the home-lab trail (SourceArn) may write to the audit bucket"
+  }
+
+  assert {
+    condition     = aws_s3_bucket_public_access_block.audit[0].block_public_acls && aws_s3_bucket_public_access_block.audit[0].restrict_public_buckets
+    error_message = "the audit bucket blocks public access"
+  }
+
+}
