@@ -368,6 +368,8 @@ check_installed_tools() {
     fail aws_signing_helper "$HELPER_BIN not installed (run bootstrap.sh)"
   fi
   if command -v jq > /dev/null 2>&1; then pass jq "$(jq --version)"; else fail jq "jq missing (run bootstrap.sh)"; fi
+  # K5: the Authentik backup is encrypted on the Pi with age before it leaves (scripts/backup-authentik.sh).
+  if command -v age > /dev/null 2>&1; then pass age "$(age --version 2> /dev/null | head -n 1)"; else fail age "age missing (run bootstrap.sh): the nightly Authentik backup cannot run"; fi
 }
 
 check_dir() { # check_dir <path> <owner uid:gid> <mode> <label>
@@ -522,7 +524,7 @@ check_units() {
   else
     fail systemd-units "stale or missing systemd units (run: sudo scripts/bootstrap.sh): $(printf '%s' "$drift" | paste -sd";" -)"
   fi
-  for t in home-lab-cert-expiry.timer home-lab-alert-test.timer; do
+  for t in home-lab-cert-expiry.timer home-lab-alert-test.timer home-lab-backup-authentik.timer; do
     if systemctl is-enabled "$t" > /dev/null 2>&1; then
       pass "timer-${t%.timer}" "$t is enabled"
     else
@@ -564,6 +566,50 @@ check_alerting() {
   fi
 }
 
+# K5: the Authentik backup. Configured (public recipient and bucket in aws.env), and a SUCCESSFUL run recently: the last-success file is
+# written by scripts/backup-authentik.sh only after the dump, the encryption, the upload and the completion marker all worked.
+# WARN after 2 days (one missed night is noise, two is a problem), FAIL after 7 days; "never" is a WARN (not run yet, or not set up).
+check_backup() {
+  local f="$ETC_DIR/aws.env" rec bucket sf last now age configured=1
+  rec="$(lab_env_get "$f" BACKUP_AGE_RECIPIENT)"
+  bucket="$(lab_env_get "$f" BACKUP_S3_BUCKET)"
+  if [[ "$rec" =~ ^age1[02-9ac-hj-np-z]{58}$ ]]; then
+    pass backup-recipient "BACKUP_AGE_RECIPIENT is set (a public key; the private identity must exist only in the password manager)"
+  else
+    configured=0
+    warnx backup-recipient "BACKUP_AGE_RECIPIENT is missing or not an age public key (age1...) in $f: no Authentik backup can be taken"
+    hint "docs/runbooks/authentik-backup.md, owner setup: age-keygen on the laptop, then scripts/render-aws-env.sh --age-recipient age1..."
+  fi
+  if [[ "$bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
+    pass backup-bucket "BACKUP_S3_BUCKET is set"
+  else
+    configured=0
+    warnx backup-bucket "BACKUP_S3_BUCKET is missing or malformed in $f (terraform output backup_bucket_name, scripts/render-aws-env.sh)"
+  fi
+  sf="${HOME_LAB_STATE_DIR:-/var/lib/home-lab}/backup-authentik.last"
+  now="$(date +%s)"
+  last="$(head -c 20 "$sf" 2> /dev/null | tr -d '\n' || true)"
+  if ! [[ "$last" =~ ^[0-9]{1,11}$ ]]; then
+    if [ "$configured" -eq 1 ]; then
+      warnx backup-last "no successful Authentik backup recorded yet (never): sudo systemctl start home-lab-backup-authentik.service, then check the object exists"
+    else
+      warnx backup-last "no successful Authentik backup recorded (never); set it up first (docs/runbooks/authentik-backup.md)"
+    fi
+    return
+  fi
+  last=$((10#$last))
+  age=$((now - last))
+  if [ "$age" -lt 0 ]; then
+    warnx backup-last "the last-success time is in the future (the Pi has no RTC and the clock is wrong?): check timedatectl"
+  elif [ "$age" -gt $((7 * 86400)) ]; then
+    fail backup-last "the last successful Authentik backup is $((age / 86400)) days old (limit 7): journalctl -u home-lab-backup-authentik.service, docs/runbooks/authentik-backup.md"
+  elif [ "$age" -gt $((2 * 86400)) ]; then
+    warnx backup-last "the last successful Authentik backup is $((age / 86400)) days old (a night was missed): journalctl -u home-lab-backup-authentik.service"
+  else
+    pass backup-last "the last successful Authentik backup was $((age / 3600)) hours ago"
+  fi
+}
+
 check_repo_hygiene() {
   local bad
   [ -d "$REPO_DIR/.git" ] || {
@@ -602,6 +648,7 @@ if [ "$STAGE" = full ]; then
   check_pki
   check_hardening
   check_alerting
+  check_backup
   check_repo_hygiene
 fi
 
