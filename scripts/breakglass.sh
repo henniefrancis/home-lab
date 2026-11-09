@@ -9,6 +9,7 @@
 # it, no restart) and removes it again. Auto-off after the given minutes (a systemd timer), and the boot-time unit
 # home-lab-breakglass-reset.service (installed by bootstrap.sh) deletes it at every reboot, so a forgotten break-glass can never
 # become a standing MFA bypass (SEC-L3).
+# Exit codes: 0 ok, 1 failure (or status: enabled), 2 usage error.
 # Credentials: the Basic-auth line from SSM /home-lab/traefik/breakglass-htpasswd (runbook docs/runbooks/m4-authentik.md).
 set -euo pipefail
 
@@ -20,6 +21,7 @@ APPS_ROOT="$(lab_env_get "$REPO_DIR/config/lab.env" APPS_ROOT /apps)"
 BREAKGLASS_DIR="${BREAKGLASS_DIR:-$APPS_ROOT/traefik/dynamic}"
 SRC="$REPO_DIR/traefik/breakglass/bg-traefik.yml"
 DEST="$BREAKGLASS_DIR/bg-traefik.yml"
+SYSTEMD_RUN="${BREAKGLASS_SYSTEMD_RUN:-systemd-run}" # overridable for tests only
 
 cmd="${1:-}"
 case "$cmd" in
@@ -34,7 +36,8 @@ case "$cmd" in
     ;;
 esac
 minutes="${2:-60}"
-[[ "$minutes" =~ ^[0-9]+$ ]] && [ "$minutes" -ge 1 ] && [ "$minutes" -le 480 ] || {
+# Length first: a 20-digit number would make the numeric test fail with a raw bash message (NEW-11).
+[[ "$minutes" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$minutes))" -ge 1 ] && [ "$((10#$minutes))" -le 480 ] || {
   echo "MINUTES must be 1-480" >&2
   exit 2
 }
@@ -45,12 +48,24 @@ case "$cmd" in
     [ -f "$SRC" ] || die "missing $SRC"
     install -d -m 0755 "$(dirname "$BREAKGLASS_DIR")" "$BREAKGLASS_DIR"
     install -m 0644 "$SRC" "$DEST"
-    if [ "${BREAKGLASS_NO_TIMER:-0}" != 1 ] && command -v systemd-run > /dev/null 2>&1; then
+    autooff=0
+    if [ "${BREAKGLASS_NO_TIMER:-0}" = 1 ]; then
+      : # test mode: no timer
+    elif command -v "$SYSTEMD_RUN" > /dev/null 2>&1; then
       systemctl stop home-lab-breakglass-off.timer 2> /dev/null || true
-      systemd-run --quiet --unit home-lab-breakglass-off --on-active="${minutes}m" /bin/rm -f "$DEST" ||
-        warn "could not schedule the auto-off; run 'breakglass.sh off' yourself (a reboot also disables it)"
+      if "$SYSTEMD_RUN" --quiet --unit home-lab-breakglass-off --on-active="${minutes}m" /bin/rm -f "$DEST"; then
+        autooff=1
+      else
+        warn "could not schedule the auto-off; run breakglass.sh off yourself (a reboot also disables it)"
+      fi
+    else
+      warn "systemd-run is not available: there is NO auto-off. Run breakglass.sh off yourself (a reboot also disables it)"
     fi
-    warn "BREAK-GLASS ENABLED for $minutes minutes (auto-off). Disable earlier with: sudo scripts/breakglass.sh off"
+    if [ "$autooff" -eq 1 ]; then
+      warn "BREAK-GLASS ENABLED for $minutes minutes (auto-off). Disable earlier with: sudo scripts/breakglass.sh off"
+    else
+      warn "BREAK-GLASS ENABLED with NO auto-off. Disable it with: sudo scripts/breakglass.sh off (or reboot)"
+    fi
     ;;
   off)
     rm -f "$DEST"

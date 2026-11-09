@@ -153,6 +153,16 @@ check "an out-of-range duration exits 2" test "$rc" -eq 2
 rc=0
 bash scripts/breakglass.sh frobnicate > /dev/null 2>&1 || rc=$?
 check "an unknown command exits 2" test "$rc" -eq 2
+rc=0
+bash scripts/breakglass.sh on 99999999999999999999 > "$T/o" 2>&1 || rc=$?
+check "a 20-digit duration exits 2 with our message, not a raw bash error (NEW-11)" bash -c 'test "$1" -eq 2 && grep -q "MINUTES must be 1-480" "$2" && ! grep -qi "integer expression" "$2"' _ "$rc" "$T/o"
+check "a leading-zero duration (08) is accepted" bash -c 'bash scripts/breakglass.sh on 08 > /dev/null 2>&1 && bash scripts/breakglass.sh off > /dev/null 2>&1'
+# Without the test-mode switch: no systemd-run at all must say so (NEW-11); a systemd-run that fails must not claim an auto-off.
+printf '#!/bin/sh\nexit 1\n' > "$T/failing-systemd-run"
+chmod +x "$T/failing-systemd-run"
+check "no systemd-run: on works but says there is NO auto-off (NEW-11)" bash -c 'unset BREAKGLASS_NO_TIMER; BREAKGLASS_SYSTEMD_RUN=no-such-command-here bash scripts/breakglass.sh on 5 > "$1" 2>&1; grep -q "NO auto-off" "$1" && ! grep -q "minutes (auto-off)" "$1"; r=$?; bash scripts/breakglass.sh off > /dev/null 2>&1; exit $r' _ "$T/o"
+check "a failing systemd-run is reported and no auto-off is claimed (NEW-11)" bash -c 'unset BREAKGLASS_NO_TIMER; BREAKGLASS_SYSTEMD_RUN="$2" bash scripts/breakglass.sh on 5 > "$1" 2>&1; grep -q "could not schedule" "$1" && ! grep -q "minutes (auto-off)" "$1"; r=$?; bash scripts/breakglass.sh off > /dev/null 2>&1; exit $r' _ "$T/o" "$T/failing-systemd-run"
+check "bg-traefik.yml no longer claims a tmpfs drop-in (N5)" bash -c '! grep -qi "tmpfs drop-in\|/run/home-lab/breakglass" traefik/breakglass/bg-traefik.yml'
 check "the drop-in routes bg-traefik through allowlist, rate limit and basic auth, host from the DOMAIN env" bash -c 'f=traefik/breakglass/bg-traefik.yml; grep -q "lan-allowlist@file" $f && grep -q "breakglass-ratelimit" $f && grep -q "breakglass-auth" $f && grep -q "env \"DOMAIN\"" $f'
 unset BREAKGLASS_DIR BREAKGLASS_NO_ROOT_CHECK BREAKGLASS_NO_TIMER
 
