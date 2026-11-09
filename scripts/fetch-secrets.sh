@@ -97,7 +97,8 @@ fail_validation() {
 }
 
 # ------------------------------------------------------------ manifest
-declare -a M_PARAM M_TARGET M_OWNER M_MODE M_REQ M_FMT
+# Initialised so an empty or comment-only manifest reaches the "no rows" message (exit 4) instead of an unbound-variable error (NEW-8).
+declare -a M_PARAM=() M_TARGET=() M_OWNER=() M_MODE=() M_REQ=() M_FMT=()
 declare -A TARGET_META=() TARGET_REQ=()
 # tr removes CRs (a manifest edited on Windows) and the final printf guarantees a last newline: `read` drops an
 # unterminated last line, which silently lost the last row (QA-M-1).
@@ -107,8 +108,12 @@ while IFS=$'\t' read -r param target owner mode req fmt extra; do
   [[ "$param" =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]] || fail_validation "manifest: bad parameter name '$param'"
   [[ "$target" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || fail_validation "manifest: bad target path for '$param'"
   case "/$target/" in */../*) fail_validation "manifest: '..' in target for '$param'" ;; esac
+  case "/$target/" in */./*) fail_validation "manifest: '.' segment in target for '$param'" ;; esac
   [[ "$owner" =~ ^[0-9]+:[0-9]+$ ]] || fail_validation "manifest: owner of '$param' must be numeric uid:gid"
+  # The header of the manifest says never 1000 (the Pi login user) and no access for "other"; enforce it (NEW-9).
+  [ "${owner%%:*}" != 1000 ] && [ "${owner##*:}" != 1000 ] || fail_validation "manifest: owner of '$param' uses uid or gid 1000 (the Pi login user)"
   [[ "$mode" =~ ^0[0-7]{3}$ ]] || fail_validation "manifest: mode of '$param' must look like 0400"
+  [ "${mode:3:1}" = 0 ] || fail_validation "manifest: mode of '$param' grants access to other (last digit must be 0)"
   case "$req" in yes | no | empty) ;; *) fail_validation "manifest: required of '$param' must be yes, no or empty" ;; esac
   case "$fmt" in
     raw) ;;
@@ -281,6 +286,13 @@ for i in "${!M_PARAM[@]}"; do
     var="${fmt#env:}"
     if ! jq -e --arg n "$full" '.Parameters[] | select(.Name == $n) | .Value | test("^[A-Za-z0-9_./:@+=,-]+$")' "$P" > /dev/null; then
       echo "FAIL  $param: value has characters that are unsafe in an env file" >&2
+      errors=$((errors + 1))
+      continue
+    fi
+    # NEW-14: the domain is lowercase labels without a trailing dot. Traefik matches Host() rules against the lowercased request
+    # host, so Lab.Example.Test. would publish and then never match anything (a dead lab, failing closed but hard to diagnose).
+    if [ "$param" = config/domain ] && ! jq -e --arg n "$full" '.Parameters[] | select(.Name == $n) | .Value | test("^([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])+[a-z0-9]([a-z0-9-]*[a-z0-9])?$")' "$P" > /dev/null; then
+      echo "FAIL  $param: must be lowercase DNS labels separated by dots, with no trailing dot" >&2
       errors=$((errors + 1))
       continue
     fi
