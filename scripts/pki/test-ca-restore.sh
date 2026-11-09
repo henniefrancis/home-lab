@@ -79,9 +79,20 @@ TMP="$(mktemp -d)"
 chmod 0700 "$TMP"
 
 # manifest <dir>: every file below it with its SHA-256, sorted, plus the file count (detects a changed, added or removed file).
-manifest() { (cd "$1" && find . -type f -print0 | sort -z | xargs -0 sha256sum 2> /dev/null); }
+# It FAILS (non-zero, message on stderr) when any file cannot be read or nothing is found: an empty manifest before and after would
+# otherwise compare equal and report "unchanged" for a directory that was never really checked (QA L-1, SEC L-4).
+manifest() {
+  local out
+  out="$(cd "$1" && find . -type f -print0 | sort -z | xargs -0 sha256sum)" || return 1
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
 
-before="$(manifest "$CA_DIR")"
+if ! before="$(manifest "$CA_DIR")"; then
+  printf '[FAIL] cannot checksum every file in %s (an unreadable file, or an empty directory): fix the permissions and run again\n' "$CA_DIR"
+  echo "RESULT: FAIL (the directory could not be checksummed, so \"unchanged\" could not be proved)"
+  exit 1
+fi
 
 # ---------------------------------------------------------------- 1. files and certificate
 for f in ca.key ca.crt; do
@@ -97,19 +108,23 @@ if [ ! -f "$CA_DIR/ca.key" ] || [ ! -f "$CA_DIR/ca.crt" ]; then
   exit 1
 fi
 
-if ca_subj="$(openssl x509 -in "$CA_DIR/ca.crt" -noout -subject -nameopt RFC2253 2> /dev/null | sed 's/^subject=//')" && [ "$ca_subj" = "CN=home-lab-offline-ca" ]; then
-  pass "ca.crt subject is CN=home-lab-offline-ca"
+if ! openssl x509 -in "$CA_DIR/ca.crt" -noout > /dev/null 2>&1; then
+  failx "ca.crt is not a readable certificate (damaged, empty or not PEM): the copy is unusable"
 else
-  failx "ca.crt is not the home-lab CA certificate (subject: '${ca_subj:-unreadable}')"
-fi
-if openssl x509 -in "$CA_DIR/ca.crt" -noout -checkend 0 > /dev/null 2>&1; then
-  if openssl x509 -in "$CA_DIR/ca.crt" -noout -checkend $((180 * 86400)) > /dev/null 2>&1; then
-    pass "ca.crt is valid; $(openssl x509 -in "$CA_DIR/ca.crt" -noout -enddate | cut -d= -f2)"
+  if ca_subj="$(openssl x509 -in "$CA_DIR/ca.crt" -noout -subject -nameopt RFC2253 2> /dev/null | sed 's/^subject=//')" && [ "$ca_subj" = "CN=home-lab-offline-ca" ]; then
+    pass "ca.crt subject is CN=home-lab-offline-ca"
   else
-    warnx "ca.crt expires within 180 days ($(openssl x509 -in "$CA_DIR/ca.crt" -noout -enddate | cut -d= -f2)): plan the CA rotation now (every Pi certificate must be re-issued)"
+    failx "ca.crt is not the home-lab CA certificate (subject: '${ca_subj:-unreadable}')"
   fi
-else
-  failx "ca.crt has EXPIRED"
+  if openssl x509 -in "$CA_DIR/ca.crt" -noout -checkend 0 > /dev/null 2>&1; then
+    if openssl x509 -in "$CA_DIR/ca.crt" -noout -checkend $((180 * 86400)) > /dev/null 2>&1; then
+      pass "ca.crt is valid; $(openssl x509 -in "$CA_DIR/ca.crt" -noout -enddate | cut -d= -f2)"
+    else
+      warnx "ca.crt expires within 180 days ($(openssl x509 -in "$CA_DIR/ca.crt" -noout -enddate | cut -d= -f2)): plan the CA rotation now (every Pi certificate must be re-issued)"
+    fi
+  else
+    failx "ca.crt has EXPIRED"
+  fi
 fi
 echo "       ca.crt SHA-256 fingerprint: $(openssl x509 -in "$CA_DIR/ca.crt" -noout -fingerprint -sha256 2> /dev/null | cut -d= -f2) (compare with the trust anchor's certificate)"
 if head -n 1 "$CA_DIR/ca.key" | grep -q 'ENCRYPTED PRIVATE KEY'; then
@@ -129,7 +144,7 @@ if [ -n "$PASSFILE" ]; then
   }
   CA_PASS="$(head -n 1 "$PASSFILE" | tr -d '\r')"
 else
-  [ -r /dev/tty ] || {
+  { : < /dev/tty; } 2> /dev/null || {
     echo "no terminal to ask for the passphrase on (use --passfile only for tests)" >&2
     exit 2
   }
@@ -178,8 +193,7 @@ else
 fi
 
 # ---------------------------------------------------------------- 4. the real CA directory must be untouched
-after="$(manifest "$CA_DIR")"
-if [ "$before" = "$after" ]; then
+if after="$(manifest "$CA_DIR")" && [ "$before" = "$after" ]; then
   pass "the CA directory is unchanged (every file checksummed before and after; issued.tsv untouched)"
 else
   failx "THE CA DIRECTORY CHANGED DURING THE TEST: do not use this copy until you know why"

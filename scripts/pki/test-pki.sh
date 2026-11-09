@@ -134,6 +134,22 @@ if "$RT" --ca-dir "$T/noissued" --passfile "$T/pass" > "$T/out.log" 2>&1 && grep
 if "$RT" --ca-dir "$T/does-not-exist" --passfile "$T/pass" > "$T/out.log" 2>&1; then bad "test-ca-restore accepted a missing directory"; else ok "test-ca-restore refuses a directory that does not exist"; fi
 if "$RT" --passfile "$T/pass" > "$T/out.log" 2>&1; then bad "test-ca-restore ran without --ca-dir"; else ok "test-ca-restore needs --ca-dir"; fi
 
+# QA L-1 / L-2 / L-3, SEC L-4: an unreadable file must FAIL loudly, a garbage certificate is "not readable" (not "expired"), and no terminal is rc 2
+if [ "$(id -u)" -ne 0 ] && [ "$(uname -o)" != Msys ]; then
+  mkdir "$T/unreadable" && cp "$CA/ca.key" "$CA/ca.crt" "$CA/issued.tsv" "$T/unreadable/" && chmod 000 "$T/unreadable/issued.tsv"
+  if "$RT" --ca-dir "$T/unreadable" --passfile "$T/pass" > "$T/out.log" 2>&1; then bad "test-ca-restore accepted a directory with an unreadable file"; else ok "test-ca-restore fails when a file cannot be read"; fi
+  if grep -q 'cannot checksum every file' "$T/out.log" && grep -q '^RESULT: FAIL' "$T/out.log"; then ok "...with a clear message and RESULT: FAIL (not a silent exit)"; else bad "unreadable-file message"; fi
+  chmod 600 "$T/unreadable/issued.tsv"
+else
+  ok "unreadable-file case skipped (root or Windows can read everything)"
+fi
+mkdir "$T/garbage" && cp "$CA/ca.key" "$CA/issued.tsv" "$T/garbage/" && printf 'not a certificate\n' > "$T/garbage/ca.crt"
+if "$RT" --ca-dir "$T/garbage" --passfile "$T/pass" > "$T/out.log" 2>&1; then bad "test-ca-restore accepted a garbage ca.crt"; else ok "test-ca-restore fails on a garbage ca.crt"; fi
+if grep -q 'not a readable certificate' "$T/out.log" && ! grep -q 'EXPIRED' "$T/out.log"; then ok "...and says it is unreadable, not expired"; else bad "garbage ca.crt message"; fi
+if command -v setsid > /dev/null 2>&1; then
+  if setsid "$RT" --ca-dir "$T/restore" > "$T/out.log" 2>&1 < /dev/null; rc=$?; [ "$rc" -eq 2 ] && grep -q 'no terminal' "$T/out.log"; then ok "no terminal and no --passfile: a clear message and exit 2"; else bad "no terminal handling (rc=$rc)"; fi
+fi
+
 echo
 if [ "$fails" -eq 0 ]; then
   echo "PKI self-test: all checks passed"
