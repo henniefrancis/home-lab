@@ -5,7 +5,7 @@
 #   default       prints HIGH and CRITICAL findings that have a fixed version (--ignore-unfixed); exit 0
 #   --fail-on-fixed-critical   exit 1 when a CRITICAL with a fix exists in any image (use it before a bump PR is merged)
 # On demand, not in CI: the Authentik image alone is several hundred MB, which does not fit the 5 minute CI budget. Run it after
-# every Dependabot image PR and about monthly. The Trivy image is the digest-pinned one from .github/ci-images/Dockerfile. Needs docker
+# every Dependabot image PR and about monthly. The Trivy image is the digest-pinned one from .github/ci-images/trivy/Dockerfile. Needs docker
 # and network access to the registries and the Trivy vulnerability database; it never sends your code anywhere.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
@@ -41,9 +41,9 @@ command -v docker > /dev/null || {
   echo "docker is required" >&2
   exit 2
 }
-trivy_img="$(awk '$1=="FROM" && $4=="trivy" {print $2}' .github/ci-images/Dockerfile)"
+trivy_img="$(awk '$1=="FROM" && $4=="trivy" {print $2}' .github/ci-images/trivy/Dockerfile)"
 [ -n "$trivy_img" ] || {
-  echo "no trivy image in .github/ci-images/Dockerfile" >&2
+  echo "no trivy image in .github/ci-images/trivy/Dockerfile" >&2
   exit 2
 }
 

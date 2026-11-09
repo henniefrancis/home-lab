@@ -2,7 +2,7 @@
 # One lean job (target < 5 minutes) to stay inside the 100 minutes/month cap while the repo is private.
 # No credentials, no HCP token, no cloud access: Terraform checks use `init -backend=false` only.
 # Markdown-only changes skip this workflow, NOT the secret scan: that runs in .github/workflows/secret-scan.yml on every push
-# and pull request (SEC-M6). Third-party tool images come pinned by digest from .github/ci-images/Dockerfile (SEC-M5).
+# and pull request (SEC-M6). Third-party tool images come pinned by digest from .github/ci-images/<tool>/Dockerfile (SEC-M5).
 name: ci
 
 on:
@@ -180,7 +180,7 @@ jobs:
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |
           set -eu
-          img="$(awk '$1=="FROM" && $4=="terraform" {print $2}' .github/ci-images/Dockerfile)"
+          img="$(awk '$1=="FROM" && $4=="terraform" {print $2}' .github/ci-images/terraform/Dockerfile)"
           tf() { docker run --rm -v "$PWD:/w" -w "/w/$1" "$img" "${@:2}"; }
           docker run --rm -v "$PWD:/w" -w /w "$img" fmt -check -recursive -diff
           for d in bootstrap edge; do
@@ -191,7 +191,7 @@ jobs:
       - name: Self-test - bootstrap IAM and KMS policies (terraform test; stub provider, dead proxy, nothing reaches AWS)
         run: |
           set -eu
-          IMG="$(awk '$1=="FROM" && $4=="terraform" {print $2}' .github/ci-images/Dockerfile)"
+          IMG="$(awk '$1=="FROM" && $4=="terraform" {print $2}' .github/ci-images/terraform/Dockerfile)"
           export IMG
           cat > "$RUNNER_TEMP/tf" << 'WRAP'
           #!/bin/sh
@@ -207,7 +207,7 @@ jobs:
 
       - name: tflint
         run: |
-          img="$(awk '$1=="FROM" && $4=="tflint" {print $2}' .github/ci-images/Dockerfile)"
+          img="$(awk '$1=="FROM" && $4=="tflint" {print $2}' .github/ci-images/tflint/Dockerfile)"
           docker run --rm -v "$PWD:/data" -w /data --entrypoint sh "$img" -c '
             tflint --init --config=/data/.tflint.hcl > /dev/null
             for d in bootstrap edge; do
@@ -216,6 +216,6 @@ jobs:
 
       - name: trivy config
         run: |
-          img="$(awk '$1=="FROM" && $4=="trivy" {print $2}' .github/ci-images/Dockerfile)"
+          img="$(awk '$1=="FROM" && $4=="trivy" {print $2}' .github/ci-images/trivy/Dockerfile)"
           docker run --rm -v "$PWD:/w" -w /w "$img" \
             config --exit-code 1 --severity HIGH,CRITICAL --skip-dirs '**/.terraform' terraform

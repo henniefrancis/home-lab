@@ -3,12 +3,21 @@
 #
 # Ecosystems whose manifests do not exist yet are NOT listed (dependabot errors on a directory with no matching manifest).
 # Add each in the milestone that introduces it, using the same shape as below.
+#
+# N10 (supply chain): every entry has a cooldown, so a brand-new upstream release is not proposed for a few days (a poisoned
+# release is usually pulled or flagged within that time). Cooldown applies to version updates only; Dependabot SECURITY updates
+# are not delayed.
+#
+# Merging Dependabot PRs: GitHub signs web-merge, squash and bot commits with its own key, which the Pi does not trust. Never
+# deploy a GitHub-created commit directly. Flow: docs/runbooks/release-and-deploy.md ("Dependabot and GitHub-made commits").
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
     groups:
       github-actions:
         patterns: ["*"]
@@ -19,6 +28,8 @@ updates:
       - /terraform/edge
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
     groups:
       terraform:
         patterns: ["*"]
@@ -36,6 +47,8 @@ updates:
       - /homepage
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
     groups:
       compose-images:
         patterns: ["*"]
@@ -49,15 +62,27 @@ updates:
     directory: /traefik/ra-helper
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
     groups:
       ra-helper-base:
         patterns: ["*"]
 
-  # The images CI runs with `docker run` (gitleaks, terraform, tflint, trivy) are listed in this Dockerfile (see its header).
+  # N2: the images CI runs with `docker run` (gitleaks, terraform, tflint, trivy) each have their own one-line Dockerfile under
+  # .github/ci-images/<tool>/ (see the header there). They used to share one multi-stage Dockerfile and the whole job failed
+  # with UNAUTHORIZED when pulling hashicorp/terraform; with one directory per tool a registry problem fails only that tool's job.
+  # If the terraform directory still reports UNAUTHORIZED on the next run, drop that one directory from this list and bump
+  # the image by hand; the other three keep working.
   - package-ecosystem: docker
-    directory: /.github/ci-images
+    directories:
+      - /.github/ci-images/gitleaks
+      - /.github/ci-images/terraform
+      - /.github/ci-images/tflint
+      - /.github/ci-images/trivy
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
     groups:
       ci-images:
         patterns: ["*"]
@@ -67,6 +92,8 @@ updates:
     directory: /.github
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
     groups:
       ci-python:
         patterns: ["*"]
@@ -76,6 +103,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
     groups:
       pre-commit-hooks:
         patterns: ["*"]

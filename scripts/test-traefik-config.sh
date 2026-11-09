@@ -123,9 +123,17 @@ http:
       middlewares: [lan-allowlist@file]
 EOF
 printf 'admin:%s\n' "$(openssl passwd -apr1 test-only-not-a-secret)" > "$stage/run-secrets/breakglass_users"
-chmod 644 "$stage/run-secrets/breakglass_users"
-docker cp "$stage/." "$cid:/etc/traefik"
-docker cp "$stage/run-secrets/." "$cid:/run/secrets"
+# N2 root cause: `docker cp <dir>` keeps the host owner and mode of what it copies, and mktemp -d is mode 0700. On a Linux CI
+# runner (uid 1001) /etc/traefik and /etc/traefik/dynamic therefore arrived as 1001:1001 0700 and the uid 10004 Traefik died
+# with "stat /etc/traefik/traefik.toml: permission denied" (and, with cap_drop ALL, even root could not clean up files owned
+# by 1001). Docker Desktop on Windows hides this, because everything there is root. The Pi is unaffected: deploy.sh installs the
+# real directory root-owned 0755. put() streams a tar with root:root owners and readable modes, so the result is the same on
+# every host. tar needs GNU options (Git Bash and Linux have them).
+put() { # put <host dir> <absolute container dir>: contents arrive as root:root, directories 0755, files 0644/0755
+  tar -C "$1" --owner=0 --group=0 --numeric-owner --mode='u=rwX,go=rX' --transform "s,^\.,${2#/}," -cf - . | docker cp - "$cid:/"
+}
+put "$stage/dynamic" /etc/traefik/dynamic
+put "$stage/run-secrets" /run/secrets
 docker start "$cid" > /dev/null
 sleep 8; [ "${TEST_DEBUG:-0}" != 1 ] || docker logs "$cid" 2>&1 | tail -5
 
@@ -161,8 +169,11 @@ if command -v openssl > /dev/null; then
   check "an unrouted host has no router: bare 404" test "$(code "$port" "nothing.$DOMAIN")" = "404"
   check "a request whose SNI and Host differ is NOT 421 with one TLS option set (M5 regression)" bash -c 'c="$(curl -sk -o /dev/null -w "%{http_code}" --resolve "x.$2:$1:127.0.0.1" -H "Host: traefik.$2" "https://x.$2:$1/")"; [ "$c" != 421 ] && [ "$c" = 403 ]' _ "$port" "$DOMAIN"
   check "break-glass is OFF by default: bg-traefik.<domain> has no router (404, SEC-L3)" test "$(code "$port" "bg-traefik.$DOMAIN")" = "404"
-  docker cp traefik/breakglass/bg-traefik.yml "$cid:/etc/traefik/dynamic/bg-traefik.yml"
-  docker exec -u 0 "$cid" chmod 0644 /etc/traefik/dynamic/bg-traefik.yml # what breakglass.sh does (install -m 0644)
+  # what breakglass.sh does: install -m 0644 (root-owned) into the watched directory
+  bgstage="$stage/bg"
+  mkdir -p "$bgstage"
+  cp traefik/breakglass/bg-traefik.yml "$bgstage/"
+  put "$bgstage" /etc/traefik/dynamic
   sleep 5
   [ "${TEST_DEBUG:-0}" != 1 ] || docker logs "$cid" 2>&1 | tail -4
   check "break-glass ON (drop-in file copied): the router exists and the allowlist answers first (403)" test "$(code "$port" "bg-traefik.$DOMAIN")" = "403"
@@ -188,6 +199,14 @@ check "stdout/stderr rotation is set on traefik (10m x 3)" test "$(jq -c '.servi
 
 if [ "$fails" -gt 0 ]; then
   printf '\n%s check(s) FAILED\n' "$fails"
+  # Make a CI failure diagnosable from the log alone: the container state and its last output (the JSON log has no secrets:
+  # every value in this test is a dummy).
+  if [ -n "$cid" ]; then
+    echo "--- container state"
+    docker inspect -f 'running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}' "$cid" 2>&1 || true
+    echo "--- docker logs (last 60 lines)"
+    docker logs "$cid" 2>&1 | tail -n 60 || true
+  fi
   exit 1
 fi
 printf '\nAll Traefik config checks passed\n'
