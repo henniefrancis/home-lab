@@ -131,7 +131,7 @@ jobs:
       - name: Self-test - existing_records generator
         run: bash scripts/test-inventory.sh
 
-      - name: Self-test - PKI scripts (offline CA, CSR, sign, install)
+      - name: Self-test - PKI scripts (offline CA, CSR, sign, install, CA restore test)
         run: bash scripts/pki/test-pki.sh
 
       - name: Self-test - fetch-secrets.sh with a mock aws (runs as root on the runner, temp dirs only; a non-root skip is a failure)
@@ -148,6 +148,13 @@ jobs:
 
       - name: Self-test - alert path (served-cert-check.sh against a local TLS server, alert.sh with a mock aws, rate limit; the mock is proven before use)
         run: bash scripts/test-alert.sh
+
+      - name: Self-test - Authentik backup (mock docker, aws and age, real age round trip, preflight check, units; the mocks are proven first)
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends age > /dev/null
+          bash scripts/test-backup-authentik.sh
 
       - name: Self-test - aws-preflight.sh --snapshot against a mock aws (CRLF, empty duplicate list, TXT quotes; the mock is proven before use)
         run: bash scripts/test-aws-preflight.sh

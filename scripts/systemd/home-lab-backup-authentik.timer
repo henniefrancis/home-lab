@@ -1,0 +1,11 @@
+# Installed by scripts/bootstrap.sh. K5, ADR-015. Persistent: a run missed while the Pi was off happens at the next boot.
+[Unit]
+Description=Nightly home-lab Authentik database backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=45min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

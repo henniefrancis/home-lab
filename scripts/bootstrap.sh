@@ -6,7 +6,8 @@
 # What it does (safe to re-run; each step skips when already satisfied):
 #   1. Refuses to continue if scripts/preflight.sh reports a FAIL.
 #   2. apt: curl, unzip, gnupg, jq, openssl, ca-certificates, git, openssh-client (ssh-keygen: commit signature check), util-linux
-#      (flock) - only the missing ones.
+#      (flock), age (client-side encryption of the Authentik backup, K5) - only the missing ones. age comes from Debian's own package
+#      (trixie: 1.2.x, apt's signature check is the integrity control); nothing is pinned beyond what apt installs.
 #   3. Directory layout: $APPS_ROOT/{traefik,authentik,homepage,tailscale,secrets}, /etc/home-lab, /etc/home-lab/pki; the Authentik
 #      data and Postgres directories owned by the service uids from config/lab.env (never the login user).
 #   4. Docker networks (plan 6.1): proxy, authentik-auth (Traefik <-> Authentik forward auth only), authentik-internal (internal).
@@ -59,7 +60,7 @@ step "1/7 Preflight (system checks)"
 
 step "2/7 Required packages"
 missing=()
-for pair in curl:curl unzip:unzip gpg:gnupg jq:jq openssl:openssl git:git ssh-keygen:openssh-client flock:util-linux; do
+for pair in curl:curl unzip:unzip gpg:gnupg jq:jq openssl:openssl git:git ssh-keygen:openssh-client flock:util-linux age:age; do
   command -v "${pair%%:*}" > /dev/null 2>&1 || missing+=("${pair##*:}")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -152,13 +153,15 @@ else
   warn "could not apply $SYSCTL_FILE; Tailscale may log 'failed to enable src_valid_mark' (harmless once the value is 1)"
 fi
 
-# Daily certificate expiry check (QA-M-4): a systemd timer; a failing run shows in `systemctl --failed` and the journal.
+# Daily certificate expiry check (QA-M-4) and nightly Authentik backup (K5): systemd timers; a failing run shows in `systemctl --failed`,
+# the journal and an alert mail. The backup timer is enabled even before the owner has configured the recipient: the first nightly run then
+# fails loudly (one mail a day) instead of the gap being silent (docs/runbooks/authentik-backup.md, owner setup).
 for u in "${LAB_UNITS[@]}"; do
   render_unit "$REPO_DIR" "$APPS_ROOT" "$u" > "/etc/systemd/system/$u"
   chmod 0644 "/etc/systemd/system/$u"
 done
-if systemctl daemon-reload 2> /dev/null && systemctl enable --now home-lab-cert-expiry.timer home-lab-alert-test.timer > /dev/null 2>&1 && systemctl enable home-lab-breakglass-reset.service > /dev/null 2>&1; then
-  info "home-lab-cert-expiry.timer enabled (daily); home-lab-alert-test.timer enabled (monthly test mail); home-lab-breakglass-reset.service enabled (boot)"
+if systemctl daemon-reload 2> /dev/null && systemctl enable --now home-lab-cert-expiry.timer home-lab-alert-test.timer home-lab-backup-authentik.timer > /dev/null 2>&1 && systemctl enable home-lab-breakglass-reset.service > /dev/null 2>&1; then
+  info "home-lab-cert-expiry.timer enabled (daily); home-lab-alert-test.timer enabled (monthly test mail); home-lab-backup-authentik.timer enabled (nightly Authentik backup); home-lab-breakglass-reset.service enabled (boot)"
 else
   warn "could not enable the home-lab timers (no systemd?)"
 fi

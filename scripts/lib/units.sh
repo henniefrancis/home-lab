@@ -12,6 +12,8 @@ LAB_UNITS=(
   home-lab-alert-test.service
   home-lab-alert-test.timer
   home-lab-breakglass-reset.service
+  home-lab-backup-authentik.service
+  home-lab-backup-authentik.timer
 )
 SYSTEMD_DIR="${HOME_LAB_SYSTEMD_DIR:-/etc/systemd/system}"
 

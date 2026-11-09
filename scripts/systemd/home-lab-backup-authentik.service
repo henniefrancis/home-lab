@@ -1,0 +1,42 @@
+# Installed by scripts/bootstrap.sh (the path below is rewritten to this checkout). K5, ADR-015: nightly encrypted Authentik backup.
+# Runs as ROOT on purpose: `docker exec` needs the Docker socket, and access to it is root-equivalent whoever holds it; the login user is
+# not in the docker group (SEC-M3). The hardening below is therefore the minimum that still works with the docker CLI: no new privileges,
+# private /tmp, read-only file system except /var/lib/home-lab, no home directories, no kernel, clock or device access, only IP and Unix
+# sockets, no namespaces, a system-call allow-list. A capability bounding set is deliberately NOT set: it is untested against the docker
+# and aws helpers on the Pi, and the script holds no secret (the database password is read inside the container).
+[Unit]
+Description=home-lab Authentik database backup (pg_dump, encrypted with age, uploaded to S3)
+Documentation=file:@REPO_DIR@/docs/runbooks/authentik-backup.md
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+# A failed run is mailed once by the script itself (key backup-authentik-failed); this handler covers the cases where the script
+# could not even start or alert, and stays silent when the specific alert already went out.
+OnFailure=home-lab-alert-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=@REPO_DIR@/scripts/backup-authentik.sh
+SyslogIdentifier=home-lab-backup-authentik
+TimeoutStartSec=30min
+# Missing or unreadable ~/.docker would only make the docker CLI print a warning into the error text.
+Environment=DOCKER_CONFIG=/nonexistent
+StateDirectory=home-lab
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
