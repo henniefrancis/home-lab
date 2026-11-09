@@ -17,6 +17,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/pins.sh"
 # shellcheck source=lib/verify-commit.sh
 . "$SCRIPT_DIR/lib/verify-commit.sh"
+# shellcheck source=lib/units.sh
+. "$SCRIPT_DIR/lib/units.sh"
 REPO_DIR="$(repo_dir "${BASH_SOURCE[0]}")"
 LAB_ENV="$REPO_DIR/config/lab.env"
 
@@ -287,8 +289,21 @@ https_check() { # https_check <label> <url> <fail|warn>
 # K7: the ACME directory the lab is configured for (config/lab.env ACME_CA_SERVER) must be reachable. Production is the goal; staging
 # (the M3 default) only warns, because its certificates are not trusted by browsers.
 check_acme_endpoint() {
-  local url
+  local url env want
   url="$(lab_env_get "$LAB_ENV" ACME_CA_SERVER)"
+  env="$(lab_env_get "$LAB_ENV" ACME_ENV)"
+  # QA-M-1: the certificate store file is named after ACME_ENV and the CA after ACME_CA_SERVER; they must agree, or Traefik keeps
+  # serving the old environment's certificate behind the new CA URL (a half-applied M6 step 1).
+  case "$url" in
+    https://acme-v02.api.letsencrypt.org/directory) want=prod ;;
+    https://acme-staging-v02.api.letsencrypt.org/directory) want=staging ;;
+    *) want="" ;;
+  esac
+  if [ -n "$want" ] && [ "$env" != "$want" ]; then
+    fail acme-env-match "ACME_ENV='$env' does not match ACME_CA_SERVER ($want): set both in config/lab.env (the store file acme-<ACME_ENV>.json is chosen by ACME_ENV)"
+  elif [ -n "$want" ]; then
+    pass acme-env-match "ACME_ENV=$env matches ACME_CA_SERVER"
+  fi
   case "$url" in
     https://acme-v02.api.letsencrypt.org/directory)
       https_check letsencrypt-prod "$url" fail
@@ -301,7 +316,7 @@ check_acme_endpoint() {
       fail acme-env "ACME_CA_SERVER is not set in config/lab.env"
       ;;
     *)
-      fail acme-env "ACME_CA_SERVER is neither the Let's Encrypt production nor the staging directory: $url"
+      fail acme-env "ACME_CA_SERVER is neither the Let's Encrypt production nor the staging directory: '$url' (check for quotes or a trailing space in config/lab.env)"
       ;;
   esac
 }
@@ -494,16 +509,31 @@ check_hardening() {
       pass ports-ipv6 "no wildcard IPv6 listener on 80/443"
     fi
   fi
-  if systemctl is-enabled home-lab-cert-expiry.timer > /dev/null 2>&1; then
-    pass cert-timer "home-lab-cert-expiry.timer is enabled (daily check)"
+  check_units
+}
+
+# QA-M-3: units are installed by bootstrap.sh, not by deploy.sh. A unit changed by a release but never installed leaves the alert path
+# half-wired, so compare every installed unit with the repository copy and check the timers are enabled.
+check_units() {
+  local drift t
+  drift="$(unit_drift "$REPO_DIR" "$APPS_ROOT")"
+  if [ -z "$drift" ]; then
+    pass systemd-units "installed units match the repository copy"
   else
-    warnx cert-timer "home-lab-cert-expiry.timer is not enabled (re-run bootstrap.sh)"
+    fail systemd-units "stale or missing systemd units (run: sudo scripts/bootstrap.sh): $(printf '%s' "$drift" | paste -sd";" -)"
   fi
+  for t in home-lab-cert-expiry.timer home-lab-alert-test.timer; do
+    if systemctl is-enabled "$t" > /dev/null 2>&1; then
+      pass "timer-${t%.timer}" "$t is enabled"
+    else
+      warnx "timer-${t%.timer}" "$t is not enabled (re-run bootstrap.sh)"
+    fi
+  done
 }
 
 # K4: the certificate Traefik really serves, and the alert path.
 check_alerting() {
-  local line rc=0 topic
+  local line rc=0 topic tf
   if [ -x "$SCRIPT_DIR/served-cert-check.sh" ]; then
     line="$("$SCRIPT_DIR/served-cert-check.sh" 2> /dev/null)" || rc=$?
     case "$line" in
@@ -511,6 +541,7 @@ check_alerting() {
       '[WARN]'*) warnx served-cert "${line#\[WARN\] served-cert: }" ;;
       '[FAIL]'*)
         # rc 3 = nothing answered on 127.0.0.1:443: Traefik is not up yet (early milestones), not a certificate problem.
+        # rc 4 = the check could not run: a FAIL (the alert path is blind), not a Traefik-down warning.
         if [ "$rc" -eq 3 ]; then warnx served-cert "${line#\[FAIL\] served-cert: }"; else fail served-cert "${line#\[FAIL\] served-cert: }"; fi
         ;;
       *) warnx served-cert "served-cert-check.sh gave no result" ;;
@@ -522,7 +553,14 @@ check_alerting() {
   if [[ "$topic" =~ ^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+$ ]]; then
     pass alert-topic "ALERT_TOPIC_ARN is set in $ETC_DIR/aws.env (send a test mail: sudo scripts/alert.sh test)"
   else
-    warnx alert-topic "ALERT_TOPIC_ARN is not set in $ETC_DIR/aws.env: no alert reaches a person (docs/runbooks/alerting.md)"
+    warnx alert-topic "ALERT_TOPIC_ARN is missing or malformed in $ETC_DIR/aws.env (no quotes or spaces): no alert reaches a person (docs/runbooks/alerting.md)"
+  fi
+  # SEC-M-2: the monthly heartbeat must have published a test mail recently (the proof that it ARRIVED is the mail itself).
+  tf="${HOME_LAB_STATE_DIR:-/var/lib/home-lab}/alert-test.published"
+  if [ -r "$tf" ] && [ $(($(date +%s) - $(stat -c %Y "$tf" 2> /dev/null || echo 0))) -lt $((35 * 86400)) ]; then
+    pass alert-heartbeat "a test alert was published within the last 35 days (did the mail arrive? the monthly mail is the proof)"
+  else
+    warnx alert-heartbeat "no test alert published in the last 35 days: run sudo scripts/alert.sh test and confirm the mail arrives (docs/runbooks/alerting.md)"
   fi
 }
 

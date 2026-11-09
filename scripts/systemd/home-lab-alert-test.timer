@@ -1,0 +1,11 @@
+# Installed by scripts/bootstrap.sh. Monthly heartbeat for the alert path (SEC-M-2). Persistent: a missed run happens at the next boot.
+[Unit]
+Description=Monthly home-lab alert test mail
+
+[Timer]
+OnCalendar=monthly
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

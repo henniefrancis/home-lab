@@ -27,6 +27,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=lib/verify-commit.sh
 . "$SCRIPT_DIR/lib/verify-commit.sh"
+# shellcheck source=lib/units.sh
+. "$SCRIPT_DIR/lib/units.sh"
 REPO_DIR="$(repo_dir "${BASH_SOURCE[0]}")"
 LAB_ENV="$REPO_DIR/config/lab.env"
 APPS_ROOT="$(lab_env_get "$LAB_ENV" APPS_ROOT /apps)"
@@ -55,18 +57,20 @@ while [ $# -gt 0 ]; do
     --only)
       [ $# -ge 2 ] && [ -n "$2" ] || usage_error "--only needs a stack name"
       [ "$RECREATE" -eq 0 ] || usage_error "--only and --recreate cannot be combined (--recreate already means --only for that stack)"
+      [ -z "$ONLY" ] || usage_error "--only given twice"
       ONLY="$2"
       shift 2
       ;;
     --recreate)
       [ $# -ge 2 ] && [ -n "$2" ] || usage_error "--recreate needs a stack name"
+      [ "$RECREATE" -eq 0 ] || usage_error "--recreate was given twice"
       [ -z "$ONLY" ] || usage_error "--only and --recreate cannot be combined (--recreate already means --only for that stack)"
       ONLY="$2"
       RECREATE=1
       shift 2
       ;;
     -h | --help)
-      sed -n '2,22p' "$0"
+      sed -n '2,14p' "$0"
       exit 0
       ;;
     *) usage_error "unknown argument: $1" ;;
@@ -155,4 +159,10 @@ case "$cert_rc" in
   1) warn "a Pi certificate expires within 30 days: reissue it now (docs/runbooks/m2-pi-setup.md, Renewal)" ;;
   *) warn "a Pi certificate is missing, unreadable or EXPIRED: secret fetch and ACME renewal stop working (docs/runbooks/m2-pi-setup.md, Renewal)" ;;
 esac
+# QA-M-3: units are not installed by deploy.sh (it changes nothing under /etc, on purpose: a deploy only runs what is already trusted).
+# Say so loudly when a released unit is not installed yet; preflight fails on the same condition.
+drift="$(unit_drift "$REPO_DIR" "$APPS_ROOT" || true)"
+if [ -n "$drift" ]; then
+  warn "systemd units are stale or missing: $(printf '%s' "$drift" | paste -sd";" -). Install them: sudo scripts/bootstrap.sh"
+fi
 echo "deploy finished"

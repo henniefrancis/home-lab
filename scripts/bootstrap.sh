@@ -23,6 +23,8 @@ umask 022
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 . "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/units.sh
+. "$SCRIPT_DIR/lib/units.sh"
 # shellcheck source=lib/pins.sh
 . "$SCRIPT_DIR/lib/pins.sh"
 REPO_DIR="$(repo_dir "${BASH_SOURCE[0]}")"
@@ -151,14 +153,14 @@ else
 fi
 
 # Daily certificate expiry check (QA-M-4): a systemd timer; a failing run shows in `systemctl --failed` and the journal.
-for u in home-lab-cert-expiry.service home-lab-cert-expiry.timer home-lab-alert-failure@.service home-lab-breakglass-reset.service; do
-  sed "s#@REPO_DIR@#$REPO_DIR#g; s#@APPS_ROOT@#$APPS_ROOT#g" "$SCRIPT_DIR/systemd/$u" > "/etc/systemd/system/$u"
+for u in "${LAB_UNITS[@]}"; do
+  render_unit "$REPO_DIR" "$APPS_ROOT" "$u" > "/etc/systemd/system/$u"
   chmod 0644 "/etc/systemd/system/$u"
 done
-if systemctl daemon-reload 2> /dev/null && systemctl enable --now home-lab-cert-expiry.timer > /dev/null 2>&1 && systemctl enable home-lab-breakglass-reset.service > /dev/null 2>&1; then
-  info "home-lab-cert-expiry.timer enabled (daily); home-lab-breakglass-reset.service enabled (boot)"
+if systemctl daemon-reload 2> /dev/null && systemctl enable --now home-lab-cert-expiry.timer home-lab-alert-test.timer > /dev/null 2>&1 && systemctl enable home-lab-breakglass-reset.service > /dev/null 2>&1; then
+  info "home-lab-cert-expiry.timer enabled (daily); home-lab-alert-test.timer enabled (monthly test mail); home-lab-breakglass-reset.service enabled (boot)"
 else
-  warn "could not enable home-lab-cert-expiry.timer (no systemd?)"
+  warn "could not enable the home-lab timers (no systemd?)"
 fi
 
 # SEC-M3: root runs the scripts in this checkout, so nobody who can log in may be able to change them.
