@@ -11,7 +11,8 @@ command -v "$TF" > /dev/null || {
   exit 2
 }
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# Cleanup must not turn a passing run red (files written by a containerised terraform may not be removable by this user).
+trap 'rm -rf "$work" 2> /dev/null || true' EXIT
 mkdir "$work/tests"
 cp terraform/bootstrap/*.tf terraform/bootstrap/.terraform.lock.hcl "$work/"
 cp terraform/bootstrap/tests/*.tftest.hcl "$work/tests/"

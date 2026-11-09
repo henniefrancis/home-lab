@@ -246,8 +246,9 @@ jobs:
           for v in HTTPS_PROXY HTTP_PROXY NO_PROXY TF_IN_AUTOMATION TF_INPUT AWS_CONFIG_FILE AWS_SHARED_CREDENTIALS_FILE AWS_EC2_METADATA_DISABLED; do
             e="$e -e $v"
           done
+          # Run as the runner's uid so the providers terraform downloads into the temp dir stay deletable (as root they were not).
           # shellcheck disable=SC2086
-          exec docker run --rm -v "$PWD:$PWD" -w "$PWD" $e "$IMG" "$@"
+          exec docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:$PWD" -w "$PWD" $e "$IMG" "$@"
           WRAP
           chmod +x "$RUNNER_TEMP/tf"
           TERRAFORM="$RUNNER_TEMP/tf" bash scripts/test-terraform-policies.sh
