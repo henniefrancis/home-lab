@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # test-pki.sh - self-test of the PKI scripts in a temp dir (no root, no network, no real keys).
-# Runs the whole flow (CA -> Pi CSRs -> sign -> install) and the refusal cases. Used by CI.
+# Runs the whole flow (CA -> Pi CSRs -> sign -> install) and the refusal cases, and test-ca-restore.sh (K5) against a restored copy of the
+# throwaway CA, including the cases that must fail (wrong passphrase, mismatched pair, missing or damaged key). Used by CI.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -94,6 +95,44 @@ expect_refused "install refuses a cert from another CA" "$HERE/pi-install-cert.s
 # A rotated key must not accept the old certificate
 expect_ok "pi-csr --rotate-keys" "$HERE/pi-csr.sh" "${PI[@]}" --rotate-keys
 expect_refused "install refuses a cert that does not match the rotated key" "$HERE/pi-install-cert.sh" host "$T/host.crt" "${PI[@]}"
+
+# CA restore test (K5): test-ca-restore.sh against a restored copy of the throwaway CA, and the cases that must FAIL.
+RT="$HERE/test-ca-restore.sh"
+sha_tree() { (cd "$1" && find . -type f -print0 | sort -z | xargs -0 sha256sum); }
+cp -r "$CA" "$T/restore"
+before_tree="$(sha_tree "$T/restore")"
+mkdir -p "$T/rt-tmp"
+if TMPDIR="$T/rt-tmp" "$RT" --ca-dir "$T/restore" --passfile "$T/pass" > "$T/out.log" 2>&1; then ok "test-ca-restore passes on a restored copy"; else bad "test-ca-restore passes on a restored copy"; sed 's/^/       /' "$T/out.log"; fi
+if grep -q '^RESULT: PASS' "$T/out.log" && grep -q 'the chain works' "$T/out.log" && grep -q 'ca.crt and ca.key are a pair' "$T/out.log"; then ok "test-ca-restore reports the pair check, the signing test and the chain"; else bad "test-ca-restore reports"; fi
+if [ "$before_tree" = "$(sha_tree "$T/restore")" ]; then ok "test-ca-restore left the CA directory byte-for-byte unchanged (issued.tsv too)"; else bad "test-ca-restore changed the CA directory"; fi
+if [ "$(wc -l < "$T/restore/issued.tsv" | tr -d ' ')" = 2 ]; then ok "issued.tsv still has exactly the 2 real rows (the throwaway certificate was not logged)"; else bad "issued.tsv row count changed"; fi
+if [ -z "$(ls -A "$T/rt-tmp")" ]; then ok "test-ca-restore removed its temporary directory (throwaway key included)"; else bad "test-ca-restore left files in its temp dir"; fi
+if grep -Eq 'test-passphrase-not-secret|PRIVATE KEY' "$T/out.log"; then bad "test-ca-restore printed the passphrase or key material"; else ok "test-ca-restore output has no passphrase and no key material"; fi
+if grep -q 'home-lab-restore-test-' "$T/out.log"; then ok "the throwaway certificate has a distinct CN (home-lab-restore-test-...)"; else bad "throwaway CN"; fi
+
+printf 'wrong-passphrase\n' > "$T/badpass"
+if "$RT" --ca-dir "$T/restore" --passfile "$T/badpass" > "$T/out.log" 2>&1; then bad "test-ca-restore accepted a wrong passphrase"; else ok "test-ca-restore fails on a wrong passphrase"; fi
+if grep -q 'does not decrypt ca.key' "$T/out.log" && grep -q '^RESULT: FAIL' "$T/out.log" && ! grep -q 'wrong-passphrase' "$T/out.log"; then ok "...says so, prints FAIL and does not echo the passphrase"; else bad "wrong passphrase message"; fi
+if [ "$before_tree" = "$(sha_tree "$T/restore")" ]; then ok "...and the CA directory is still unchanged after a failed run"; else bad "CA dir changed after a failed run"; fi
+
+# a backup that mixes two CAs (certificate of another CA with this key)
+"$HERE/new-ca.sh" --out "$T/ca-other" --passfile "$T/pass" > /dev/null 2>&1
+mkdir "$T/mixed" && cp "$CA/ca.key" "$T/mixed/ca.key" && cp "$T/ca-other/ca.crt" "$T/mixed/ca.crt" && cp "$CA/issued.tsv" "$T/mixed/"
+if "$RT" --ca-dir "$T/mixed" --passfile "$T/pass" > "$T/out.log" 2>&1; then bad "test-ca-restore accepted a certificate that does not match the key"; else ok "test-ca-restore fails when ca.crt and ca.key are not a pair"; fi
+if grep -q 'NOT a pair' "$T/out.log"; then ok "...and names the mismatch"; else bad "mismatch message"; fi
+
+# missing key, damaged key, foreign CA subject, missing issued.tsv (warning only)
+mkdir "$T/nokey" && cp "$CA/ca.crt" "$CA/issued.tsv" "$T/nokey/"
+if "$RT" --ca-dir "$T/nokey" --passfile "$T/pass" > "$T/out.log" 2>&1; then bad "test-ca-restore accepted a CA directory without ca.key"; else ok "test-ca-restore fails when ca.key is missing"; fi
+mkdir "$T/damaged" && cp "$CA/ca.crt" "$CA/issued.tsv" "$T/damaged/" && head -c 200 "$CA/ca.key" > "$T/damaged/ca.key"
+if "$RT" --ca-dir "$T/damaged" --passfile "$T/pass" > "$T/out.log" 2>&1; then bad "test-ca-restore accepted a truncated ca.key"; else ok "test-ca-restore fails on a damaged ca.key"; fi
+mkdir "$T/foreign" && cp "$T/fca.crt" "$T/foreign/ca.crt" && cp "$T/fca.key" "$T/foreign/ca.key"
+if "$RT" --ca-dir "$T/foreign" --passfile "$T/pass" > "$T/out.log" 2>&1; then bad "test-ca-restore accepted a CA that is not the home-lab CA"; else ok "test-ca-restore fails when the subject is not CN=home-lab-offline-ca"; fi
+if grep -q 'not the home-lab CA certificate' "$T/out.log" && grep -q 'is NOT encrypted' "$T/out.log"; then ok "...and warns that an unencrypted key copy is a risk"; else bad "foreign CA messages"; fi
+mkdir "$T/noissued" && cp "$CA/ca.key" "$CA/ca.crt" "$T/noissued/"
+if "$RT" --ca-dir "$T/noissued" --passfile "$T/pass" > "$T/out.log" 2>&1 && grep -q 'issued.tsv is missing' "$T/out.log"; then ok "a missing issued.tsv is a warning, not a failure (the CA still works)"; else bad "missing issued.tsv handling"; fi
+if "$RT" --ca-dir "$T/does-not-exist" --passfile "$T/pass" > "$T/out.log" 2>&1; then bad "test-ca-restore accepted a missing directory"; else ok "test-ca-restore refuses a directory that does not exist"; fi
+if "$RT" --passfile "$T/pass" > "$T/out.log" 2>&1; then bad "test-ca-restore ran without --ca-dir"; else ok "test-ca-restore needs --ca-dir"; fi
 
 echo
 if [ "$fails" -eq 0 ]; then
