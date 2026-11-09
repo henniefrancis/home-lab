@@ -47,3 +47,8 @@ output "alert_topic_arn" {
   description = "ARN of the SNS alert topic. Feeds scripts/render-aws-env.sh (ALERT_TOPIC_ARN in the Pi's /etc/home-lab/aws.env)."
   value       = aws_sns_topic.alerts.arn
 }
+
+output "backup_bucket_name" {
+  description = "Name of the Authentik backup bucket. Feeds scripts/render-aws-env.sh (BACKUP_S3_BUCKET in the Pi's /etc/home-lab/aws.env)."
+  value       = aws_s3_bucket.backup.id
+}

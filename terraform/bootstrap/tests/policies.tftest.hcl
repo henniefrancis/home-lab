@@ -321,6 +321,90 @@ run "duplicate_zone_deletion_is_scoped" {
   }
 }
 
+run "backup_bucket_is_write_only_for_the_pi" {
+  command = apply
+
+  assert {
+    condition     = can(regex("\"s3:PutObject\"", data.aws_iam_policy_document.pi_host.json)) && can(regex("arn:aws:s3:::home-lab-backup-111111111111-af-south-1/authentik/[*]", data.aws_iam_policy_document.pi_host.json))
+    error_message = "the Pi host role may s3:PutObject on the authentik/ prefix of the backup bucket"
+  }
+
+  assert {
+    condition     = length(regexall("\"s3:", data.aws_iam_policy_document.pi_host.json)) == 1 && length(regexall("home-lab-backup-111111111111-af-south-1", data.aws_iam_policy_document.pi_host.json)) == 1
+    error_message = "the Pi host role has exactly one S3 action (PutObject) and exactly one bucket resource"
+  }
+
+  assert {
+    condition     = !can(regex("s3:(Get|List|Delete|Abort|PutObjectAcl|PutObjectVersionAcl|PutBucket|[*])", data.aws_iam_policy_document.pi_host.json)) && !can(regex("s3:[*]", data.aws_iam_policy_document.pi_host.json))
+    error_message = "the Pi host role cannot read, list, delete, abort uploads, change ACLs or manage the bucket"
+  }
+
+  assert {
+    condition     = !can(regex("s3:", data.aws_iam_policy_document.write.json)) && !can(regex("s3:", data.aws_iam_policy_document.read.json)) && !can(regex("s3:", data.aws_iam_policy_document.dns01.json)) && !can(regex("s3:", data.aws_iam_policy_document.ssm_key.json))
+    error_message = "no other policy (HCP plan and apply roles, DNS-01 role, key policy) gains any S3 right"
+  }
+
+  assert {
+    condition     = length(regexall("\"kms:Decrypt\"", data.aws_iam_policy_document.pi_host.json)) == 1 && !can(regex("\"kms:(GenerateDataKey[A-Za-z*]*|Encrypt|ReEncrypt[A-Za-z*]*|CreateGrant)\"", data.aws_iam_policy_document.pi_host.json))
+    error_message = "the backup adds no KMS right to the Pi host role (SSE-S3): kms:Decrypt for SSM stays the only one"
+  }
+
+  assert {
+    condition     = aws_s3_bucket_public_access_block.backup.block_public_acls && aws_s3_bucket_public_access_block.backup.block_public_policy && aws_s3_bucket_public_access_block.backup.ignore_public_acls && aws_s3_bucket_public_access_block.backup.restrict_public_buckets
+    error_message = "the backup bucket blocks all public access"
+  }
+
+  assert {
+    condition     = one(aws_s3_bucket_ownership_controls.backup.rule).object_ownership == "BucketOwnerEnforced"
+    error_message = "ACLs are disabled on the backup bucket (BucketOwnerEnforced)"
+  }
+
+  assert {
+    condition     = aws_s3_bucket_versioning.backup.versioning_configuration[0].status == "Enabled"
+    error_message = "the backup bucket is versioned"
+  }
+
+  assert {
+    condition     = one(one(aws_s3_bucket_server_side_encryption_configuration.backup.rule).apply_server_side_encryption_by_default).sse_algorithm == "AES256"
+    error_message = "the backup bucket uses SSE-S3 (no KMS grant for the Pi)"
+  }
+
+  assert {
+    condition     = length(aws_s3_bucket_lifecycle_configuration.backup.rule) == 2 && alltrue([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r.status == "Enabled"])
+    error_message = "two enabled lifecycle rules"
+  }
+
+  assert {
+    condition     = one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-authentik-dumps"][0].noncurrent_version_expiration).noncurrent_days == 35 && one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-authentik-dumps"][0].expiration).days == 400
+    error_message = "noncurrent versions expire after 35 days and current dumps after 400 days"
+  }
+
+  assert {
+    condition     = one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "housekeeping"][0].abort_incomplete_multipart_upload).days_after_initiation == 1
+    error_message = "incomplete multipart uploads are aborted after 1 day"
+  }
+
+  assert {
+    condition     = can(regex("DenyInsecureTransport", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("aws:SecureTransport", data.aws_iam_policy_document.backup_bucket.json))
+    error_message = "the backup bucket refuses plain HTTP"
+  }
+
+  assert {
+    condition     = can(regex("DenyDeleteAndManagementExceptOwner", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("s3:DeleteObjectVersion", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("s3:PutLifecycleConfiguration", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("s3:PutBucketPolicy", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("AWSReservedSSO_Admin_", data.aws_iam_policy_document.backup_bucket.json)) && can(regex(":root", data.aws_iam_policy_document.backup_bucket.json))
+    error_message = "delete and bucket management are denied to everyone except the owner role and the account root"
+  }
+
+  assert {
+    condition     = can(regex("DenyReadAndListExceptOwner", data.aws_iam_policy_document.backup_bucket.json)) && can(regex("s3:GetObject", data.aws_iam_policy_document.backup_bucket.json))
+    error_message = "reads and listing are denied to everyone except the owner role and the account root"
+  }
+
+  assert {
+    condition     = !can(regex("\"Effect\": \"Allow\"", data.aws_iam_policy_document.backup_bucket.json))
+    error_message = "the bucket policy has no Allow statement: every grant comes from an identity policy"
+  }
+}
+
 # SEC-L1 / N7: audit logging is opt-in (enable_audit_logging). When it is switched on, the trail must be multi-region with log file
 # validation and the bucket must be private, encrypted, versioned, and refuse plain HTTP. (Nothing is created: all overridden.)
 override_resource {
@@ -399,4 +483,38 @@ run "audit_logging_when_enabled_is_hardened" {
     error_message = "the audit bucket blocks public access"
   }
 
+}
+
+# K5 / ADR-015: the Authentik backup bucket. The Pi host role may only PutObject under authentik/; the bucket is private, versioned,
+# encrypted, refuses plain HTTP and lets only the owner delete, read or manage. (Nothing is created: all overridden.)
+override_resource {
+  target = aws_s3_bucket.backup
+  values = {
+    id  = "home-lab-backup-111111111111-af-south-1"
+    arn = "arn:aws:s3:::home-lab-backup-111111111111-af-south-1"
+  }
+}
+
+override_resource {
+  target = aws_s3_bucket_public_access_block.backup
+}
+
+override_resource {
+  target = aws_s3_bucket_ownership_controls.backup
+}
+
+override_resource {
+  target = aws_s3_bucket_server_side_encryption_configuration.backup
+}
+
+override_resource {
+  target = aws_s3_bucket_versioning.backup
+}
+
+override_resource {
+  target = aws_s3_bucket_lifecycle_configuration.backup
+}
+
+override_resource {
+  target = aws_s3_bucket_policy.backup
 }

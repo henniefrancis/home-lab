@@ -210,6 +210,15 @@ data "aws_iam_policy_document" "pi_host" {
     resources = [aws_sns_topic.alerts.arn]
   }
 
+  # K5: the only S3 right in the whole stack's identity policies. Write one object under authentik/ and nothing else: no Get, no List,
+  # no Delete, no ACL, no multipart abort (the lifecycle rule removes stale uploads). The dump is age-encrypted on the Pi first (ADR-015).
+  statement {
+    sid       = "WriteAuthentikBackups"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.backup.arn}/${local.backup_prefix}*"]
+  }
+
   # Migration window only (allow_legacy_ssm_key): secrets not yet re-set still sit under the AWS-managed key.
   dynamic "statement" {
     for_each = var.allow_legacy_ssm_key ? [1] : []
@@ -232,7 +241,7 @@ resource "aws_iam_role" "pi_host" {
   count = local.enable_identity ? 1 : 0
 
   name                 = "home-lab-pi-host"
-  description          = "Pi host deploy-time secret fetch for home-lab via Roles Anywhere - read-only SSM under /home-lab and publish to the alert topic"
+  description          = "Pi host deploy-time secret fetch for home-lab via Roles Anywhere - read-only SSM under /home-lab, publish to the alert topic and write-only Authentik backups to S3"
   assume_role_policy   = data.aws_iam_policy_document.ra_trust["host"].json
   max_session_duration = 3600
 
