@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # deploy.sh - Pi, root: update the checkout, refresh secrets from SSM, then start the stack.
 #
-# Usage: sudo scripts/deploy.sh [--offline] [--no-git] [--only <stack>]
+# Usage: sudo scripts/deploy.sh [--offline] [--no-git] [--only <stack> | --recreate <stack>]
 #   --offline      skip the SSM fetch, the git fetch and the image pull; start from the last-good secrets (power cut with no
 #                  internet). Without this flag a failed fetch aborts the deploy (the existing secrets stay in place).
 #   --no-git       do not fetch or merge (the checked-out commit is still signature-verified).
 #   --only <stack> deploy one stack directory only, e.g. --only tailscale (uses <stack>/compose.yaml; the directory must
 #                  exist). Without it, the root compose.yaml (all stacks) is used. Both run as the same compose project
 #                  ("home-lab"), so --only never removes the containers of the other stacks (no --remove-orphans).
+#   --recreate <stack>  like --only <stack>, and also recreates every container of that stack (compose --force-recreate). Use it after
+#                  a secret changed: fetch-secrets.sh replaces the secret files, but a running container keeps the file it was
+#                  created with, and a plain deploy leaves unchanged containers alone (docs/runbooks/rotate-secrets.md).
 # Exit codes: 0 ok, 1 failure, 2 usage error.
 #
 # Plan 6.10: git fetch, signature check, ff-only merge, fetch-secrets, compose build/pull/up, health summary, certificate
@@ -38,6 +41,7 @@ usage_error() {
 OFFLINE=0
 NO_GIT=0
 ONLY=""
+RECREATE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --offline)
@@ -50,19 +54,27 @@ while [ $# -gt 0 ]; do
       ;;
     --only)
       [ $# -ge 2 ] && [ -n "$2" ] || usage_error "--only needs a stack name"
+      [ "$RECREATE" -eq 0 ] || usage_error "--only and --recreate cannot be combined (--recreate already means --only for that stack)"
       ONLY="$2"
       shift 2
       ;;
+    --recreate)
+      [ $# -ge 2 ] && [ -n "$2" ] || usage_error "--recreate needs a stack name"
+      [ -z "$ONLY" ] || usage_error "--only and --recreate cannot be combined (--recreate already means --only for that stack)"
+      ONLY="$2"
+      RECREATE=1
+      shift 2
+      ;;
     -h | --help)
-      sed -n '2,19p' "$0"
+      sed -n '2,22p' "$0"
       exit 0
       ;;
     *) usage_error "unknown argument: $1" ;;
   esac
 done
 # Argument validation comes before the root check, so a typo is reported as a typo (QA-L-6).
-[[ -z "$ONLY" || "$ONLY" =~ ^[a-z0-9-]+$ ]] || usage_error "--only expects a plain directory name"
-[ -z "$ONLY" ] || [ -f "$REPO_DIR/$ONLY/compose.yaml" ] || usage_error "--only $ONLY: there is no $ONLY/compose.yaml in the repository (QA-L-5)"
+[[ -z "$ONLY" || "$ONLY" =~ ^[a-z0-9-]+$ ]] || usage_error "--only and --recreate expect a plain directory name"
+[ -z "$ONLY" ] || [ -f "$REPO_DIR/$ONLY/compose.yaml" ] || usage_error "--only/--recreate $ONLY: there is no $ONLY/compose.yaml in the repository (QA-L-5)"
 require_root "$@"
 
 # NEW-1: root runs git and this checkout's scripts, so the whole tree (.git included) must be root-owned and not writable by others.
@@ -129,6 +141,7 @@ else
     up_args+=(--build)
   fi
   [ -n "$ONLY" ] || up_args+=(--remove-orphans)
+  [ "$RECREATE" -eq 0 ] || up_args+=(--force-recreate)
   dc up "${up_args[@]}"
   echo
   dc ps --format 'table {{.Name}}\t{{.Status}}'

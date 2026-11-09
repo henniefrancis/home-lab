@@ -48,6 +48,21 @@ rc=0
 bash scripts/deploy.sh --only traefic > "$T/o" 2>&1 || rc=$?
 check "deploy.sh --only <typo>: exit 2 and no deploy (QA-L-5)" bash -c 'test "$1" -eq 2 && grep -q "no traefic/compose.yaml" "$2"' _ "$rc" "$T/o"
 rc=0
+bash scripts/deploy.sh --recreate > "$T/o" 2>&1 || rc=$?
+check "deploy.sh --recreate without a value: exit 2 (K8)" bash -c 'test "$1" -eq 2 && grep -q "needs a stack name" "$2"' _ "$rc" "$T/o"
+rc=0
+bash scripts/deploy.sh --recreate ../x > "$T/o" 2>&1 || rc=$?
+check "deploy.sh --recreate ../x: exit 2 before the root check (K8)" bash -c 'test "$1" -eq 2 && grep -q "plain directory name" "$2"' _ "$rc" "$T/o"
+rc=0
+bash scripts/deploy.sh --recreate traefic > "$T/o" 2>&1 || rc=$?
+check "deploy.sh --recreate <typo>: exit 2 and no deploy (K8)" bash -c 'test "$1" -eq 2 && grep -q "no traefic/compose.yaml" "$2"' _ "$rc" "$T/o"
+rc=0
+bash scripts/deploy.sh --only traefik --recreate traefik > "$T/o" 2>&1 || rc=$?
+check "deploy.sh --only with --recreate: exit 2 (K8)" bash -c 'test "$1" -eq 2 && grep -q "cannot be combined" "$2"' _ "$rc" "$T/o"
+rc=0
+bash scripts/deploy.sh --recreate traefik --only traefik > "$T/o" 2>&1 || rc=$?
+check "deploy.sh --recreate with --only: exit 2 (K8)" bash -c 'test "$1" -eq 2 && grep -q "cannot be combined" "$2"' _ "$rc" "$T/o"
+rc=0
 bash scripts/deploy.sh --bogus > "$T/o" 2>&1 || rc=$?
 check "deploy.sh unknown argument: exit 2" test "$rc" -eq 2
 check "deploy.sh --help exits 0" bash scripts/deploy.sh --help

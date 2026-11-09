@@ -106,6 +106,12 @@ check "signed HEAD, --no-git: deployed, signature verified" bash -c 'test "$1" -
 check "the stub docker was used and the stub aws never" bash -c 'test -s "$1/docker.log" && test ! -e "$1/aws-called"' _ "$T"
 dep --offline
 check "signed HEAD, --offline: deployed" test "$rc" -eq 0
+dep --no-git --only traefik
+check "--only <stack>: compose is run for that stack and does NOT force-recreate" bash -c 'test "$1" -eq 0 && grep -q "traefik/compose.yaml" "$2/docker.log" && ! grep -q -- "--force-recreate" "$2/docker.log"' _ "$rc" "$T"
+dep --no-git --recreate traefik
+check "--recreate <stack>: same stack file, with --force-recreate and without --remove-orphans (K8)" bash -c 'test "$1" -eq 0 && grep -q "traefik/compose.yaml" "$2/docker.log" && grep -q -- "--force-recreate" "$2/docker.log" && ! grep -q -- "--remove-orphans" "$2/docker.log"' _ "$rc" "$T"
+dep --no-git
+check "a plain full deploy never force-recreates" bash -c 'test "$1" -eq 0 && ! grep -q -- "--force-recreate" "$2/docker.log"' _ "$rc" "$T"
 
 fresh
 before="$(head_of)"

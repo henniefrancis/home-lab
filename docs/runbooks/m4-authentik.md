@@ -253,7 +253,7 @@ sudo docker start authentik-server                   # back up; https://traefik.
 | The Pi is unreachable on the network | Raspberry Pi Connect terminal (works without SSH), then the rows above. |
 | Database or data directory lost (new SD card) | The blueprint rebuilds groups, applications and providers; **users and MFA devices are gone** until backups exist (a later phase). `scripts/bootstrap.sh`, set `authentik/bootstrap-password`, `sudo scripts/deploy.sh`, log in as `akadmin`, enrol MFA again. |
 
-Authentik secret-key rotation invalidates every session and is not a routine operation; the Postgres password is changed with `ALTER USER` first, then SSM, then deploy (plan R48).
+Authentik secret-key rotation invalidates every session and is not a routine operation; the Postgres password is changed with `ALTER USER` first, then SSM, then `deploy.sh --recreate authentik` (`rotate-secrets.md`, plan R48).
 
 ## 7. Rollback
 
@@ -282,7 +282,7 @@ or LAN client in front of forward auth; the memory limits under real use (`sudo 
 | `403` on the dashboard before any login | The allowlist: the client's address is not LAN/tailnet (see R49 in the plan notes: Tailscale must not SNAT). |
 | `Permission denied` after a good login | The user is not in `homelab-admins` (Directory, Groups). |
 | `ak create_recovery_key` fails with `KeyError: getpwuid()` | The container lost `USER=authentik` from its environment (it is set in `authentik/compose.yaml`); use `sudo docker exec -e USER=authentik ...`. |
-| Secret rotated in SSM but Authentik still uses the old value | Containers keep the secret file they were created with: `dc up -d --force-recreate authentik-server authentik-worker` after `deploy.sh`. |
+| Secret rotated in SSM but Authentik still uses the old value | Containers keep the secret file they were created with: `sudo scripts/deploy.sh --recreate authentik` (see `rotate-secrets.md`). |
 | Providers, apps or the outpost binding are missing 5 to 25 minutes after the first deploy | The worker is still applying blueprints (slow on Pi/SD): section 3.4a. Do not restart the worker; use the progress checks and, after ~30 minutes, the manual `ak apply_blueprint` fallback. |
 | Blueprint shows `error` | Admin interface, Customization, Blueprints, open the instance for the message; `sudo docker logs authentik-worker 2>&1 | grep -i blueprint`. |
 
