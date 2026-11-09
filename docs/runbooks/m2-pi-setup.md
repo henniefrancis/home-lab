@@ -421,13 +421,13 @@ On the laptop, print the file contents from the Terraform outputs (needs `terraf
 scripts/render-aws-env.sh --generation gen-1
 ```
 
-It prints five lines (`AWS_REGION`, `PKI_GENERATION`, `RA_TRUST_ANCHOR_ARN`, `RA_HOST_PROFILE_ARN`, `RA_HOST_ROLE_ARN`), plus `ALERT_TOPIC_ARN` (K4) and `BACKUP_S3_BUCKET` (K5) once those parts of the stack are applied; add `--age-recipient age1...` for `BACKUP_AGE_RECIPIENT` (K5, `authentik-backup.md` section 1). They identify the AWS account, so they
+It prints up to eight lines (`AWS_REGION`, `PKI_GENERATION`, `RA_TRUST_ANCHOR_ARN`, `RA_HOST_PROFILE_ARN`, `RA_HOST_ROLE_ARN`, and once those parts of the stack are applied `ALERT_TOPIC_ARN` (K4) and `BACKUP_S3_BUCKET` (K5)); add `--age-recipient age1...` to also print `BACKUP_AGE_RECIPIENT` (K5, `authentik-backup.md` section 1). A line that could not be printed is only a note on stderr, so count the lines. They identify the AWS account, so they
 are only for the Pi. Copy them, then on the Pi:
 
 ```bash
 sudo install -m 0600 -o root -g root /dev/null /etc/home-lab/aws.env
 sudo tee /etc/home-lab/aws.env > /dev/null <<'EOF'
-(paste the five lines here)
+(paste all the printed lines here)
 EOF
 sudo stat -c '%U:%G %a %n' /etc/home-lab/aws.env      # expect: root:root 600 /etc/home-lab/aws.env
 ```

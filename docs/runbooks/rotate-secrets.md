@@ -27,7 +27,7 @@ Used by: `authentik-postgresql`, `authentik-server`, `authentik-worker` (stack `
 
 ## authentik/secret-key
 
-Used by: `authentik-server`, `authentik-worker`. Signs cookies; per the Authentik configuration documentation, changing it invalidates active sessions. The page does not describe any other effect or a rotation procedure, so check the current Authentik release notes before a planned rotation, and take a `pg_dump` first. Rotate it only after suspected exposure, not routinely.
+Used by: `authentik-server`, `authentik-worker`. Signs cookies; per the Authentik configuration documentation (<https://docs.goauthentik.io/install-config/configuration/>), changing it invalidates active sessions. The page does not describe any other effect or a rotation procedure, so check the current Authentik release notes before a planned rotation, and take a `pg_dump` first (`sudo systemctl start home-lab-backup-authentik.service`). A restore from a backup does not need the old key (`authentik-backup.md` section 6); after a lost or stolen Pi, rotate it BEFORE the rebuild (`pi-recovery.md` section 1). Rotate it only after suspected exposure, not routinely.
 
 1. Generate 60 or more random characters (letters and digits), store in the password manager.
 2. `scripts/set-secret.sh authentik/secret-key`.
