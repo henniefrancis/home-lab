@@ -72,6 +72,36 @@ jobs:
             echo "config/ must stay free of DOMAIN=, ARNs and account IDs."; exit 1
           fi
 
+      - name: Guard - no workflow ever grants id-token write or uses AWS credentials (N1)
+        run: |
+          set -eu
+          # home-lab has no AWS OIDC role. The IAM role EC2SSM in ANOTHER stack trusts every repo of the owner's GitHub account
+          # (repo:<owner>/*), so a home-lab workflow that could mint a GitHub OIDC token must never exist (N1). id-token write is
+          # also implied by `permissions: write-all`. Comments are ignored.
+          re='id-toke[n][[:space:]]*:[[:space:]]*writ[e]|permission[s][[:space:]]*:[[:space:]]*write-al[l]|aws-action[s]/|role-to-assum[e]|configure-aws-credential[s]'  # [x] keeps this file from matching itself
+          if git grep -nEi "$re" -- .github/workflows | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*#'; then
+            echo "A workflow asks for the OIDC token permission, write-all, or AWS credentials. home-lab must not be able to mint an AWS OIDC token (N1)."
+            exit 1
+          fi
+          # every workflow and job must declare permissions (a missing block means the repository default, which may be write)
+          for f in .github/workflows/*.yml; do
+            grep -qE '^permissions:' "$f" || { echo "$f has no top-level permissions block"; exit 1; }
+          done
+
+      - name: Guard - executable bits (every script except scripts/lib/* is 100755)
+        run: |
+          set -eu
+          # The Pi runs these as `sudo scripts/<name>.sh`; a 100644 script fails there with "command not found" (it did, breakglass.sh).
+          bad="$(git ls-files -s -- 'scripts/*.sh' | awk '$1 != "100755" {print $4 " is mode " $1}' | grep -v ' scripts/lib/' | grep -v '^scripts/lib/' || true)"
+          if [ -n "$bad" ]; then
+            echo "These scripts are not executable in git (fix: git update-index --chmod=+x <file>):"
+            echo "$bad"
+            exit 1
+          fi
+          # and the sourced helpers must NOT be executable (they are libraries)
+          lib="$(git ls-files -s -- 'scripts/lib/*.sh' | awk '$1 != "100644" {print $4 " is mode " $1}')"
+          if [ -n "$lib" ]; then echo "$lib"; echo "scripts/lib/*.sh are libraries and stay 100644."; exit 1; fi
+
       - name: Set up Python (pip cache)
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
