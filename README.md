@@ -19,7 +19,7 @@ This repository is a reference you can read, copy and adapt. It is a personal pr
 | Secrets | AWS **SSM Parameter Store** SecureStrings encrypted with a customer-managed key; only the Pi's role can decrypt. Set by the owner with `scripts/set-secret.sh`, fetched at deploy time into `/apps/secrets`, never in git, CI or Terraform state |
 | Deploys | **Signed deploys**: `scripts/deploy.sh` merges and runs only a commit whose SSH signature verifies against a root-owned trust file on the Pi |
 | AWS | Route 53 zone, Roles Anywhere identities, KMS key, budget alert and an SNS alert topic, all in Terraform (HCP Terraform with OIDC dynamic credentials and split plan and apply roles) |
-| Alerting | A daily check mails you (SNS email) when the certificate Traefik actually serves, or a Pi certificate, is close to expiry |
+| Alerting | A daily check mails you (SNS email) when the certificate Traefik actually serves, or a Pi certificate, is close to expiry or wrong; a monthly test mail proves the path still works |
 
 Routing is by subdomain. The apex and `www` are reserved for a separate future public site and are never served from the Pi.
 **Rule: no console or CLI changes to AWS infrastructure.** Every change goes through Terraform.
@@ -74,11 +74,11 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 
 ## How CI works
 
-- Workflow `ci` (job `checks`) and workflow `secret-scan` (job `secret-scan`) run on every push and pull request. They have **no cloud or HCP credentials**, and a guard fails the build if any workflow ever asks for an OIDC token, `write-all` or AWS credentials.
+- Workflow `ci` (job `checks`) runs on pushes to `main` and on pull requests, except changes that only touch `docs/**` or `*.md` (`paths-ignore`). Workflow `secret-scan` (job `secret-scan`) runs on every push and pull request. They have **no cloud or HCP credentials**, and a guard fails the build if any workflow ever asks for an OIDC token, `write-all` or AWS credentials.
 - **Pinned tools.** Third-party tool images (gitleaks, tflint, trivy, terraform) come from `ci/images/<tool>/Dockerfile`, pinned by digest, and Python tooling from `ci/requirements-ci.txt`. They live outside `.github/` because Dependabot is refused there. The terraform image is bumped by hand together with `required_version` in the stacks; the others are bumped by Dependabot.
 - **Dependabot** (weekly, grouped, with a few days of cooldown) covers GitHub Actions, Terraform providers, Compose and Docker images, pip and pre-commit. Pull requests are merged locally and covered by a signed release commit (see `docs/runbooks/release-and-deploy.md`).
 - **Secret scan.** gitleaks runs over the full history and the working tree with the public rules in `.gitleaks.toml`; the rules have their own test (`scripts/test-gitleaks-rules.sh`). A private denylist of your real identifiers is checked locally with `scripts/check-private-denylist.sh` and never leaves your machine.
-- **Self-tests** run the shell scripts against mock `aws` and local servers, check Traefik, Authentik and Homepage configuration, run the Terraform IAM and KMS policy tests offline, run shellcheck, yamllint and tflint, and scan the images.
+- **Self-tests** run the shell scripts against mock `aws` and local servers, check Traefik, Authentik and Homepage configuration, run the Terraform IAM and KMS policy tests offline, run shellcheck, yamllint and tflint, and run `trivy config` over the Terraform code. `scripts/scan-images.sh` scans the container images and is run by hand, not in CI.
 
 ## Fork guide: what to change
 
