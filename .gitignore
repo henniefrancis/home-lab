@@ -47,3 +47,6 @@ Thumbs.db
 .homepage-test.*/
 .traefik-test.*/
 .traefik-test-apps.*/
+
+# Owner private denylist for scripts/check-private-denylist.sh (N12): real domain, addresses, e-mails. Never commit.
+.gitleaks-private.toml

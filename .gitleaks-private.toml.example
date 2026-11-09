@@ -1,0 +1,30 @@
+# TEMPLATE for the owner's private denylist (N12). Copy to .gitleaks-private.toml (gitignored, never committed) and replace every
+# FILL-IN-BEFORE-USE pattern with a real value. scripts/check-private-denylist.sh refuses to run while the marker is still present.
+# CI never sees the real file; CI uses the public rules in .gitleaks.toml only.
+# Each rule is a regular expression (Go RE2, case-insensitive with (?i)). Escape dots. Keep the real values OUT of this template.
+title = "home-lab private denylist"
+
+[[rules]]
+id = "private-domain"
+description = "the real domain (FILL-IN-BEFORE-USE)"
+regex = '''(?i)FILL-IN-BEFORE-USE\.invalid'''
+
+[[rules]]
+id = "private-addresses"
+description = "the Pi LAN address and the tailnet address (FILL-IN-BEFORE-USE)"
+regex = '''(?:FILL-IN-BEFORE-USE-LAN-IP|FILL-IN-BEFORE-USE-TAILNET-IP)'''
+
+[[rules]]
+id = "private-emails"
+description = "personal e-mail addresses (FILL-IN-BEFORE-USE)"
+regex = '''(?i)FILL-IN-BEFORE-USE@example\.invalid'''
+
+[[rules]]
+id = "private-identifiers"
+description = "the SSO role hash, the HCP organisation, the trust anchor UUID, the account alias (FILL-IN-BEFORE-USE)"
+regex = '''(?i)(?:FILL-IN-BEFORE-USE-SSO-HASH|FILL-IN-BEFORE-USE-HCP-ORG)'''
+
+# The real file contains your real values as patterns; do not let a scan of the repository flag the file itself.
+[[allowlists]]
+description = "the private file itself and its template"
+paths = ['''(^|/)\.gitleaks-private\.toml(\.example)?$''']

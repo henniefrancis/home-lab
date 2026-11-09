@@ -12,6 +12,33 @@ description = "bcrypt / htpasswd hash committed to the repo"
 regex = '''\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}'''
 keywords = ["$2"]
 
+# N12: identifiers that the default ruleset cannot see. None of them is a credential, but together they identify the owner's account,
+# so they must never reach the public history. The placeholders used by tests and examples are allowed below; anything else fails CI.
+# (The OWNER-specific denylist, the real domain, addresses and e-mails, lives in a gitignored file, see .gitleaks-private.toml.example
+# and scripts/check-private-denylist.sh. CI uses these public rules only.)
+[[rules]]
+id = "aws-account-id-12-digits"
+description = "a 12-digit AWS account ID (a UUID segment or a longer number is ignored)"
+regex = '''(?:^|[^0-9A-Za-z_-])([0-9]{12})(?:[^0-9A-Za-z_-]|$)'''
+secretGroup = 1
+keywords = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+
+[[rules.allowlists]]
+description = "documented placeholder account IDs"
+# 403403403403 is three HTTP status codes printed back to back in an old test (history, scripts/test-homepage-config.sh); not an account ID.
+regexes = ['''^(111111111111|123456789012|0{12}|0{11}[0-9]|222222222222|999999999999|403403403403)$''']
+
+[[rules]]
+id = "route53-hosted-zone-id"
+description = "a Route 53 hosted zone ID (Z, a digit, then 11 to 31 capitals or digits)"
+regex = '''\b(Z[0-9][A-Z0-9]{11,31})\b'''
+secretGroup = 1
+keywords = ["z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9"]
+
+[[rules.allowlists]]
+description = "documented placeholder zone IDs"
+regexes = ['''^(Z0{19}|Z1A{18}|Z2B{18})$''']
+
 [[allowlists]]
 description = "Documented placeholders only"
 regexes = [
