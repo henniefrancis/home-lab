@@ -86,7 +86,8 @@ jobs:
             exit 1
           fi
           # every workflow and job must declare permissions (a missing block means the repository default, which may be write)
-          for f in .github/workflows/*.yml; do
+          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -e "$f" ] || continue
             grep -qE '^permissions:' "$f" || { echo "$f has no top-level permissions block"; exit 1; }
           done
 
