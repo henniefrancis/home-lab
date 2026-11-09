@@ -86,9 +86,9 @@ Follow `m4-authentik.md` section 8, items 1 and 2: create your named admin with 
 
 ## 8. K2: disconnect the old local folder (Laptop, owner)
 
-`A:\henniefrancis\home-lab` (the old copy) still points at the same GitHub remote and holds the pre-reset history. A push, a tag or a force-push from it would publish that history.
+Any old local working copy from before the history reset (`<old-working-copy>` below) may still point at the same GitHub remote and hold the pre-reset history. A push, a tag or a force-push from it would publish that history.
 - Do: in that folder run `git remote remove origin` (or archive and delete the folder after a final check that nothing in it is still needed).
-- **Verify:** `git -C A:\henniefrancis\home-lab remote -v` prints nothing (or the folder is gone). `git ls-remote origin` from the **new** clone still works.
+- **Verify:** `git -C <old-working-copy> remote -v` prints nothing (or the folder is gone). `git ls-remote origin` from the **new** clone still works.
 - **Rollback:** `git remote add origin <url>`, but only if you really need it and only after the repo is public and the ruleset exists.
 
 ## 9. K3: private denylist and gitleaks on the exact SHA (Laptop, owner)
