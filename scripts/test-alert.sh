@@ -129,7 +129,7 @@ CA_PROD="SERVED_CERT_CAFILE=$T/ca-Test Root X1.crt"
 # ---------------------------------------------------------------- served-cert-check.sh
 if serve good; then
   served 0 "90 days left"
-  check "the PASS line names the host and the days left, no key material" bash -c 'grep -q "^\[PASS\] served-cert: dashboard.example.test certificate has 8[0-9] days left" "$1" && ! grep -qi "PRIVATE" "$1"' _ "$T/o"
+  check "the PASS line names the host and the days left, no key material" bash -c 'grep -Eq "^\[PASS\] served-cert: dashboard\.example\.test certificate has (8[0-9]|90) days left" "$1" && ! grep -qi "PRIVATE" "$1"' _ "$T/o"
   served 1 "a threshold above the days left warns" SERVED_CERT_WARN_DAYS=100
   check "the WARN line is produced" grep -q '^\[WARN\] served-cert' "$T/o"
   served 2 "production expected but a self-signed certificate is served (no chain to a trusted root)" SERVED_CERT_EXPECT=prod

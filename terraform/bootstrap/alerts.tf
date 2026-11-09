@@ -18,6 +18,9 @@ resource "aws_sns_topic_subscription" "alerts_email" {
   topic_arn = aws_sns_topic.alerts.arn
   protocol  = "email"
   endpoint  = var.alert_email
+
+  # SEC N-1: create the subscription only after the topic policy exists, so a first apply never races the Subscribe deny.
+  depends_on = [aws_sns_topic_policy.alerts]
 }
 
 # SEC-L-1: an explicit topic policy instead of the SNS default (which lets any principal in the account with an IAM allow publish,
