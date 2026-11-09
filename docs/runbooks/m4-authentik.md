@@ -266,7 +266,23 @@ Smallest first.
 4. **Wipe Authentik completely** (destroys users and MFA devices; only when you really want a clean start):
    `dc rm -sf authentik-server authentik-worker authentik-postgresql && sudo rm -rf /apps/authentik/data /apps/authentik/postgres && sudo scripts/bootstrap.sh`, then deploy again (section 2).
 
-## 8. What only the Pi can verify (everything else ran in `scripts/test-authentik-config.sh`)
+## 8. Account hygiene after the first login (SEC-L8, owner steps)
+
+Live Authentik state cannot be audited offline, so these are checks the owner does once and after every change to flows:
+
+1. **Named admin, then retire `akadmin`.** Create your own user, add it to `homelab-admins` and to the Authentik `authentik Admins` group, enrol MFA for it, log in as that user and
+   confirm the dashboards work. Then deactivate `akadmin` (Directory, Users, `akadmin`, Deactivate) so the well-known name is not a standing superuser target. Keep the recovery path
+   (`sudo docker exec authentik-server ak create_recovery_key 15 <your user>`) in mind: it works for any user.
+2. **Set `authentik/bootstrap-password` back to UNSET** (`scripts/set-secret.sh --unset authentik/bootstrap-password`), then `sudo scripts/deploy.sh` so the worker no longer exports it.
+3. **No second path past MFA.** The blueprint patches the stock authentication flow, so the stock flow is the only one. Check in Admin, Flows and Stages, Flows: the brand's
+   authentication flow is `default-authentication-flow`; **no recovery flow is attached to the brand** (Brands, the default brand, Default flows, "Recovery flow" empty) and no
+   passwordless or "WebAuthn only" authentication flow is bound anywhere. If you ever add one, it must still contain the MFA validation stage. Re-run
+   `scripts/test-authentik-config.sh` (full run) after any flow change: it proves MFA enrolment is forced and an outsider is denied.
+4. **Event retention.** Authentik keeps login events (with client IP and user agent) for 365 days by default. For a household, set Admin, Events, Settings, "Event retention" to 90 days
+   (POPIA data-minimisation) and note the processing in your register.
+5. **Break-glass drill.** At least twice a year run `sudo scripts/breakglass.sh on 10`, log in at `bg-traefik.<domain>`, then `off`. The htpasswd is bcrypt cost 12; the password lives only in the password manager.
+
+## 9. What only the Pi can verify (everything else ran in `scripts/test-authentik-config.sh`)
 
 arm64 behaviour and first-start duration; real owners and modes on `/apps/secrets` and `/apps/authentik` (the local run used Docker named volumes); the allowlist with a real tailnet
 or LAN client in front of forward auth; the memory limits under real use (`sudo docker stats`); a browser with the staging certificate; WebAuthn; the `bg-traefik` flow with the real htpasswd.
@@ -285,19 +301,3 @@ or LAN client in front of forward auth; the memory limits under real use (`sudo 
 | Secret rotated in SSM but Authentik still uses the old value | Containers keep the secret file they were created with: `sudo scripts/deploy.sh --recreate authentik` (see `rotate-secrets.md`). |
 | Providers, apps or the outpost binding are missing 5 to 25 minutes after the first deploy | The worker is still applying blueprints (slow on Pi/SD): section 3.4a. Do not restart the worker; use the progress checks and, after ~30 minutes, the manual `ak apply_blueprint` fallback. |
 | Blueprint shows `error` | Admin interface, Customization, Blueprints, open the instance for the message; `sudo docker logs authentik-worker 2>&1 | grep -i blueprint`. |
-
-## 8. Account hygiene after the first login (SEC-L8, owner steps)
-
-Live Authentik state cannot be audited offline, so these are checks the owner does once and after every change to flows:
-
-1. **Named admin, then retire `akadmin`.** Create your own user, add it to `homelab-admins` and to the Authentik `authentik Admins` group, enrol MFA for it, log in as that user and
-   confirm the dashboards work. Then deactivate `akadmin` (Directory, Users, `akadmin`, Deactivate) so the well-known name is not a standing superuser target. Keep the recovery path
-   (`sudo docker exec authentik-server ak create_recovery_key 15 <your user>`) in mind: it works for any user.
-2. **Set `authentik/bootstrap-password` back to UNSET** (`scripts/set-secret.sh --unset authentik/bootstrap-password`), then `sudo scripts/deploy.sh` so the worker no longer exports it.
-3. **No second path past MFA.** The blueprint patches the stock authentication flow, so the stock flow is the only one. Check in Admin, Flows and Stages, Flows: the brand's
-   authentication flow is `default-authentication-flow`; **no recovery flow is attached to the brand** (Brands, the default brand, Default flows, "Recovery flow" empty) and no
-   passwordless or "WebAuthn only" authentication flow is bound anywhere. If you ever add one, it must still contain the MFA validation stage. Re-run
-   `scripts/test-authentik-config.sh` (full run) after any flow change: it proves MFA enrolment is forced and an outsider is denied.
-4. **Event retention.** Authentik keeps login events (with client IP and user agent) for 365 days by default. For a household, set Admin, Events, Settings, "Event retention" to 90 days
-   (POPIA data-minimisation) and note the processing in your register.
-5. **Break-glass drill.** At least twice a year run `sudo scripts/breakglass.sh on 10`, log in at `bg-traefik.<domain>`, then `off`. The htpasswd is bcrypt cost 12; the password lives only in the password manager.

@@ -107,7 +107,7 @@ Rebuild the Raspberry Pi 4B home lab as a fresh, **fully public** GitHub repo, s
 | A19 | HCP org | `TF_CLOUD_ORGANIZATION` / `hcp_organization`; never hard-coded |
 | A20 | HCP objects | Project `home-lab`; workspaces `home-lab-bootstrap` (local execution) and `home-lab` (remote, CLI-driven, auto-apply off, destroy plans disabled); created by the owner in the UI |
 | A21 | State contents | No secrets: SSM SecureString values are write-only placeholders (6.7.3). The only sensitive datum is the budget email |
-| **A22** | **Secret store** | **SSM Parameter Store, SecureString, Standard tier, AWS-managed key `aws/ssm`, region af-south-1.** No customer-managed KMS key: about USD 1/month is 20% of the budget, and IAM path scoping plus Roles Anywhere gives the needed control (R46). GitHub Actions secrets are **not** used for runtime secrets |
+| **A22** | **Secret store** | **SSM Parameter Store, SecureString, Standard tier, AWS-managed key `aws/ssm`, region af-south-1.** (Superseded by SEC-M2: the SecureStrings now use the customer-managed key `alias/home-lab-ssm`, about USD 1/month, because the AWS-managed key policy let any account principal decrypt.) Originally: no customer-managed KMS key, because about USD 1/month is 20% of the budget, and IAM path scoping plus Roles Anywhere gives the needed control (R46). GitHub Actions secrets are **not** used for runtime secrets |
 | **A23** | **Pi identities** | **Two separate keys and certs**, both signed by the offline CA: `home-lab-pi-traefik` (mounted only into the ra-helper container) and `home-lab-pi-host` (root-only on the host, never mounted into any container). A compromised Traefik container therefore cannot read SSM |
 | **A24** | **Secret files on the Pi** | **Persistent** under `/apps/secrets` (root-owned dir 0700, files 0400/0600) rather than tmpfs. Reason: the lab must come back after a power cut even when the internet is down. The host's Roles Anywhere key already lives on disk and can fetch every secret, so tmpfs adds little protection (R41) |
 
@@ -262,7 +262,7 @@ home-lab/
   tailscale/ compose.yaml  policy.example.hujson
   docs/plan/phase-1-traefik.md
   docs/runbooks/ first-deploy.md hcp-terraform-bootstrap.md adopt-existing-route53.md secrets-ssm.md
-                 rolesanywhere-pki.md cert-staging-to-prod.md break-glass.md rotate-secrets.md pi-recovery.md add-a-service.md
+                 rolesanywhere-pki.md m6-go-live.md (cert-staging-to-prod.md is a short pointer to its certificate section) alerting.md break-glass.md rotate-secrets.md pi-recovery.md add-a-service.md
 ```
 
 `config/lab.env` (committed, public):
@@ -602,7 +602,8 @@ If the provider **does** read the decrypted value into state, stop and switch to
 - SSM Standard parameters and standard-throughput API calls cost nothing.
 - `aws/ssm` has no monthly fee; KMS request charges are negligible at this volume.
 - Roles Anywhere is free; HCP is on the free tier.
-- **Total about USD 0.50-1/month.**
+- Customer-managed key `alias/home-lab-ssm` (SEC-M2, supersedes A22): about USD 1/month. The SNS alert topic (K4, AWS-managed key `aws/sns`, one email subscriber) is negligible (email delivery is free at this volume).
+- **Total about USD 1.50-2/month, inside the USD 5 budget.**
 
 ### 6.8 PKI (Roles Anywhere)
 
@@ -686,7 +687,7 @@ If the provider **does** read the decrypted value into state, stop and switch to
   - Adoption no-op gates and `prevent_destroy`.
   - Break-glass and Pi Connect.
 - **Performance:** unchanged; the fetch is one API call per deploy.
-- **Cost:** about USD 0.50-1/month (SSM Standard free, `aws/ssm` free, no Secrets Manager, no CMK); USD 5 alert.
+- **Cost (2026-11 update):** about USD 1.50-2/month (SSM Standard free, the customer-managed key `alias/home-lab-ssm` about USD 1/month since SEC-M2, SNS alerts negligible, no Secrets Manager); USD 5 alert.
 - **Sustainability:** one ARM host, managed services.
 
 ## 8. Phased delivery plan (owner review at the end of EVERY milestone)
@@ -699,7 +700,7 @@ If the provider **does** read the decrypted value into state, stop and switch to
 | **M3 - Traefik + ra-helper (STAGING)** | M1, M2 | Staging wildcard via Route 53 with the traefik identity; Q14; 308; headers; no `docker.sock`; break-glass htpasswd from SSM works. |
 | **M4 - Authentik SSO** | M3 | Secrets from SSM; MFA; per-app providers; host-only cookies; fail-closed; break-glass. |
 | **M5 - Homepage** | M4 | As in rev 6. |
-| **M6 - Production + public** | M5 | Prod ACME via a PR to `config/lab.env`; HSTS 1 year; T5b role tightening (now including the pi-host role); public-readiness review (S12); **repo flipped PUBLIC**; secret scanning and push protection on. |
+| **M6 - Production + public** | M5 | Prod ACME via a PR to `config/lab.env`; HSTS 1 year; T5b role tightening (now including the pi-host role) one week AFTER the repo goes public (owner decision 2026-11-09: Access Analyzer needs a week of real use of the roles, and it must not delay going public); public-readiness review (S12); the ordered cutover is `docs/runbooks/m6-go-live.md`; **repo flipped PUBLIC**; secret scanning and push protection on. |
 
 ## 9. Work breakdown for the full-stack-developer
 
@@ -730,7 +731,7 @@ If the provider **does** read the decrypted value into state, stop and switch to
       - `pi-recovery.md`
       - the rev 6 runbooks
     - **Obsidian mirror.**
-11. **T5b (M6)** Access Analyzer tightening of all four roles (plan, apply, dns01, pi-host).
+11. **T5b (M6, a week after going public; owner decision 2026-11-09)** Access Analyzer tightening of all four roles (plan, apply, dns01, pi-host).
 
 ## 10. Testing and security hooks
 
@@ -1044,3 +1045,10 @@ Source: the security review (0C/2H/7M/12L) and the QA review (0C/0H/4M/16L) of M
 ### Amendment 2026-11-08 (later): SecureStrings are owner-managed (ADR-013), supersedes note 3 above where it differs
 
 The first live edge plan failed on refresh of all six `aws_ssm_parameter.secret`: the AWS provider reads a SecureString WithDecryption even for a write-only value, and the new key policy denies Decrypt to the HCP roles. Owner decision (option A): Terraform stops managing the six SecureStrings. `terraform/edge` has `removed { from = aws_ssm_parameter.secret ... destroy = false }` (state forget only) and keeps the `/home-lab/config/*` String parameters; `scripts/set-secret.sh` gained `--create` (placeholder, key alias, tags) and `--check` (key and version only, fails when one is missing or off-key); `config/secrets-manifest.tsv` is the source of truth for the list. The HCP roles' SSM access is narrowed to `/home-lab/config/*` and they have no KMS permission; the key policy no longer names the apply role. The `value_wo_version` and SecureString CI guards are replaced by a guard that no SecureString, `value_wo` or SSM data source exists under `terraform/`. A refresh-only verification of write-only values (the old M1.7 check) no longer applies.
+
+### Doc drift fixes (2026-11-09, TAM review K10)
+
+- The terraform CI image (`ci/images/terraform`) is **not** tracked by Dependabot (Docker Hub returns UNAUTHORIZED to Dependabot). It is bumped by hand, in the same commit that changes `required_version` in the Terraform stacks, so "all Dependabot ecosystems green" does not cover it.
+- T5b (role tightening with Access Analyzer) runs a week after the repo goes public, not before (owner decision).
+- Cost: the customer-managed key adds about USD 1/month and SNS alerts are negligible (see the cost lines above).
+- The cutover is one ordered runbook, `docs/runbooks/m6-go-live.md`; `cert-staging-to-prod.md` points to its certificate section. Alerting (K4) is `docs/runbooks/alerting.md`, secret rotation is `docs/runbooks/rotate-secrets.md`.
