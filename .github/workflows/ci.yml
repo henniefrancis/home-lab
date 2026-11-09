@@ -113,6 +113,9 @@ jobs:
       - name: Self-test - ops scripts (deploy args, signed-deploy check, cert expiry, break-glass, preflight args, pki)
         run: bash scripts/test-ops-scripts.sh
 
+      - name: Self-test - aws-preflight.sh --snapshot against a mock aws (CRLF, empty duplicate list, TXT quotes; the mock is proven before use)
+        run: bash scripts/test-aws-preflight.sh
+
       - name: Self-test - deploy.sh with real git and ssh-keygen as root (signed tip, unsigned, wrong key, rollback, root-owned checkout, hooks, allowed_signers owner; docker and aws are stubs)
         run: |
           set -eu
