@@ -69,7 +69,7 @@ warnx() { printf '[WARN] %s\n' "$*"; }
 
 TMP=""
 CA_PASS=""
-# shellcheck disable=SC2317 # run by the EXIT trap
+# shellcheck disable=SC2317,SC2329 # run by the EXIT trap
 cleanup() {
   CA_PASS=""
   [ -z "$TMP" ] || rm -rf "$TMP"
