@@ -3,6 +3,9 @@
 # key policy (kms.tf) denies Decrypt to everyone but the Pi host role, which would also block the SNS service from delivering
 # the message, and widening it for SNS would weaken SEC-M2. An alert carries no secret (check name, days left), so the managed key is enough.
 # Only the Pi host role may publish (identity.tf, statement PublishHomeLabAlerts); nobody else gains any SNS right.
+# Reviewed exception (ADR-014, owner decision 2026-11-09): AWS-0136 asks for a customer managed key. Alerts carry no secret,
+# and the home-lab CMK cannot be used for SNS without weakening SEC-M2, so the AWS managed key alias/aws/sns is enough here.
+#trivy:ignore:AWS-0136
 resource "aws_sns_topic" "alerts" {
   provider = aws.af_south_1
 
