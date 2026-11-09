@@ -262,32 +262,26 @@ printf 'authentik/secret-key\tauthentik\t10002:10002\t0400\tyes\traw\nauthentik/
 run3 "$T/prefix.tsv" --dry-run
 check "target that is a directory of another is rejected with exit 4, not 1 (QA-L-4)" test "$rc" -eq 4
 # NEW-8: an empty or comment-only manifest and a '.' target exit 4 with a clear message (no unbound-variable error, rc 1)
-printf '# nothing but comments
-
-' > "$T/comments.tsv"
+printf '# nothing but comments\n\n' > "$T/comments.tsv"
 run3 "$T/comments.tsv" --dry-run
 check "comment-only manifest exits 4 with 'no rows' (NEW-8)" bash -c 'test "$1" -eq 4 && grep -q "no rows" "$2" && ! grep -qi "unbound" "$2"' _ "$rc" "$T/out.log"
 : > "$T/zero.tsv"
 run3 "$T/zero.tsv" --dry-run
 check "empty manifest exits 4 (NEW-8)" test "$rc" -eq 4
-printf 'authentik/secret-key	.	10002:10002	0400	yes	raw
-' > "$T/dot.tsv"
+printf 'authentik/secret-key\t.\t10002:10002\t0400\tyes\traw\n' > "$T/dot.tsv"
 run3 "$T/dot.tsv" --dry-run
 check "target '.' exits 4, not 1 (NEW-8)" bash -c 'test "$1" -eq 4 && grep -q "segment" "$2"' _ "$rc" "$T/out.log"
-printf 'authentik/secret-key	./x	10002:10002	0400	yes	raw
-' > "$T/dot2.tsv"
+printf 'authentik/secret-key\t./x\t10002:10002\t0400\tyes\traw\n' > "$T/dot2.tsv"
 run3 "$T/dot2.tsv" --dry-run
 check "target './x' exits 4 (NEW-8)" test "$rc" -eq 4
 # NEW-9: the manifest header rules are enforced: never uid or gid 1000, never access for 'other'
-for row in 'authentik/secret-key	authentik/a	1000:1000	0400	yes	raw' 'authentik/secret-key	authentik/a	10002:1000	0400	yes	raw' 'authentik/secret-key	authentik/a	1000:10002	0400	yes	raw' 'authentik/secret-key	authentik/a	10002:10002	0666	yes	raw' 'authentik/secret-key	authentik/a	10002:10002	0777	yes	raw' 'authentik/secret-key	authentik/a	10002:10002	0404	yes	raw'; do
-  # shellcheck disable=SC2059 # the row carries the 	 escapes
-  printf "$row
-" > "$T/row.tsv"
+for row in 'authentik/secret-key\tauthentik/a\t1000:1000\t0400\tyes\traw' 'authentik/secret-key\tauthentik/a\t10002:1000\t0400\tyes\traw' 'authentik/secret-key\tauthentik/a\t1000:10002\t0400\tyes\traw' 'authentik/secret-key\tauthentik/a\t10002:10002\t0666\tyes\traw' 'authentik/secret-key\tauthentik/a\t10002:10002\t0777\tyes\traw' 'authentik/secret-key\tauthentik/a\t10002:10002\t0404\tyes\traw'; do
+  # shellcheck disable=SC2059 # the row carries the \t escapes
+  printf "$row\n" > "$T/row.tsv"
   run3 "$T/row.tsv" --dry-run
-  check "manifest row refused with exit 4: ${row#*authentik/a	} (NEW-9)" test "$rc" -eq 4
+  check "manifest row refused with exit 4: ${row#*authentik/a\\t} (NEW-9)" test "$rc" -eq 4
 done
-printf 'authentik/secret-key	authentik/a	10002:10002	0440	yes	raw
-' > "$T/row.tsv"
+printf 'authentik/secret-key\tauthentik/a\t10002:10002\t0440\tyes\traw\n' > "$T/row.tsv"
 run3 "$T/row.tsv" --dry-run
 check "a group-readable row (0440) is still accepted (NEW-9 does not break the Postgres file)" test "$rc" -eq 0
 # NEW-14: config/domain must be lowercase labels without a trailing dot (run3: the section-6 mock leaves a lock on the main apps root)

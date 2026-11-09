@@ -99,14 +99,10 @@ check "an unknown revision fails closed" bash -c '! verify_signed_commit "$1" "d
 git -C "$T/repo" cat-file commit "$c_owner" | sed 's/^signed-by-owner$/tampered-message/' > "$T/commit.txt"
 c_tampered="$(git -C "$T/repo" hash-object -t commit -w "$T/commit.txt")"
 check "a tampered signed commit is refused" bash -c '! verify_signed_commit "$1" "$2" "$3"' _ "$T/repo" "$c_tampered" "$T/allowed"
-printf '%s
-%s
-' '# copy of config/allowed_signers.example: replace REPLACE-WITH-YOUR-PUBLIC-KEY with your key' "$(cat "$T/allowed")" > "$T/commented"
+printf '%s\n%s\n' '# copy of config/allowed_signers.example: replace REPLACE-WITH-YOUR-PUBLIC-KEY with your key' "$(cat "$T/allowed")" > "$T/commented"
 chmod 644 "$T/commented"
 check "a comment that mentions the placeholder does not block a real key (NEW-5)" verify_signed_commit "$T/repo" "$c_owner" "$T/commented"
-printf '%s
-%s
-' 'owner@example.invalid namespaces="git" ssh-ed25519 REPLACE-WITH-YOUR-PUBLIC-KEY' "$(cat "$T/allowed")" > "$T/placeheld"
+printf '%s\n%s\n' 'owner@example.invalid namespaces="git" ssh-ed25519 REPLACE-WITH-YOUR-PUBLIC-KEY' "$(cat "$T/allowed")" > "$T/placeheld"
 chmod 644 "$T/placeheld"
 check "a placeholder LINE next to a real key is refused and the message says to remove it (NEW-5)" bash -c '! verify_signed_commit "$1" "$2" "$3" 2> "$4" && grep -q "remove that line" "$4"' _ "$T/repo" "$c_owner" "$T/placeheld" "$T/o"
 check "signers_problem is silent for a good file (owned by the running user, closed, real key)" bash -c '! signers_problem "$1" | grep -q .' _ "$T/allowed"

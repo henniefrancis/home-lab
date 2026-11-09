@@ -144,6 +144,25 @@ run 'x\n' --check authentik/secret-key
 check "--check takes no name (exit 2)" test "$rc" -eq 2
 check "the expected list is the manifest: six SecureStrings" test "$(grep -vE '^(#|$)' config/secrets-manifest.tsv | cut -f1 | grep -vc '^config/')" -eq 6
 
+# NEW-10: --check and --create must not pass vacuously on an unreadable, empty or comment-only manifest, and must survive a huge one
+printf '# only comments\n\n' > "$work/comments.tsv"
+: > "$work/empty.tsv"
+for m in "$work/does-not-exist.tsv" "$work/empty.tsv" "$work/comments.tsv"; do
+  SECRETS_MANIFEST="$m" MOCK_PARAMS="$good" run '' --check
+  check "--check with manifest '$(basename "$m")' fails with exit 2 and never prints 'check OK' (NEW-10)" bash -c 'test "$1" -eq 2 && ! grep -q "check OK" "$2" && grep -q "Cannot read any SecureString row" "$2"' _ "$rc" "$work/o"
+  rm -f "$MOCK_OUT/req.json"
+  SECRETS_MANIFEST="$m" run '' --create tailscale/auth-key
+  check "--create with manifest '$(basename "$m")' fails with exit 2 and sends nothing (NEW-10)" bash -c 'test "$1" -eq 2 && test ! -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
+done
+MOCK_PARAMS=null run '' --check
+check "--check with a describe-parameters answer of null exits 1 with a message, not a jq error (NEW-10)" bash -c 'test "$1" -eq 1 && grep -q "not a JSON list" "$2" && ! grep -qi "jq:" "$2"' _ "$rc" "$work/o"
+{ printf 'tailscale/auth-key\ttailscale/tailscale.env\t0:0\t0600\tyes\traw\n'; seq 1 200000 | awk '{printf "svc%d/name-%d\tx\t0:0\t0600\tyes\traw\n", $1, $1}'; } > "$work/huge.tsv"
+for _ in 1 2 3; do
+  SECRETS_MANIFEST="$work/huge.tsv" run '' --create tailscale/auth-key
+  [ "$rc" -eq 0 ] || break
+done
+check "--create finds a name in a 200000-row manifest three times in a row (no SIGPIPE under pipefail, NEW-10)" test "$rc" -eq 0
+
 run 'abc\nabc\n' config/domain
 check "config/* is refused (exit 2)" test "$rc" -eq 2
 run 'abc\nabc\n' 'Bad Name'
