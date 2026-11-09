@@ -139,6 +139,22 @@ rm -f "$T/pki/host.crt"
 rc=0
 HOME_LAB_PKI_DIR="$T/pki" bash scripts/cert-expiry.sh > "$T/o" 2>&1 || rc=$?
 check "missing certificate: exit 2" test "$rc" -eq 2
+# Not-yet-valid certificate (coverage gap): a stub date puts "now" ten years in the past, so a fresh certificate has a future notBefore.
+# This is the Pi after a power cut with no network and no RTC.
+mkcert host 400
+mkdir -p "$T/stub-ce"
+cat > "$T/stub-ce/date" << 'STUB'
+#!/usr/bin/env bash
+real="$(PATH="${REAL_PATH}" command -v date)"
+if [ "${1:-}" = "+%s" ]; then echo $(( $("$real" +%s) - 315360000 )); else exec "$real" "$@"; fi
+STUB
+chmod +x "$T/stub-ce/date"
+rc=0
+env REAL_PATH="$PATH" PATH="$T/stub-ce:$PATH" HOME_LAB_PKI_DIR="$T/pki" bash scripts/cert-expiry.sh > "$T/o" 2>&1 || rc=$?
+check "a certificate that is not valid yet (Pi clock years behind): exit 2, [FAIL] NOT VALID YET, names the clock" bash -c 'test "$1" -eq 2 && grep -q "^\[FAIL\].*NOT VALID YET" "$2" && grep -qi "clock" "$2"' _ "$rc" "$T/o"
+rc=0
+HOME_LAB_PKI_DIR="$T/pki" bash scripts/cert-expiry.sh > "$T/o" 2>&1 || rc=$?
+check "the same certificates are fine with the correct clock: exit 0, no NOT VALID YET" bash -c 'test "$1" -eq 0 && ! grep -q "NOT VALID YET" "$2"' _ "$rc" "$T/o"
 check "the systemd unit runs cert-expiry.sh and a timer fires it daily" bash -c 'grep -q "cert-expiry.sh" scripts/systemd/home-lab-cert-expiry.service && grep -q "OnCalendar=daily" scripts/systemd/home-lab-cert-expiry.timer && grep -q "Persistent=true" scripts/systemd/home-lab-cert-expiry.timer'
 
 # ---------------------------------------------------------------- preflight.sh --stage (QA-L-1)
