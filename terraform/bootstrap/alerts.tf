@@ -19,3 +19,98 @@ resource "aws_sns_topic_subscription" "alerts_email" {
   protocol  = "email"
   endpoint  = var.alert_email
 }
+
+# SEC-L-1: an explicit topic policy instead of the SNS default (which lets any principal in the account with an IAM allow publish,
+# subscribe or rewrite the topic). The account root statement keeps IAM in charge for the owner; the denies below narrow it:
+#   - TLS only for Publish and Subscribe,
+#   - Publish only for the Pi host role and the owner's admin role (the owner can run a manual test publish),
+#   - Subscribe and topic management only for the owner's admin role (and the account root, so a wrong pattern cannot lock the topic away).
+# Email subscriptions are confirmed by the link in the mail, which is not an IAM call and is not affected.
+data "aws_iam_policy_document" "alerts_topic" {
+  statement {
+    sid    = "AccountOwnsTopic"
+    effect = "Allow"
+    actions = [
+      "sns:Publish",
+      "sns:Subscribe",
+      "sns:GetTopicAttributes",
+      "sns:SetTopicAttributes",
+      "sns:ListSubscriptionsByTopic",
+      "sns:AddPermission",
+      "sns:RemovePermission",
+      "sns:DeleteTopic",
+      "sns:TagResource",
+      "sns:UntagResource",
+    ]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "AWS"
+      identifiers = [local.account_root]
+    }
+  }
+
+  statement {
+    sid       = "DenyInsecureTransport"
+    effect    = "Deny"
+    actions   = ["sns:Publish", "sns:Subscribe"]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+
+  statement {
+    sid       = "DenyPublishExceptPiHostAndOwner"
+    effect    = "Deny"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "ArnNotLike"
+      variable = "aws:PrincipalArn"
+      values   = [local.host_role_arn, var.owner_role_arn_pattern]
+    }
+  }
+
+  statement {
+    sid    = "DenySubscribeAndManagementExceptOwner"
+    effect = "Deny"
+    actions = [
+      "sns:Subscribe",
+      "sns:SetTopicAttributes",
+      "sns:AddPermission",
+      "sns:RemovePermission",
+      "sns:DeleteTopic",
+    ]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "ArnNotLike"
+      variable = "aws:PrincipalArn"
+      values   = [var.owner_role_arn_pattern, local.account_root]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "alerts" {
+  provider = aws.af_south_1
+
+  arn    = aws_sns_topic.alerts.arn
+  policy = data.aws_iam_policy_document.alerts_topic.json
+}

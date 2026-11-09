@@ -115,6 +115,10 @@ override_resource {
   target = aws_sns_topic_subscription.alerts_email
 }
 
+override_resource {
+  target = aws_sns_topic_policy.alerts
+}
+
 variables {
   hcp_organization       = "example-org"
   domain                 = "example.com"
@@ -263,6 +267,26 @@ run "alerts_only_pi_host_can_publish" {
   assert {
     condition     = !can(regex("sns:", data.aws_iam_policy_document.write.json)) && !can(regex("sns:", data.aws_iam_policy_document.read.json)) && !can(regex("sns:", data.aws_iam_policy_document.dns01.json)) && !can(regex("sns:", data.aws_iam_policy_document.ssm_key.json))
     error_message = "no other policy (HCP plan and apply roles, DNS-01 role, key policy) gains any SNS right"
+  }
+
+  assert {
+    condition     = can(regex("DenyInsecureTransport", data.aws_iam_policy_document.alerts_topic.json)) && can(regex("aws:SecureTransport", data.aws_iam_policy_document.alerts_topic.json))
+    error_message = "the topic policy refuses non-TLS Publish and Subscribe (SEC-L-1)"
+  }
+
+  assert {
+    condition     = can(regex("DenyPublishExceptPiHostAndOwner", data.aws_iam_policy_document.alerts_topic.json)) && can(regex("role/home-lab-pi-host", data.aws_iam_policy_document.alerts_topic.json))
+    error_message = "only the Pi host role and the owner role may publish to the topic (SEC-L-1)"
+  }
+
+  assert {
+    condition     = can(regex("DenySubscribeAndManagementExceptOwner", data.aws_iam_policy_document.alerts_topic.json)) && can(regex("sns:Subscribe", data.aws_iam_policy_document.alerts_topic.json)) && can(regex("sns:SetTopicAttributes", data.aws_iam_policy_document.alerts_topic.json))
+    error_message = "Subscribe and topic management are restricted to the owner (SEC-L-1)"
+  }
+
+  assert {
+    condition     = length(regexall("\"Effect\": \"Allow\"", data.aws_iam_policy_document.alerts_topic.json)) == 1 && can(regex(":root", data.aws_iam_policy_document.alerts_topic.json))
+    error_message = "exactly one Allow statement, for the account root (SEC-L-1)"
   }
 
   assert {
