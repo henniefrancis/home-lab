@@ -447,11 +447,12 @@ check_hardening() {
   else
     warnx login-docker-group "no SUDO_USER: cannot tell which login user to check"
   fi
-  owner="$(stat -c '%u:%a' "$REPO_DIR" 2> /dev/null)"
-  if [ "${owner%%:*}" = 0 ] && [ "$(( 8#${owner##*:} & 8#022 ))" -eq 0 ]; then
-    pass checkout-owner "$REPO_DIR is root-owned and not writable by others"
+  # NEW-1: the whole tree (.git, scripts, hooks), not just the top directory; the same test deploy.sh enforces.
+  owner="$(root_tree_offender "$REPO_DIR" 2> /dev/null || echo "(find failed)")"
+  if [ -z "$owner" ]; then
+    pass checkout-owner "$REPO_DIR (whole tree, .git included) is root-owned and not writable by others"
   else
-    fail checkout-owner "$REPO_DIR must be root-owned and not group/world writable (root runs its scripts): sudo chown -R root:root $REPO_DIR"
+    fail checkout-owner "$owner is not root-owned or is group/world writable (root runs this checkout's scripts): sudo chown -R root:root $REPO_DIR && sudo chmod -R go-w $REPO_DIR"
   fi
   if allowed_signers_usable "${HOME_LAB_ALLOWED_SIGNERS:-$ETC_DIR/allowed_signers}"; then
     pass allowed-signers "${HOME_LAB_ALLOWED_SIGNERS:-$ETC_DIR/allowed_signers} has a usable signing key (deploy.sh verifies commits)"
@@ -484,7 +485,7 @@ check_repo_hygiene() {
     warnx repo-hygiene "not a git checkout; skipped"
     return
   }
-  bad="$(git -c safe.directory="$REPO_DIR" -C "$REPO_DIR" ls-files --others --exclude-standard --ignored 2> /dev/null |
+  bad="$(git -c core.hooksPath=/dev/null -C "$REPO_DIR" ls-files --others --exclude-standard --ignored 2> /dev/null |
     grep -E '(^|/)(\.env(\..*)?|secrets/.*|.*\.(pem|key|csr)|acme.*\.json|.*\.tfvars)$' || true)"
   if [ -z "$bad" ]; then
     pass repo-hygiene "no secret-looking files in the repo checkout"

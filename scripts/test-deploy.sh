@@ -2,6 +2,7 @@
 # test-deploy.sh - self-test of scripts/deploy.sh and the signed-commit trust chain with REAL git and ssh-keygen (SEC-M3, SEC-M7,
 # NEW-1, NEW-5, NEW-6, coverage gap "signed deploy in CI"). Needs root (it chowns trees to other users), git, ssh-keygen, find.
 # Everything happens in a temp directory; docker is a stub that only logs, aws is a stub that fails loudly (nothing may call it),
+# (the copy of THIS repo is listed with safe.directory=* because the repo may belong to the CI user while the test runs as root.)
 # fetch-secrets.sh inside the throwaway checkout is replaced by a stub. No network, no AWS, no real secret.
 # CI runs it as: sudo -E env REQUIRE_ROOT=1 bash scripts/test-deploy.sh      Locally: in a throwaway Linux container as root.
 # shellcheck disable=SC2016 # the bash -c snippets are single-quoted on purpose: $1, $2 expand in the child shell
@@ -59,7 +60,7 @@ chmod 755 "$T/etc"
 # ---- a throwaway "checkout": every tracked or new file of this repo, a stub fetch-secrets.sh, APPS_ROOT in the temp dir
 seed="$T/seed"
 mkdir -p "$seed"
-(cd "$REPO" && git ls-files --cached --others --exclude-standard -z | while IFS= read -r -d '' f; do [ -f "$f" ] && printf '%s\0' "$f"; done | tar --null -T - -cf -) | tar -C "$seed" -xf -
+(cd "$REPO" && git -c safe.directory='*' ls-files --cached --others --exclude-standard -z | while IFS= read -r -d '' f; do [ -f "$f" ] && printf '%s\0' "$f"; done | tar --null -T - -cf -) | tar -C "$seed" -xf -
 sed -i "s#^APPS_ROOT=.*#APPS_ROOT=$T/apps#" "$seed/config/lab.env"
 printf '#!/bin/sh\necho "stub fetch-secrets" >> "%s/fetch.log"\nexit 0\n' "$T" > "$seed/scripts/fetch-secrets.sh"
 chmod 755 "$seed/scripts/fetch-secrets.sh"
@@ -91,6 +92,7 @@ fresh() { # fresh: origin gets a signed baseline tip, then a clean root-owned ch
 rc=0
 dep() { # dep <deploy args...>: run the checkout's deploy.sh as root; output in $T/o, exit code in $rc
   rc=0
+  rm -f "$T/docker.log"
   env PATH="$T/stubbin:$PATH" HOME_LAB_ALLOWED_SIGNERS="$T/etc/allowed_signers" TRAEFIK_DYNAMIC_DIR="$T/dyn" HOME_LAB_PKI_DIR="$T/pki" \
     bash "$T/work/scripts/deploy.sh" "$@" > "$T/o" 2>&1 || rc=$?
 }

@@ -162,7 +162,7 @@ else
 fi
 
 # SEC-M3: root runs the scripts in this checkout, so nobody who can log in may be able to change them.
-if [ "$(stat -c '%u' "$REPO_DIR")" != 0 ]; then
+if [ -n "$(root_tree_offender "$REPO_DIR")" ]; then # any file below it, not just the top directory (NEW-1)
   chown -R root:root "$REPO_DIR"
   info "checkout $REPO_DIR is now owned by root (use sudo git / sudo scripts/deploy.sh)"
 fi

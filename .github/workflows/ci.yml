@@ -113,6 +113,12 @@ jobs:
       - name: Self-test - ops scripts (deploy args, signed-deploy check, cert expiry, break-glass, preflight args, pki)
         run: bash scripts/test-ops-scripts.sh
 
+      - name: Self-test - deploy.sh with real git and ssh-keygen as root (signed tip, unsigned, wrong key, rollback, root-owned checkout, hooks, allowed_signers owner; docker and aws are stubs)
+        run: |
+          set -eu
+          [ "$(sudo id -u)" = 0 ] || { echo "sudo does not give root"; exit 1; }
+          sudo -E env REQUIRE_ROOT=1 bash scripts/test-deploy.sh
+
       - name: Guard - identity stays out of the HCP stack (SEC-H1, SEC-M1)
         run: |
           set -eu

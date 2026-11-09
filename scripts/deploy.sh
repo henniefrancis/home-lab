@@ -13,7 +13,8 @@
 # Plan 6.10: git fetch, signature check, ff-only merge, fetch-secrets, compose build/pull/up, health summary, certificate
 # expiry. SEC-M7: only a commit whose SSH signature verifies against /etc/home-lab/allowed_signers (outside the checkout, root
 # owned) is ever merged or run; there is no bypass flag (fail closed). SEC-M3: the checkout is root-owned and this script
-# runs git as root, so nobody who can log in can change a file that root executes. It never writes inside the checkout
+# runs git as root, so nobody who can log in can change a file that root executes: deploy.sh REFUSES to start unless the whole
+# checkout (.git included) is root-owned and not writable by others, and it runs git with hooks disabled. It never writes inside the checkout
 # except through git.
 set -euo pipefail
 set +x
@@ -64,8 +65,13 @@ done
 [ -z "$ONLY" ] || [ -f "$REPO_DIR/$ONLY/compose.yaml" ] || usage_error "--only $ONLY: there is no $ONLY/compose.yaml in the repository (QA-L-5)"
 require_root "$@"
 
+# NEW-1: root runs git and this checkout's scripts, so the whole tree (.git included) must be root-owned and not writable by others.
+# This is checked BEFORE any git call, and git's own ownership guard is not bypassed (no safe.directory): a root-owned checkout needs
+# none. Hooks are switched off for every git call made as root (defence in depth).
+assert_root_tree "$REPO_DIR"
+
 echo "== 1/4 git"
-git_root() { git -c safe.directory="$REPO_DIR" -C "$REPO_DIR" "$@"; }
+git_root() { git -c core.hooksPath=/dev/null -C "$REPO_DIR" "$@"; }
 if [ "$NO_GIT" -eq 1 ]; then
   echo "fetch skipped (--no-git)"
 elif [ "$OFFLINE" -eq 1 ]; then
