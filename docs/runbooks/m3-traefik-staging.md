@@ -134,7 +134,7 @@ echo | openssl s_client -connect 127.0.0.1:443 -servername "traefik.$DOMAIN" 2>/
 
 Expected: `main=*.<your domain> sans=0`; the issuer contains **`(STAGING)`** (for example `O=(STAGING) Let's Encrypt`); the SAN list has the wildcard only and **no
 apex**; `notAfter` about 90 days away. A browser will warn that the certificate is not trusted: that is correct for staging.
-The file `acme-production.json` must not exist yet: `sudo ls /apps/traefik/letsencrypt/`.
+The file `acme-prod.json` must not exist yet: `sudo ls /apps/traefik/letsencrypt/`.
 
 ### 3.3 Redirect, TLS, headers
 
