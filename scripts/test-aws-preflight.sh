@@ -8,7 +8,6 @@
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
-REPO="$PWD"
 command -v jq > /dev/null || {
   echo "jq is required" >&2
   exit 2
@@ -161,11 +160,10 @@ export -f crs
   exit 3
 }
 
-preflight() { # preflight <snapshot dir> [env assignments...]: output in $T/out, exit code in $rc
+preflight() { # preflight <snapshot dir> [env assignments...]: output in $T/out (the exit code is 1 here: HCP is deliberately not configured)
   local d="$1"
   shift
-  rc=0
-  env "$@" DOMAIN=example.test SNAPSHOT_DIR="$d" bash scripts/aws-preflight.sh --snapshot > "$T/out" 2>&1 || rc=$?
+  env "$@" DOMAIN=example.test SNAPSHOT_DIR="$d" bash scripts/aws-preflight.sh --snapshot > "$T/out" 2>&1 || true
 }
 
 # ---------------------------------------------------------------- case 1: one delegated zone, no duplicates

@@ -78,7 +78,9 @@ jobs:
           # home-lab has no AWS OIDC role. The IAM role EC2SSM in ANOTHER stack trusts every repo of the owner's GitHub account
           # (repo:<owner>/*), so a home-lab workflow that could mint a GitHub OIDC token must never exist (N1). id-token write is
           # also implied by `permissions: write-all`. Comments are ignored.
-          re='id-toke[n][[:space:]]*:[[:space:]]*writ[e]|permission[s][[:space:]]*:[[:space:]]*write-al[l]|aws-action[s]/|role-to-assum[e]|configure-aws-credential[s]'  # [x] keeps this file from matching itself
+          # the [x] character classes keep this file from matching itself
+          re='id-toke[n][[:space:]]*:[[:space:]]*writ[e]|permission[s][[:space:]]*:[[:space:]]*write-al[l]'
+          re="$re|aws-action[s]/|role-to-assum[e]|configure-aws-credential[s]"
           if git grep -nEi "$re" -- .github/workflows | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*#'; then
             echo "A workflow asks for the OIDC token permission, write-all, or AWS credentials. home-lab must not be able to mint an AWS OIDC token (N1)."
             exit 1
@@ -92,7 +94,7 @@ jobs:
         run: |
           set -eu
           # The Pi runs these as `sudo scripts/<name>.sh`; a 100644 script fails there with "command not found" (it did, breakglass.sh).
-          bad="$(git ls-files -s -- 'scripts/*.sh' | awk '$1 != "100755" {print $4 " is mode " $1}' | grep -v ' scripts/lib/' | grep -v '^scripts/lib/' || true)"
+          bad="$(git ls-files -s -- 'scripts/*.sh' | awk '$1 != "100755" {print $4 " is mode " $1}' | grep -v '^scripts/lib/' || true)"
           if [ -n "$bad" ]; then
             echo "These scripts are not executable in git (fix: git update-index --chmod=+x <file>):"
             echo "$bad"
@@ -146,7 +148,7 @@ jobs:
       - name: Self-test - aws-preflight.sh --snapshot against a mock aws (CRLF, empty duplicate list, TXT quotes; the mock is proven before use)
         run: bash scripts/test-aws-preflight.sh
 
-      - name: Self-test - deploy.sh with real git and ssh-keygen as root (signed tip, unsigned, wrong key, rollback, root-owned checkout, hooks, allowed_signers owner; docker and aws are stubs)
+      - name: Self-test - deploy.sh as root with real git (signed, unsigned, wrong key, rollback, root-owned checkout, hooks, signers owner)
         run: |
           set -eu
           [ "$(sudo id -u)" = 0 ] || { echo "sudo does not give root"; exit 1; }
