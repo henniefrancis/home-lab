@@ -589,6 +589,6 @@ no-leak checks for `fetch-secrets.sh` run in CI (`scripts/test-fetch-secrets.sh`
 ## What was and was not verified when this runbook was written
 
 Automated (laptop, WSL and CI): shellcheck, yamllint, `docker compose config`, the PKI flow with its refusal cases, `fetch-secrets.sh` against a mock `aws`, and the
-preflight script's logic on a non-Pi host, the signed-deploy check (good, unsigned, wrong key, missing trust file), `deploy.sh` argument handling and `set-secret.sh` against a mock. **Only testable on the Pi, first run by the owner:** the real preflight findings, `bootstrap.sh` (apt, AWS CLI install,
+preflight script's logic on a non-Pi host, the signed-deploy check with real git and ssh-keygen as root (`scripts/test-deploy.sh`: signed, unsigned, wrong key, unsigned under a signed tip, rollback, detached HEAD, a user-owned or hook-bearing checkout, a wrongly owned `allowed_signers`), `deploy.sh` argument handling, `set-secret.sh` and `aws-preflight.sh --snapshot` against proven mocks, and the Traefik self-test on a Linux runner (non-root uid, read-only, file provider). **Only testable on the Pi, first run by the owner:** the real preflight findings, `bootstrap.sh` (apt, AWS CLI install,
 helper download and checksum), `aws_signing_helper` credential-process against the real trust anchor, `GetParametersByPath` on the `/home-lab` path ARN, the Tailscale
 container (`/dev/net/tun`, capabilities, `tailscale` CLI socket path) and the S17 results.
