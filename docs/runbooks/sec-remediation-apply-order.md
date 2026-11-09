@@ -159,7 +159,7 @@ The ACME storage directory is re-owned to uid 10004 by `bootstrap.sh`; if Traefi
 ## 7. GitHub, Tailscale and Authentik settings (the M6 go-public checklist; owner only: cannot be done from the repo)
 
 - **GitHub ruleset on `main`** (when the repo goes public; branch protection is unavailable on a private free repo). Kept simple for a single owner (decision 2026-11-09):
-  **require the status checks `checks` and `secret-scan`, block force-push, block deletion.** Do NOT require signed commits and do not require pull requests: the Pi enforces
+  **two rulesets: (1) block force-push and deletion, no bypass; (2) require the status checks `checks` and `secret-scan`, with the Repository admin role in its bypass list** (a direct push of your signed release cannot satisfy a check that has not run yet; `m6-go-live.md` step 11 has the exact steps and the verify). Do NOT require signed commits and do not require pull requests: the Pi enforces
   signatures (`deploy.sh` verifies the tip against `/etc/home-lab/allowed_signers`), agents commit unsigned, and you sign one release commit per deploy
   ([release-and-deploy.md](release-and-deploy.md)). A "require signed commits" rule would reject the unsigned agent commits on push (N3). If you later enable "require a pull
   request", remember that the web merge is signed by GitHub, which the Pi does not trust: merge locally instead (same document, "Dependabot and GitHub-made commits").

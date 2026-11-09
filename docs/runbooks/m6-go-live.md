@@ -10,8 +10,8 @@ Related: `alerting.md` (K4), `release-and-deploy.md`, `sec-remediation-apply-ord
 
 ## 0. Preconditions (all must be true)
 
-- `terraform/bootstrap` applied with `alert_email`, the SNS subscription confirmed, `ALERT_TOPIC_ARN` in `/etc/home-lab/aws.env`, and `sudo scripts/alert.sh test` delivered an email (`alerting.md`).
-- `sudo scripts/preflight.sh --stage full` on the Pi: 0 FAIL. Expected WARN while still on staging: `acme-env`.
+- `terraform/bootstrap` applied with `alert_email`, the SNS subscription confirmed, `ALERT_TOPIC_ARN` in `/etc/home-lab/aws.env`, the units installed (`sudo scripts/bootstrap.sh`; preflight `systemd-units` PASS), and `sudo scripts/alert.sh test` **delivered an email you actually received** (`alerting.md`).
+- `sudo scripts/preflight.sh --stage full` on the Pi: 0 FAIL. Expected WARN while still on staging: `acme-env`. `acme-env-match` must be PASS.
 - CI (`checks`, `secret-scan`) is green on the current `main` tip.
 - K1 (the other project's OIDC role pinned) is done and re-checked, or the owner has accepted the risk in the TAM note with a date.
 - You have 2 free hours and are at home (Tailscale down means no remote path; break-glass only opens the Traefik dashboard).
@@ -50,6 +50,7 @@ Pins issuance to your Let's Encrypt account (SEC-L5). The account URI is public 
 ## 4. Raise HSTS in steps (Laptop, then Pi) - only after K4 alerting is live
 
 HSTS is `stsSeconds` in `traefik/dynamic/middlewares.yml` (`security-headers`). A long value turns an expired certificate into a total lockout for browsers that saw it, so raise it only when step 0 is true, one step at a time, each as a reviewed and signed release.
+**Gate for every raise (b and c):** before you edit anything, run `sudo scripts/alert.sh test` and confirm the mail **arrives** (the daily check only proves that the check ran, not that a mail can reach you). The monthly heartbeat mail received within the last 7 days counts too. No delivered test within 7 days, no raise.
 
 | Step | `stsSeconds` | Wait before the next step |
 |---|---|---|
@@ -60,7 +61,7 @@ HSTS is `stsSeconds` in `traefik/dynamic/middlewares.yml` (`security-headers`). 
 Keep `stsPreload: false`; do not submit the domain to a preload list.
 
 1. Edit the value, commit, sign, push, wait for CI, `sudo scripts/deploy.sh --only traefik` (the dynamic files are copied on deploy; Traefik reloads them).
-2. **Verify:** `curl -sI https://dashboard.<domain>/ | grep -i strict-transport-security` shows `max-age=<the new value>; includeSubDomains`; `sudo scripts/alert.sh check` exits 0.
+2. **Verify:** `curl -sI https://dashboard.<domain>/ | grep -i strict-transport-security` shows `max-age=<the new value>; includeSubDomains`; `sudo scripts/alert.sh check` exits 0; `sudo scripts/served-cert-check.sh` prints `[PASS]` with a production issuer.
 3. **Rollback:** lower the value in another signed release. Browsers keep what they already cached until it expires (up to the old max-age), which is why the steps are small and the alert comes first.
 
 ## 5. Retire `akadmin` (Browser)
@@ -92,23 +93,40 @@ Follow `m4-authentik.md` section 8, items 1 and 2: create your named admin with 
 
 ## 9. K3: private denylist and gitleaks on the exact SHA (Laptop, owner)
 
+Scan a **fresh clone**, not your working folder: the working folder holds real, gitignored files (`terraform.tfvars`, `adopt-snapshot/`) that a directory scan would flag or tempt you to allow-list.
 1. Copy `.gitleaks-private.toml.example` to `.gitleaks-private.toml` (gitignored) and fill it with your real domain, account ID, zone ID, Pi and tailnet addresses, personal emails and names.
-2. `git switch --detach <sha from step 7>` (a clean tree, no extra commits). Run `bash scripts/check-private-denylist.sh` (it scans every commit on every ref with your private rules; exit 0 = clean, 2 = not configured) and the public-rules scan exactly as `.github/workflows/secret-scan.yml` does: `img="$(awk '$1=="FROM" && $4=="gitleaks" {print $2}' ci/images/gitleaks/Dockerfile)"`, then `docker run --rm -v "$PWD:/repo" "$img" git /repo --config /repo/.gitleaks.toml --redact --no-banner` and the same with `dir` instead of `git`.
-3. **Verify:** both report zero findings, and the CI `secret-scan` run for that SHA is green. Any finding: stop, fix in a new commit **and repeat from step 7** (a new SHA needs a new green CI and a new signed release), or rewrite history before going public, never after.
-4. **Rollback:** not applicable (read only). `git switch main` afterwards.
+2. Make the clone of the exact commit from step 7 (`<sha>`): `scan="$(mktemp -d)" && git clone --no-local . "$scan" && git -C "$scan" switch --detach <sha>`. Copy `.gitleaks-private.toml` into it.
+3. In the clone run `bash scripts/check-private-denylist.sh` (it scans every commit on every ref with your private rules; exit 0 = clean, 2 = not configured) and the public-rules scan exactly as `.github/workflows/secret-scan.yml` does: `img="$(awk '$1=="FROM" && $4=="gitleaks" {print $2}' ci/images/gitleaks/Dockerfile)"`, then `docker run --rm -v "$PWD:/repo" "$img" git /repo --config /repo/.gitleaks.toml --redact --no-banner` and the same with `dir` instead of `git`.
+4. **Commit metadata:** `git -C "$scan" log --all --format='%an %ae | %cn %ce' | sort -u` must show only your GitHub noreply address and the names you want public (author and committer names and emails are public once the repo is).
+5. **Verify:** all scans report zero findings, the metadata list is what you expect, and the CI `secret-scan` run for that SHA is green. Any finding: stop, fix in a new commit **and repeat from step 7** (a new SHA needs a new green CI and a new signed release), or rewrite history before going public, never after.
+6. **Rollback:** not applicable (read only). Delete the clone (`rm -rf "$scan"`).
 
 ## 10. Make the repository public (GitHub, owner)
 
 Settings, General, Danger Zone, Change visibility, Public. Do steps 10 to 14 back to back, within minutes; keep the settings pages open in tabs beforehand.
-- **Verify:** `git ls-remote https://github.com/<owner>/<repo>.git` works from a machine with no GitHub login.
+Right after the flip also set (Settings, Actions, General; `sec-remediation-apply-order.md` section 7): **approval for all outside collaborators' fork pull-request runs**, the **default workflow token read-only**, and **allow only GitHub-owned actions and the pinned third-party actions** (or require SHA pinning).
+- **Verify:** `git ls-remote https://github.com/<owner>/<repo>.git` works from a machine with no GitHub login; the Actions settings show the three values above.
 - **Rollback:** Change visibility back to Private immediately. Anything cloned or cached while public must be treated as published: if a finding appears after the flip, rotate the secret, not just the history.
+  **After step 12 this rollback also breaks the Pi:** it no longer has a deploy key and its HTTPS fetch of a private repo fails (deploys then fail closed, nothing unsigned can run). Either add a new deploy key and the SSH remote (step 12 rollback) or run `sudo scripts/deploy.sh --no-git` until the repo is public again.
 
-## 11. Ruleset on `main` immediately (GitHub)
+## 11. Rulesets on `main` immediately (GitHub)
 
-Settings, Rules, Rulesets, New branch ruleset, target `main`, enforcement Active: **require status checks `checks` and `secret-scan`**, **block force pushes**, **restrict deletions**.
-Do **not** require signed commits and do not require pull requests (`sec-remediation-apply-order.md` section 7: the Pi enforces signatures, agents commit unsigned, the GitHub merge button signs with a key the Pi does not trust).
-- **Verify:** `git push --force origin HEAD:main` from a scratch clone is rejected; deleting `main` is rejected; the two check names appear as required.
-- **Rollback:** set the ruleset to Disabled (not delete) while you fix a required check name that does not match; never leave the repo public without it for longer than it takes to fix.
+Use **two rulesets**, so that the protection that must never be skipped has no way around it, and the one that would otherwise block your own push has exactly one.
+Settings, Rules, Rulesets, New branch ruleset, target `main`, enforcement Active.
+1. **"main: no force-push, no deletion"**: rules *Block force pushes* and *Restrict deletions*. **Bypass list: empty.**
+2. **"main: required checks"**: rule *Require status checks to pass* with the checks `checks` and `secret-scan` (exact job names; they only appear in the picker after a green run on `main`). **Bypass list: add "Repository admin" (the repository role) and set the bypass mode to "Always allow".**
+   Why: your release flow pushes a signed commit directly to `main` and only then waits for CI (step 7). A required check cannot be satisfied by a commit that has no check run yet, so without a bypass the push would be rejected, and the "fix" people reach for is switching the rule off. The `ci` workflow also skips docs-only pushes (`paths-ignore`), so the required check would never appear for them.
+   The bypass is for you as the repository admin; CI and agents have no admin role.
+3. Do **not** require signed commits and do not require pull requests (`sec-remediation-apply-order.md` section 7): the Pi enforces signatures (`deploy.sh`), agents commit unsigned, and the GitHub merge button signs with a key the Pi does not trust.
+
+GitHub documentation: [Creating rulesets for a repository](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository) (the "Bypass list" lets you add "Repository admins, organization owners, and enterprise owners", among other actors) and [Available rules for rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets) (*Block force pushes*; *Restrict deletions*: "only users with bypass permissions can delete"). Neither page says how several rulesets combine, nor whether a required check blocks a direct push; that is why the first ruleset has no bypass at all and why the Verify below tests the real behaviour. Re-read both pages when you create the rulesets: the labels in the GitHub UI change.
+- **Verify, all four:**
+  1. A normal direct push still works: on the laptop a trivial signed commit (`git commit --allow-empty -S -m "ruleset check"`) then `git push` succeeds. If it is rejected, the bypass is not on the right ruleset or your role is not admin: fix that before anything else.
+  2. A force-push is refused, also for you as admin: from a scratch clone `git push --force origin HEAD~1:main` is rejected.
+  3. Deleting `main` is rejected: `git push origin :main` from a scratch clone.
+  4. The two check names show as required, and CI on that commit goes green (docs-only commits skip CI by design).
+  The empty commit from check 1 is a real release commit: deploy it or let the next release carry it.
+- **Rollback:** set the offending ruleset to Disabled (not delete) while you fix it. If only the push in Verify 1 fails, disable only ruleset 2 until the bypass is right; keep ruleset 1 on. Never leave the repo public without ruleset 1.
 
 ## 12. Pi: switch the remote to HTTPS and remove the deploy key (Pi, GitHub)
 
