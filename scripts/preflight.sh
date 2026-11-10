@@ -413,7 +413,9 @@ check_layout() {
   else
     fail authentik-data "$APPS_ROOT/authentik/data missing (re-run bootstrap.sh)"
   fi
-  if lsmod 2> /dev/null | grep -q '^tun'; then pass tun "tun module loaded"; else warnx tun "tun module not loaded (Tailscale needs /dev/net/tun)"; fi
+  # Under pipefail, `lsmod | grep -q` reported a loaded module as missing: grep -q exits at the first match, lsmod dies of SIGPIPE on its next
+  # write and the pipeline fails (seen live 2026-11-10). What Tailscale needs is the device, whether tun is a module or built in.
+  if [ -c /dev/net/tun ]; then pass tun "/dev/net/tun present (kernel TUN for Tailscale)"; else warnx tun "/dev/net/tun missing (Tailscale needs it: sudo modprobe tun)"; fi
 }
 
 # ---------------------------------------------------------------- full-stage checks
@@ -476,9 +478,12 @@ check_pki() {
 
 # SEC-M3, SEC-M7, SEC-L2, SEC-L3, QA-M-4: who can reach root, signed deploys, listeners, break-glass, expiry timer.
 check_hardening() {
-  local login="${SUDO_USER:-}" owner
+  local login="${SUDO_USER:-}" owner groups listeners
+  # Security checks never pipe into `grep -q` (pipefail plus SIGPIPE can turn a match into "no match", so a finding would PASS): the
+  # output is captured first and grep reads it from a here-string.
   if [ -n "$login" ] && [ "$login" != root ]; then
-    if id -nG "$login" 2> /dev/null | grep -qw docker; then
+    groups="$(id -nG "$login" 2> /dev/null)"
+    if grep -qw docker <<< "$groups"; then
       fail login-docker-group "$login is in the docker group, which is root-equivalent: sudo gpasswd -d $login docker, then log in again (use sudo docker)"
     else
       pass login-docker-group "$login is not in the docker group"
@@ -505,7 +510,8 @@ check_hardening() {
     pass break-glass "not enabled"
   fi
   if command -v ss > /dev/null 2>&1; then
-    if ss -H -tln 2> /dev/null | awk '{print $4}' | grep -qxF -e '[::]:80' -e '[::]:443'; then
+    listeners="$(ss -H -tln 2> /dev/null | awk '{print $4}')"
+    if grep -qxF -e '[::]:80' -e '[::]:443' <<< "$listeners"; then
       fail ports-ipv6 "a listener on [::]:80 or [::]:443 exists: a global IPv6 address would expose Traefik (publish IPv4 only, see traefik/compose.yaml)"
     else
       pass ports-ipv6 "no wildcard IPv6 listener on 80/443"
