@@ -156,7 +156,8 @@ if command -v openssl > /dev/null; then
   probe() { curl -ski --resolve "x.$2:$1:127.0.0.1" "https://x.$2:$1/" | tr -d '\r'; }
   export -f probe
   check "lan-allowlist answers 403 to a non-LAN source" bash -c 'probe "$1" "$2" | head -n 1 | grep -q " 403 "' _ "$port" "$DOMAIN"
-  check "security headers are on that answer (HSTS 300 s, nosniff, frame deny)" bash -c 'r="$(probe "$1" "$2")"; grep -qi "^strict-transport-security: max-age=300; includesubdomains" <<< "$r" && grep -qi "^x-content-type-options: nosniff" <<< "$r" && grep -qi "^x-frame-options: DENY" <<< "$r"' _ "$port" "$DOMAIN"
+  sts="$(sed -nE 's/^[[:space:]]+stsSeconds:[[:space:]]*([0-9]+).*/\1/p' traefik/dynamic/middlewares.yml)"
+  check "security headers are on that answer (HSTS max-age=${sts:-?} from middlewares.yml, nosniff, frame deny)" bash -c 'r="$(probe "$1" "$2")"; [ -n "$3" ] && grep -qi "^strict-transport-security: max-age=$3; includesubdomains" <<< "$r" && grep -qi "^x-content-type-options: nosniff" <<< "$r" && grep -qi "^x-frame-options: DENY" <<< "$r"' _ "$port" "$DOMAIN" "$sts"
   # --- routers from files (SEC-H2) ---------------------------------------------------------------------------------
   code() { curl -sk -o /dev/null -w '%{http_code}' --resolve "$2:$1:127.0.0.1" "https://$2:$1/" 2> /dev/null; }
   export -f code
