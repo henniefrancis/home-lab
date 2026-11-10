@@ -190,12 +190,12 @@ jobs:
         run: |
           set -eu
           sock_re='docker[.]sock|providers[.]docker|docker-socket-proxy|tecnativa'
-          if git grep -nE "$sock_re" -- traefik authentik homepage tailscale compose.yaml | grep -v ':[0-9]*:[[:space:]]*#'; then
+          if git grep -nE "$sock_re" -- traefik authentik homepage tailscale it-tools compose.yaml | grep -v ':[0-9]*:[[:space:]]*#'; then
             echo "No Docker socket or Docker provider anywhere in the stacks."; exit 1
           fi
-          files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml'
+          files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml'
           # shellcheck disable=SC2086
-          bad="$(git grep -hE '^[[:space:]]+image:[[:space:]]' -- $files | grep -v 'home-lab/ra-helper' | grep -Ev '@sha256:[0-9a-f]{64}' || true)"
+          bad="$(git grep -hE '^[[:space:]]+image:[[:space:]]' -- $files | grep -Ev 'home-lab/(ra-helper|it-tools)' | grep -Ev '@sha256:[0-9a-f]{64}' || true)"
           if [ -n "$bad" ]; then echo "Images must be pinned tag@sha256:"; echo "$bad"; exit 1; fi
 
       - name: Guard - ra-helper version and checksum match scripts/lib/pins.sh, and its build has no mutable input (N8)
@@ -237,6 +237,9 @@ jobs:
 
       - name: Self-test - Homepage stack definition (static checks, no containers)
         run: bash scripts/test-homepage-config.sh --static
+
+      - name: Self-test - IT Tools stack (static checks, image build, real Traefik routers with a stub outpost; dummy values)
+        run: bash scripts/test-it-tools-config.sh
 
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |

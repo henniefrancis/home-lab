@@ -9,3 +9,4 @@ include:
   - path: authentik/compose.yaml
   - path: tailscale/compose.yaml
   - path: homepage/compose.yaml
+  - path: it-tools/compose.yaml

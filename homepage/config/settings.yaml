@@ -16,6 +16,9 @@ layout:
   Platform:
     style: row
     columns: 2
+  Tools:
+    style: row
+    columns: 3
   Coming soon:
     style: row
     columns: 3

@@ -15,6 +15,7 @@ This repository is a reference you can read, copy and adapt. It is a personal pr
 | TLS | Let's Encrypt wildcard certificate for `*.<domain>` by DNS-01 on Route 53. A small helper (`ra-helper`) gives Traefik short-lived AWS credentials through **IAM Roles Anywhere**, so no AWS key is stored on the Pi |
 | Identity | **Authentik** SSO with enforced MFA. Traefik does **forward auth** to Authentik for every app; the Traefik dashboard and Homepage both use it. A rate-limited break-glass login exists for the Traefik dashboard only and never survives a reboot |
 | Dashboard | **Homepage** at `https://dashboard.<domain>` |
+| Apps | **IT Tools** at `https://tools.<domain>` (static, built locally on a current NGINX base). More apps follow one milestone at a time (R17: Pi-hole, Linkwarden, Netdata, Portainer, Home Assistant) |
 | Remote access | **Tailscale** (no router port-forwards). Services are allowed from the LAN and tailnet ranges only |
 | Secrets | AWS **SSM Parameter Store** SecureStrings encrypted with a customer-managed key; only the Pi's role can decrypt. Set by the owner with `scripts/set-secret.sh`, fetched at deploy time into `/apps/secrets`, never in git, CI or Terraform state |
 | Deploys | **Signed deploys**: `scripts/deploy.sh` merges and runs only a commit whose SSH signature verifies against a root-owned trust file on the Pi |
@@ -33,10 +34,12 @@ flowchart LR
     traefik["Traefik (file provider)"]
     authentik["Authentik server, worker, PostgreSQL"]
     homepage["Homepage"]
+    ittools["IT Tools"]
     helper["ra-helper (Roles Anywhere)"]
     ts["Tailscale"]
     traefik -->|forward auth| authentik
     traefik --> homepage
+    traefik --> ittools
     traefik -->|DNS-01 credentials| helper
   end
   helper -->|short-lived session| aws
@@ -61,8 +64,8 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 
 | Path | What is in it |
 |------|---------------|
-| `compose.yaml` | Root Compose project; includes the four stacks below |
-| `traefik/`, `authentik/`, `homepage/`, `tailscale/` | One directory per stack (compose file, config, Traefik file-provider routes, Authentik blueprint as code) |
+| `compose.yaml` | Root Compose project; includes the five stacks below |
+| `traefik/`, `authentik/`, `homepage/`, `tailscale/`, `it-tools/` | One directory per stack (compose file, config, Traefik file-provider routes, Authentik blueprint as code) |
 | `config/` | `lab.env` (public, non-secret settings), `secrets-manifest.tsv` (names, paths and modes of secrets, never values), `allowed_signers.example` |
 | `terraform/bootstrap/` | Owner-applied stack: OIDC provider, HCP plan and apply roles, the Pi's Roles Anywhere identities, the KMS key, the alert topic. Has offline policy tests |
 | `terraform/edge/` | HCP-applied stack: Route 53, records, budget, the non-secret `/home-lab/config/*` parameters |
@@ -78,7 +81,7 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 - **Pinned tools.** Third-party tool images (gitleaks, tflint, trivy, terraform) come from `ci/images/<tool>/Dockerfile`, pinned by digest, and Python tooling from `ci/requirements-ci.txt`. They live outside `.github/` because Dependabot is refused there. The terraform image is bumped by hand together with `required_version` in the stacks; the others are bumped by Dependabot.
 - **Dependabot** (weekly, grouped, with a few days of cooldown) covers GitHub Actions, Terraform providers, Compose and Docker images, pip and pre-commit. Pull requests are merged locally and covered by a signed release commit (see `docs/runbooks/release-and-deploy.md`).
 - **Secret scan.** gitleaks runs over the full history and the working tree with the public rules in `.gitleaks.toml`; the rules have their own test (`scripts/test-gitleaks-rules.sh`). A private denylist of your real identifiers is checked locally with `scripts/check-private-denylist.sh` and never leaves your machine.
-- **Self-tests** run the shell scripts against mock `aws` and local servers, check Traefik, Authentik and Homepage configuration, run the Terraform IAM and KMS policy tests offline, run shellcheck, yamllint and tflint, and run `trivy config` over the Terraform code. `scripts/scan-images.sh` scans the container images and is run by hand, not in CI.
+- **Self-tests** run the shell scripts against mock `aws` and local servers, check Traefik, Authentik, Homepage and IT Tools configuration (IT Tools with a real image build and the real Traefik routers), run the Terraform IAM and KMS policy tests offline, run shellcheck, yamllint and tflint, and run `trivy config` over the Terraform code. `scripts/scan-images.sh` scans the container images and is run by hand, not in CI.
 
 ## Fork guide: what to change
 
@@ -112,6 +115,7 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 | M4 | Authentik SSO with enforced MFA and forward auth | Done |
 | M5 | Homepage dashboard | Done |
 | M6 | Production certificate, alerting, hardening, repository made public | In progress (`docs/runbooks/m6-go-live.md`) |
+| M7 | IT Tools (first R17 app) | In progress (`docs/runbooks/m7-it-tools.md`) |
 
 Backups (K5): a nightly age-encrypted `pg_dump` of the Authentik database goes to a write-only, versioned S3 bucket (`docs/runbooks/authentik-backup.md`), and the offline CA has a documented, testable backup (`docs/runbooks/ca-backup.md`). The recovery drill (`docs/runbooks/pi-recovery.md`) is the owner's to run.
 

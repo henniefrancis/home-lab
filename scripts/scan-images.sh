@@ -47,8 +47,13 @@ trivy_img="$(awk '$1=="FROM" && $4=="trivy" {print $2}' ci/images/trivy/Dockerfi
   exit 2
 }
 
-images="$(grep -hE '^[[:space:]]+image:[[:space:]]' traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml |
-  awk '{print $2}' | grep '@sha256:' | sort -u)"
+# Pulled images from the compose files, plus the runtime base images of the two locally built ones (ra-helper, it-tools). The
+# it-tools "AS app" stage is left out on purpose: only its static files are copied into our image, none of its packages ship.
+images="$({
+  grep -hE '^[[:space:]]+image:[[:space:]]' traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml |
+    awk '{print $2}'
+  grep -hE '^FROM ' traefik/ra-helper/Dockerfile it-tools/Dockerfile | grep -v ' AS app$' | awk '{print $2}'
+} | grep '@sha256:' | sort -u)"
 [ -n "$images" ] || {
   echo "no pinned images found" >&2
   exit 2

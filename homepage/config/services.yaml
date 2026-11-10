@@ -15,15 +15,17 @@
         href: https://auth.{{HOMEPAGE_VAR_DOMAIN}}/
         description: Single sign-on and MFA
 
+- Tools:
+    - IT Tools:
+        icon: it-tools.png
+        href: https://tools.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Handy developer utilities
+
 - Coming soon:
     - Home Assistant:
         icon: home-assistant.png
         href: https://ha.{{HOMEPAGE_VAR_DOMAIN}}/
         description: Home automation
-    - IT Tools:
-        icon: it-tools.png
-        href: https://tools.{{HOMEPAGE_VAR_DOMAIN}}/
-        description: Handy developer utilities
     - Linkwarden:
         icon: linkwarden.png
         href: https://links.{{HOMEPAGE_VAR_DOMAIN}}/

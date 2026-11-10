@@ -60,6 +60,24 @@ http:
       middlewares:
         - lan-allowlist
 
+    # IT Tools (M7, R17), same pattern as the Traefik dashboard.
+    it-tools:
+      rule: Host(`tools.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: it-tools
+      middlewares:
+        - lan-allowlist
+        - authentik
+    it-tools-outpost:
+      rule: Host(`tools.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
   services:
     # authentik-server on the dedicated authentik-auth network (shared with Traefik only). Also the target of the forward-auth
     # middleware in middlewares.yml.
@@ -71,3 +89,7 @@ http:
       loadBalancer:
         servers:
           - url: http://homepage:3000
+    it-tools:
+      loadBalancer:
+        servers:
+          - url: http://it-tools:8080

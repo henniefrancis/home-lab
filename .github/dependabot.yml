@@ -34,7 +34,7 @@ updates:
       terraform:
         patterns: ["*"]
 
-  # Image bumps for Traefik, Authentik, PostgreSQL, Tailscale and Homepage arrive as one weekly PR; every reference is tag@sha256
+  # Image bumps for Traefik, Authentik, PostgreSQL, Tailscale, Homepage and IT Tools arrive as one weekly PR; every reference is tag@sha256
   # and Dependabot rewrites tag and digest together. The pinned aws_signing_helper release in traefik/ra-helper/Dockerfile and
   # scripts/lib/pins.sh is NOT tracked here; bump it by hand from the AWS user guide (CI fails if the two files disagree).
   # QA-M-2: home-lab/ra-helper is built locally from /traefik/ra-helper and does not exist in any registry. Dependabot tried to
@@ -45,6 +45,7 @@ updates:
       - /tailscale
       - /authentik
       - /homepage
+      - /it-tools
     schedule:
       interval: weekly
     cooldown:
@@ -54,6 +55,8 @@ updates:
         patterns: ["*"]
     ignore:
       - dependency-name: home-lab/ra-helper
+      # home-lab/it-tools is built locally from /it-tools (its two FROM digests are tracked by the docker entry below).
+      - dependency-name: home-lab/it-tools
       # PostgreSQL stays on 16 (the major Authentik documents and tests); a major upgrade is a planned dump/restore, not a bot PR.
       - dependency-name: postgres
         update-types: ["version-update:semver-major"]
@@ -66,6 +69,17 @@ updates:
       default-days: 5
     groups:
       ra-helper-base:
+        patterns: ["*"]
+
+  # IT Tools (M7): the official static build and the NGINX unprivileged base, both FROM lines pinned by digest.
+  - package-ecosystem: docker
+    directory: /it-tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 5
+    groups:
+      it-tools-images:
         patterns: ["*"]
 
   # N2: the images CI runs with `docker run` (gitleaks, terraform, tflint, trivy) each have their own one-line Dockerfile under

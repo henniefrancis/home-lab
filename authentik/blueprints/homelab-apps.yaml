@@ -11,14 +11,14 @@
 #   2. Group homelab-admins (created once, akadmin is its first member; later membership is managed in the UI, this file
 #      never overwrites it). Every application below is bound to that group, so it is fail-closed: a user who is not in the
 #      group is denied even with a valid password and MFA.
-#   3. One forward_single proxy provider + application per protected host: traefik.${DOMAIN} (Traefik dashboard) and
-#      dashboard.${DOMAIN} (Homepage, milestone M5). forward_single => each app gets its OWN host-only session cookie; there
-#      is no cookie_domain, so no cookie is ever shared across *.${DOMAIN}.
-#   4. The embedded outpost (inside authentik-server) serves both providers. No separate outpost container, no docker.sock.
+#   3. One forward_single proxy provider + application per protected host: traefik.${DOMAIN} (Traefik dashboard),
+#      dashboard.${DOMAIN} (Homepage, milestone M5) and tools.${DOMAIN} (IT Tools, M7). forward_single => each app gets its OWN
+#      host-only session cookie; there is no cookie_domain, so no cookie is ever shared across *.${DOMAIN}.
+#   4. The embedded outpost (inside authentik-server) serves every provider. No separate outpost container, no docker.sock.
 #
 # ${DOMAIN} comes from the DOMAIN environment variable that compose sets on the worker (runtime.env); nothing identifying
-# is committed. Adding an app (for example Home Assistant): copy a provider + application + binding triple, add the provider to
-# the outpost list, and give its Traefik router the labels shown for the dashboard in traefik/compose.yaml.
+# is committed. Adding a forward-auth app: copy a provider + application + binding triple, add the provider to the outpost
+# list, and add the <app> and <app>-outpost routers plus a service to traefik/dynamic/routers.yml (pattern at the top there).
 version: 1
 metadata:
   name: Home lab - SSO apps, MFA and embedded outpost
@@ -132,6 +132,32 @@ entries:
       group: !KeyOf group-admins
       order: 0
 
+  # IT Tools (M7, R17): same forward-auth pattern as the dashboard.
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-it-tools
+    identifiers:
+      name: homelab-it-tools
+    attrs:
+      mode: forward_single
+      external_host: !Format ["https://tools.%s", !Env DOMAIN]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      access_token_validity: hours=12
+  - model: authentik_core.application
+    id: app-it-tools
+    identifiers:
+      slug: it-tools
+    attrs:
+      name: IT Tools
+      provider: !KeyOf provider-it-tools
+      policy_engine_mode: any
+      meta_launch_url: !Format ["https://tools.%s/", !Env DOMAIN]
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-it-tools
+      group: !KeyOf group-admins
+      order: 0
+
   # --- 4. Embedded outpost ---------------------------------------------------------------------------------------------
   - model: authentik_outposts.outpost
     id: embedded-outpost
@@ -143,5 +169,6 @@ entries:
       providers:
         - !KeyOf provider-traefik
         - !KeyOf provider-dashboard
+        - !KeyOf provider-it-tools
       config:
         authentik_host: !Format ["https://auth.%s", !Env DOMAIN]

@@ -1,0 +1,48 @@
+---
+# IT Tools at https://tools.${DOMAIN} (R17, milestone M7), behind Authentik forward auth like the Traefik dashboard and Homepage.
+#
+# Start (Pi):  sudo scripts/deploy.sh --only it-tools      (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       config/lab.env + ${APPS_ROOT}/secrets/runtime.env (DOMAIN, used by Traefik's router), the proxy network from
+#              scripts/bootstrap.sh, Traefik (routers in traefik/dynamic/routers.yml) and Authentik (provider and application in
+#              authentik/blueprints/homelab-apps.yaml).
+# Runbook:     docs/runbooks/m7-it-tools.md        Self-test: scripts/test-it-tools-config.sh
+#
+# Image: built locally from ./Dockerfile (official IT Tools static files on the official NGINX unprivileged image; the upstream
+# image is end of life, see the Dockerfile header). No data, no secrets, no outbound calls.
+# Identity (F02): uid:gid ITTOOLS_UID:ITTOOLS_GID (10005), never 1000 (the Pi's login user) and never root.
+# Hardening: read-only root file system (the only writable path is a tmpfs /tmp for NGINX's pid and temp files), cap_drop ALL
+# (port 8080 needs no capability), no-new-privileges, memory and pid limits, no published port, proxy network only.
+services:
+  it-tools:
+    image: home-lab/it-tools:2024.10.22-7ca5933
+    build:
+      context: .
+    container_name: it-tools
+    restart: unless-stopped
+    user: "${ITTOOLS_UID:?set ITTOOLS_UID in config/lab.env}:${ITTOOLS_GID:?set ITTOOLS_GID in config/lab.env}"
+    read_only: true
+    tmpfs:
+      - /tmp:uid=${ITTOOLS_UID},gid=${ITTOOLS_GID},mode=0700,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    pids_limit: 64
+    networks:
+      - proxy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  proxy:
+    external: true
