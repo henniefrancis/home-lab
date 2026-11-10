@@ -6,8 +6,9 @@
 #   No ipStrategy is set, so the TCP peer address is used and X-Forwarded-For is never trusted.
 # security-headers: applied to every response of a router on the websecure entrypoint (entrypoint-level middleware),
 #   including the 401/403 answers of the allowlist and basic auth; unmatched hosts get a bare 404.
-#   HSTS is short (300 s) while on the Let's Encrypt staging CA. M6 (production certificate) raises stsSeconds to 31536000 (SEC-L12):
-#   a browser that has cached a long HSTS value would otherwise lock itself out if the staging certificate were ever served again.
+#   HSTS rises in steps (m6-go-live.md step 4): 300 s on the staging CA, 86400 (1 day, step b, 2026-11-10, production certificate
+#   live), then 31536000 (1 year, step c, SEC-L12) after at least 7 days with no certificate alert. A browser that has cached a long
+#   HSTS value locks itself out if an expired or untrusted certificate is ever served, which is why the K4 alert comes first.
 #   No preload: this domain also hosts a separate public website on the apex.
 #   CSP (SEC-L12): deliberately not set here. A global Content-Security-Policy would break Authentik and Homepage, which load inline
 #   scripts and styles; each app already sends its own policy where it supports one. Revisit per router, not globally.
@@ -31,7 +32,7 @@ http:
 
     security-headers:
       headers:
-        stsSeconds: 300
+        stsSeconds: 86400
         stsIncludeSubdomains: true
         stsPreload: false
         forceSTSHeader: true
