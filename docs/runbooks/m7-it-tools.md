@@ -55,6 +55,9 @@ sudo docker exec authentik-server ak shell -c "from authentik.providers.proxy.mo
 # expect homelab-it-tools in both lists; if it is missing, wait (section 3.4a of m4-authentik.md), do not restart the worker
 ```
 
+First deploy (2026-11-10): the worker started re-applying the blueprint at 16:16 UTC by itself and finished at 16:41, 25 minutes later. Until then `tools.` answered the
+outpost's 404 page (about 5.8 KB; Traefik's own 404 is 19 bytes). Do not start `ak apply_blueprint` while that runs: it only queues behind it (m4-authentik.md 3.4a).
+
 ## 4. Browser check [Owner, browser]
 
 1. Open `https://tools.<domain>`: you are sent to the Authentik login (or straight in if your session is fresh), then IT Tools loads.

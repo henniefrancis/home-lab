@@ -167,6 +167,17 @@ sudo docker exec authentik-worker ak apply_blueprint custom/homelab-apps.yaml
 Then repeat checks 1 to 3. If one fails with a message about a missing flow or stage, a prerequisite from the list is not applied yet: apply that one first. `apply_blueprint` runs in the
 foreground and may itself take several minutes on the Pi. A real `error` (not `unknown`) is a content problem: open the instance in the UI (Customization, Blueprints) for the message.
 
+**Never start a manual apply while another one is running** (M7, 2026-11-10): the worker re-applied the changed `homelab-apps.yaml` on its own at 16:16 UTC; two manual
+`apply_blueprint` runs started during it only queued behind its database transaction (Postgres lock waits on `authentik_policies_policy`, no deadlock), so the shell looked frozen for
+over 15 minutes. All three finished at 16:41, 25 minutes after the deploy. Before a manual run, check that nothing is applying (both read-only):
+
+```bash
+ps -eo pid,etime,args | grep '[a]pply_blueprint'        # a running manual apply (empty = none)
+sudo docker exec authentik-postgresql psql -U authentik -d authentik -Atc \
+  "select pid, wait_event_type, now()-xact_start from pg_stat_activity where datname='authentik' and xact_start is not null and pid<>pg_backend_pid()"
+# one long transaction with changing queries = an apply is working: wait. Rows with wait_event_type Lock = applies queued behind it.
+```
+
 ```bash
 # 3.5 forward auth answers (from inside the proxy network, bypassing the allowlist, which a loopback curl on the Pi would fail with 403)
 DOMAIN="$(sudo sed -n 's/^DOMAIN=//p' /apps/secrets/runtime.env)"
