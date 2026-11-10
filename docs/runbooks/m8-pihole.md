@@ -42,9 +42,11 @@ down; upstream **Quad9**; the Pi's LAN address comes from SSM (`config/pi-lan-ip
 2. **The Pi-hole admin password.** On the laptop, in Git Bash, run the two commands below. Generate the password in your password manager and keep it there; it is never typed into chat.
    ```bash
    cd /a/henniefrancis/home-lab-new
-   scripts/set-secret.sh --create pihole/admin-password
+   scripts/set-secret.sh --create pihole/admin-password    # creates it with the UNSET placeholder (version 1); no prompt
+   scripts/set-secret.sh pihole/admin-password             # prompts with no echo: paste the password (version 2)
    ```
-   The script prompts with no echo. Check it with `scripts/set-secret.sh --check`, which lists `pihole/admin-password` with its key and version, never the value.
+   Check with `scripts/set-secret.sh --check`: `pihole/admin-password` must show **version 2 or higher**. Version 1 is still the placeholder, and the deploy
+   fails closed on it.
 3. The signed release is pushed and CI is green on it (`release-and-deploy.md`).
 
 ## 2. Deploy [Pi]
