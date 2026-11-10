@@ -156,6 +156,9 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends age > /dev/null
           bash scripts/test-backup-authentik.sh
 
+      - name: Self-test - Authentik restore from the laptop (real age, a throwaway PostgreSQL with no network, mock aws; the mock is proven before use)
+        run: bash scripts/test-authentik-restore-laptop.sh
+
       - name: Self-test - aws-preflight.sh --snapshot against a mock aws (CRLF, empty duplicate list, TXT quotes; the mock is proven before use)
         run: bash scripts/test-aws-preflight.sh
 

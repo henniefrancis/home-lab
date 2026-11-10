@@ -102,41 +102,38 @@ awk '{c[$2]++} END {for (k in c) if (c[k] > 1) print "MORE THAN ONE VERSION (an 
 3. **After a theft or any suspicion, pick a dump from before the incident time.** Treat every object newer than the last night you are sure about as tainted. Disable the trust anchor or bump `pki_generation` first (`pi-recovery.md` section 1) so nothing new arrives while you decide.
 4. **Compare sizes** (`Size` in `versions.txt`) with the neighbours; one far smaller or larger than its neighbours is suspect. The marker is not evidence: it is an accident control only.
 5. **Always restore into a throwaway container first** (section 5), with no network, and look at what is inside before you touch the live database: user count, the usernames you expect, that no unknown account exists.
-6. Download by version: `aws s3api get-object --bucket <bucket> --key <key> --version-id <VersionId> --profile <profile> authentik.dump.age`.
+6. Download by version: `aws s3api get-object --bucket <bucket> --key <key> --version-id <VersionId> --profile <profile> authentik.dump.age`. `scripts/authentik-restore-laptop.sh` (sections 5 and 6) applies rules 1, 2 and 4 itself and downloads by version; rules 3 and 5 stay yours.
 
 A custom-format dump carries SQL that `pg_restore` runs as the database superuser. That is why steps 1 to 5 exist: restore only what you have chosen by these rules, first into a container that cannot reach anything.
 
 ## 5. Restore test: into a throwaway PostgreSQL [Laptop; after setup, then at every drill]
 
-This never touches the live database, never puts the identity on the Pi and leaves no plaintext file. Docker on the laptop is enough.
+This never touches the live database, never puts the identity on the Pi and leaves no plaintext file. One script does it all: `scripts/authentik-restore-laptop.sh test`.
 
-1. Choose and download a dump by sections 3 and 4.
-2. **Start a throwaway database with the same image as production and NO network.** Use the exact `image:` value of `authentik-postgresql` in `authentik/compose.yaml` (tag and digest) as `<postgres image>`:
+**Never paste the identity into a terminal.** On Windows, a native `age.exe` in Git Bash never sees Ctrl-D or Ctrl-Z as the end of a pasted key, so "paste, then Ctrl-D" just hangs (drill of 2026-11-10). The script reads the key from the clipboard instead, once, at the moment it asks for it.
 
-   ```bash
-   docker run -d --rm --name ak-restore-test --network none -e POSTGRES_DB=authentik -e POSTGRES_USER=authentik -e POSTGRES_PASSWORD=throwaway-not-a-secret "<postgres image>"
-   docker exec ak-restore-test pg_isready -U authentik -d authentik       # repeat until it accepts connections
-   ```
+**Before you start:** Docker Desktop is running, and `aws sso login --profile <profile>` works. The bucket name is `terraform -chdir=terraform/bootstrap output -raw backup_bucket_name`.
 
-3. **Decrypt and restore in one pipe** (age reads the identity from standard input, which is why the ciphertext is a file argument: paste the identity from the password manager, then end input with Ctrl-D, or Ctrl-Z Enter on Windows). `--exit-on-error` makes any problem loud:
+1. **Open Git Bash in the repository and run** (copy this line from the runbook first; the script asks for the key later, so the order of copying does not matter):
 
    ```bash
-   age -d -i - authentik.dump.age | docker exec -i ak-restore-test pg_restore -U authentik -d authentik --clean --if-exists --no-owner --exit-on-error
+   scripts/authentik-restore-laptop.sh test --bucket <bucket> --profile <profile>
    ```
 
-4. **Look inside** (read-only queries on the throwaway):
+   It picks the newest dump that passes the section 4 rules (and prints any it REJECTED, with the reason), downloads it by version and checks that it is age-encrypted.
+2. **When it prints `>>> Now copy the age identity ...`:** copy the note "home-lab Authentik backup age identity" in the password manager, click back into Git Bash and press **Enter**. The script reads the clipboard once and clears it. It never prints the key.
+3. **It does the rest by itself:** checks that the key opens this dump (decrypting only the first bytes), starts a throwaway PostgreSQL with the exact image and digest of `authentik/compose.yaml` and **no network**, decrypts and restores through a pipe, and prints what is inside: tables, every username with its type and last login, applications, and the MFA tables and device counts. It removes the container when it ends.
+4. **Read the last line.** `RESULT: PASS` needs two things from you as well: every username is yours (or a built-in: `AnonymousUser`, the `ak-outpost-...` service account), and the counts match the live Pi (the script prints the read-only Pi command to compare). **An unknown account, zero users or a `pg_restore` error is a failed test: do not restore that dump to the live database.**
+5. **Record it** in the drill log (`pi-recovery.md`): the script prints a ready line with the date, dump, version and counts; add PASS or FAIL and how long it took.
 
-   ```bash
-   docker exec ak-restore-test psql -U authentik -d authentik -Atc "select count(*) from authentik_core_user"
-   docker exec ak-restore-test psql -U authentik -d authentik -c "select username, is_active, last_login, date_joined from authentik_core_user order by date_joined"
-   docker exec ak-restore-test psql -U authentik -d authentik -Atc "select count(*) from authentik_core_application"
-   docker exec ak-restore-test psql -U authentik -d authentik -Atc "select relname from pg_class where relkind = 'r' and relname like 'authentik_stages_authenticator%' order by 1"
-   ```
+Options: `--version-id <VersionId>` tests a specific dump (after a theft: one from before the incident, section 4 rule 3); `--keep` leaves the container running for more queries; `--key-from-stdin` reads the identity from a pipe (a password manager CLI) instead of the clipboard; `--dump-file <file>` tests a local copy without S3.
 
-   Expect your usernames and nobody else, a user count close to the live one (on the Pi: `sudo docker exec authentik-postgresql sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select count(*) from authentik_core_user"'`, read-only), applications present, and the authenticator tables present.
-   **An unknown account, zero users or a `pg_restore` error is a failed test: do not restore that dump to the live database.**
-5. **Clean up:** `docker rm -f ak-restore-test`; delete `authentik.dump.age`, `versions.txt` and the scratch directory; clear the scrollback if you pasted the identity there.
-6. Record it in the drill log (`pi-recovery.md`): date, dump `LastModified` and `VersionId`, user counts, PASS or FAIL, and how long it took.
+| What it prints | What it means | What to do |
+|---|---|---|
+| `key check: FAIL` | The copied identity does not open this dump | Copy the right note. Its `# public key:` line must equal `BACKUP_AGE_RECIPIENT` on the Pi. If no note matches, the backups are unreadable: make a new key pair now (section 2, rotating) |
+| `no AGE-SECRET-KEY-1... found` | The clipboard did not hold the key (copied something else after it, or the password manager already cleared it) | Run again and copy the note only when it asks |
+| `Docker is not running` / `AWS credentials do not work` | A prerequisite | Start Docker Desktop / `aws sso login`, run again |
+| `REJECTED ...` | A dump that breaks a section 4 rule | Not used. Several in a row: someone may be writing to the bucket (section 4) |
 
 ## 6. Real restore [Owner, laptop and Pi]
 
@@ -155,15 +152,14 @@ The dump has to get from your laptop to the Pi without a plaintext file on the P
    age-keygen -o /run/ak-restore/id.txt              # prints: Public key: age1...   (copy ONLY this line's key)
    ```
 
-2. **Laptop.** Download the chosen version (section 4), then re-encrypt it to the Pi's one-off key and upload it under `restore/` as the owner (the bucket policy allows the owner to write there; the Pi role cannot). The plaintext exists only in the pipe:
+2. **Laptop.** Pick and download the dump, re-encrypt it to the Pi's one-off key and upload it under `restore/` as the owner (the bucket policy allows the owner to write there; the Pi role cannot), then make a presigned URL. One command; the plaintext exists only in the pipe. Use the same `--version-id` you restore-tested (section 5), or leave it out for the newest dump that passes the rules:
 
    ```bash
-   aws s3api get-object --bucket <bucket> --key <key> --version-id <VersionId> --profile <profile> authentik.dump.age
-   age -d -i - authentik.dump.age | age -r <one-off age1 key from the Pi> | aws s3 cp - s3://<bucket>/restore/authentik-restore.dump.age --profile <profile>
-   aws s3 presign s3://<bucket>/restore/authentik-restore.dump.age --expires-in 900 --region af-south-1 --profile <profile>
+   scripts/authentik-restore-laptop.sh stage --bucket <bucket> --profile <profile> --pi-recipient <one-off age1 key from the Pi> [--version-id <VersionId>]
    ```
 
-   `aws s3 presign` prints a URL that works for 900 seconds (the default is 3600; the maximum 7 days; a URL made with temporary SSO credentials also stops when those expire: [presign](https://docs.aws.amazon.com/cli/latest/reference/s3/presign.html), [presigned URLs](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)). It acts with **your** permissions, so the bucket policy's owner exemption applies. The object inside is encrypted to the one-off key: even the URL alone yields nothing readable.
+   When it asks, copy the identity note from the password manager and press Enter (as in section 5; never paste the identity into the terminal). It ends with the URL and its length, and warns when the URL is too long to paste.
+   `aws s3 presign` (which the script runs) prints a URL that works for 900 seconds (the default is 3600; the maximum 7 days; a URL made with temporary SSO credentials also stops when those expire: [presign](https://docs.aws.amazon.com/cli/latest/reference/s3/presign.html), [presigned URLs](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)). It acts with **your** permissions, so the bucket policy's owner exemption applies. The object inside is encrypted to the one-off key: even the URL alone yields nothing readable.
 3. **Pi.** Stop the application containers (PostgreSQL stays up), paste the URL at the hidden prompt, and stream it in. The dump goes `curl -> age -> pg_restore` through pipes only:
 
    ```bash
@@ -176,8 +172,8 @@ The dump has to get from your laptop to the Pi without a plaintext file on the P
    ```
 
    **If the code is not 0 (an expired URL, a truncated download, a restore error), the live database may now be EMPTY or half restored:** `--clean` drops the tables before it loads them, so a failed or truncated run leaves a gutted database. **Keep `authentik-server` and `authentik-worker` stopped until `pg_restore` exits 0.** A repeat is safe (`--clean --if-exists`): create a new URL (step 2, last command) and run the last block again, as often as it takes. Do not start the server on a database you have not restored successfully.
-   A very long presigned URL (a large SSO session token) can be cut by the terminal's line limit when pasted, and a cut URL gives `403`: on the laptop check its length (`... | wc -c`, keep it under about 4000 characters) before you paste it.
-4. **Pi, clean up.** `shred -u /run/ak-restore/id.txt; rmdir /run/ak-restore; unset URL`. **Laptop:** remove the `restore/` object and its version: `aws s3api list-object-versions --bucket <bucket> --prefix restore/ --profile <profile>`, then `aws s3api delete-object --bucket <bucket> --key restore/authentik-restore.dump.age --version-id <VersionId> --profile <profile>` for each (the lifecycle removes it after one day anyway); delete `authentik.dump.age` and clear the scrollback.
+   A very long presigned URL (a large SSO session token) can be cut by the terminal's line limit when pasted, and a cut URL gives `403`: the script prints the length and warns above about 4000 characters.
+4. **Pi, clean up.** `shred -u /run/ak-restore/id.txt; rmdir /run/ak-restore; unset URL`. **Laptop:** remove the `restore/` object and its version: `aws s3api list-object-versions --bucket <bucket> --prefix restore/ --profile <profile>`, then `aws s3api delete-object --bucket <bucket> --key restore/authentik-restore.dump.age --version-id <VersionId> --profile <profile>` for each (the lifecycle removes it after one day anyway). The script already deleted its local copy of the dump.
 5. **Pi:** `dc start authentik-server authentik-worker`, then `dc ps` (both healthy; Authentik runs its migrations at start, so allow a few minutes).
 6. **Remove the sentinel** `/etc/home-lab/restore-pending` (`rm /etc/home-lab/restore-pending`), so the nightly backup resumes (section 7), and `exit` the root shell.
 7. **After a theft: reset every user** (`pi-recovery.md` section 1.6). The restored password hashes and TOTP seeds were on the stolen card.
