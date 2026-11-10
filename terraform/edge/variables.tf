@@ -117,6 +117,20 @@ variable "pi_tailnet_ipv4" {
   }
 }
 
+variable "pi_lan_ipv4" {
+  description = "LAN IPv4 address of the Pi (its DHCP reservation). null until M8; Pi-hole answers the lab names with it for LAN clients. Mirrored into SSM only (config/pi-lan-ip); no DNS record is made from it."
+  type        = string
+  default     = null
+
+  validation {
+    condition = var.pi_lan_ipv4 == null || (
+      can(cidrhost("${coalesce(var.pi_lan_ipv4, "0.0.0.0")}/32", 0)) &&
+      can(regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)", coalesce(var.pi_lan_ipv4, "")))
+    )
+    error_message = "pi_lan_ipv4 must be a private (RFC 1918) IPv4 address."
+  }
+}
+
 variable "ra_trust_anchor_arn" {
   description = "Roles Anywhere trust anchor ARN (bootstrap output trust_anchor_arn). Mirrored into SSM only."
   type        = string

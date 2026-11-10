@@ -12,7 +12,7 @@
 #      never overwrites it). Every application below is bound to that group, so it is fail-closed: a user who is not in the
 #      group is denied even with a valid password and MFA.
 #   3. One forward_single proxy provider + application per protected host: traefik.${DOMAIN} (Traefik dashboard),
-#      dashboard.${DOMAIN} (Homepage, milestone M5) and tools.${DOMAIN} (IT Tools, M7). forward_single => each app gets its OWN
+#      dashboard.${DOMAIN} (Homepage, milestone M5), tools.${DOMAIN} (IT Tools, M7) and pihole.${DOMAIN} (Pi-hole, M8). forward_single => each app gets its OWN
 #      host-only session cookie; there is no cookie_domain, so no cookie is ever shared across *.${DOMAIN}.
 #   4. The embedded outpost (inside authentik-server) serves every provider. No separate outpost container, no docker.sock.
 #
@@ -158,6 +158,32 @@ entries:
       group: !KeyOf group-admins
       order: 0
 
+  # Pi-hole web UI (M8, R17): same forward-auth pattern; Pi-hole keeps its own password as a second factor of its own.
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-pihole
+    identifiers:
+      name: homelab-pihole
+    attrs:
+      mode: forward_single
+      external_host: !Format ["https://pihole.%s", !Env DOMAIN]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      access_token_validity: hours=12
+  - model: authentik_core.application
+    id: app-pihole
+    identifiers:
+      slug: pihole
+    attrs:
+      name: Pi-hole
+      provider: !KeyOf provider-pihole
+      policy_engine_mode: any
+      meta_launch_url: !Format ["https://pihole.%s/admin/", !Env DOMAIN]
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-pihole
+      group: !KeyOf group-admins
+      order: 0
+
   # --- 4. Embedded outpost ---------------------------------------------------------------------------------------------
   - model: authentik_outposts.outpost
     id: embedded-outpost
@@ -170,5 +196,6 @@ entries:
         - !KeyOf provider-traefik
         - !KeyOf provider-dashboard
         - !KeyOf provider-it-tools
+        - !KeyOf provider-pihole
       config:
         authentik_host: !Format ["https://auth.%s", !Env DOMAIN]

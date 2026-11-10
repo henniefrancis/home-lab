@@ -8,7 +8,7 @@
 #   2. apt: curl, unzip, gnupg, jq, openssl, ca-certificates, git, openssh-client (ssh-keygen: commit signature check), util-linux
 #      (flock), age (client-side encryption of the Authentik backup, K5), unattended-upgrades (H1) - only the missing ones. age comes
 #      from Debian's own package (trixie: 1.2.x, apt's signature check is the integrity control); nothing is pinned beyond what apt installs.
-#   3. Directory layout: $APPS_ROOT/{traefik,authentik,homepage,tailscale,secrets}, /etc/home-lab, /etc/home-lab/pki; the Authentik
+#   3. Directory layout: $APPS_ROOT/{traefik,authentik,homepage,tailscale,pihole,secrets}, /etc/home-lab, /etc/home-lab/pki; the Authentik
 #      data and Postgres directories owned by the service uids from config/lab.env (never the login user).
 #   4. Docker networks (plan 6.1): proxy, authentik-auth (Traefik <-> Authentik forward auth only), authentik-internal (internal).
 #      No docker socket proxy exists any more (SEC-H2).
@@ -77,7 +77,7 @@ fi
 
 step "3/7 Directory layout"
 install -d -m 0755 -o root -g root "$APPS_ROOT"
-for d in traefik authentik homepage tailscale; do
+for d in traefik authentik homepage tailscale pihole; do
   install -d -m 0755 -o root -g root "$APPS_ROOT/$d"
 done
 install -d -m 0700 -o root -g root "$APPS_ROOT/tailscale/state"
@@ -95,7 +95,10 @@ PG_GID="$(lab_env_get "$LAB_ENV" AUTHENTIK_PG_GID 70)"
 # checkout: it owns no directory under $APPS_ROOT, so nothing is created for it beyond $APPS_ROOT/homepage (root 0755, above).
 HP_UID="$(lab_env_get "$LAB_ENV" HOMEPAGE_UID 10003)"
 HP_GID="$(lab_env_get "$LAB_ENV" HOMEPAGE_GID 10003)"
-for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID" "$HP_UID" "$HP_GID" "$TR_UID" "$TR_GID"; do
+# Pi-hole (M8): FTL runs as PIHOLE_UID and owns its configuration and databases (the image default 1000 is overridden).
+PH_UID="$(lab_env_get "$LAB_ENV" PIHOLE_UID 10006)"
+PH_GID="$(lab_env_get "$LAB_ENV" PIHOLE_GID 10006)"
+for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID" "$HP_UID" "$HP_GID" "$TR_UID" "$TR_GID" "$PH_UID" "$PH_GID"; do
   [[ "$id" =~ ^[0-9]+$ ]] && [ "$id" -ne 0 ] && [ "$id" -ne 1000 ] || die "service uid/gid '$id' in $LAB_ENV must be numeric, not 0 and not 1000 (the login user)"
 done
 # Traefik's watched dynamic-configuration directory: root-owned copy of traefik/dynamic, filled by deploy.sh.
@@ -104,6 +107,7 @@ install -d -m 0700 -o "$TR_UID" -g "$TR_GID" "$APPS_ROOT/traefik/letsencrypt"
 chown -R "$TR_UID:$TR_GID" "$APPS_ROOT/traefik/letsencrypt"
 install -d -m 0700 -o "$AK_UID" -g "$AK_GID" "$APPS_ROOT/authentik/data"
 install -d -m 0700 -o "$PG_UID" -g "$PG_GID" "$APPS_ROOT/authentik/postgres"
+install -d -m 0700 -o "$PH_UID" -g "$PH_GID" "$APPS_ROOT/pihole/etc-pihole"
 # fetch-secrets.sh publishes releases under .secrets.d and points $APPS_ROOT/secrets at the current one (atomic swap).
 install -d -m 0700 -o root -g root "$APPS_ROOT/.secrets.d"
 if [ ! -L "$APPS_ROOT/secrets" ]; then

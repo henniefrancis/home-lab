@@ -58,7 +58,7 @@ jobs:
       - name: Guard - SecureStrings are not Terraform-managed, public-safe config
         run: |
           set -eu
-          # ADR-013: the six SecureStrings are owner-managed (scripts/set-secret.sh). No Terraform resource may create or read one:
+          # ADR-013: the SecureStrings are owner-managed (scripts/set-secret.sh). No Terraform resource may create or read one:
           # the provider reads a SecureString WithDecryption, and the home-lab key denies Decrypt to the HCP roles.
           re='value_wo|aws_ssm_parameter"[[:space:]]+"secret"|data[[:space:]]+"aws_ssm_parameter"'
           if git grep -nE "$re" -- 'terraform/*.tf' 'terraform/**/*.tf' | grep -v ':[0-9]*:[[:space:]]*#'; then
@@ -190,10 +190,10 @@ jobs:
         run: |
           set -eu
           sock_re='docker[.]sock|providers[.]docker|docker-socket-proxy|tecnativa'
-          if git grep -nE "$sock_re" -- traefik authentik homepage tailscale it-tools compose.yaml | grep -v ':[0-9]*:[[:space:]]*#'; then
+          if git grep -nE "$sock_re" -- traefik authentik homepage tailscale it-tools pihole compose.yaml | grep -v ':[0-9]*:[[:space:]]*#'; then
             echo "No Docker socket or Docker provider anywhere in the stacks."; exit 1
           fi
-          files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml'
+          files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml pihole/compose.yaml'
           # shellcheck disable=SC2086
           bad="$(git grep -hE '^[[:space:]]+image:[[:space:]]' -- $files | grep -Ev 'home-lab/(ra-helper|it-tools)' | grep -Ev '@sha256:[0-9a-f]{64}' || true)"
           if [ -n "$bad" ]; then echo "Images must be pinned tag@sha256:"; echo "$bad"; exit 1; fi
@@ -217,7 +217,7 @@ jobs:
         run: |
           set -eu
           d="$(mktemp -d)"
-          mkdir -p "$d/secrets/tailscale" "$d/secrets/authentik"
+          mkdir -p "$d/secrets/tailscale" "$d/secrets/authentik" "$d/secrets/pihole"
           : > "$d/secrets/tailscale/tailscale.env"
           {
             echo "APPS_ROOT=$d"
@@ -226,6 +226,7 @@ jobs:
             echo "RA_TRUST_ANCHOR_ARN=dummy-trust-anchor"
             echo "RA_ACME_PROFILE_ARN=dummy-profile"
             echo "RA_ACME_ROLE_ARN=dummy-role"
+            echo "PI_LAN_IP=10.0.0.2"
           } > "$d/ci.env"
           docker compose --env-file config/lab.env --env-file "$d/ci.env" config -q
 
@@ -240,6 +241,9 @@ jobs:
 
       - name: Self-test - IT Tools stack (static checks, image build, real Traefik routers with a stub outpost; dummy values)
         run: bash scripts/test-it-tools-config.sh
+
+      - name: Self-test - Pi-hole stack (static checks, the real image answering DNS, the lab names, the web UI through the real Traefik routers; dummy values)
+        run: bash scripts/test-pihole-config.sh
 
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |

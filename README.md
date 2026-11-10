@@ -15,7 +15,7 @@ This repository is a reference you can read, copy and adapt. It is a personal pr
 | TLS | Let's Encrypt wildcard certificate for `*.<domain>` by DNS-01 on Route 53. A small helper (`ra-helper`) gives Traefik short-lived AWS credentials through **IAM Roles Anywhere**, so no AWS key is stored on the Pi |
 | Identity | **Authentik** SSO with enforced MFA. Traefik does **forward auth** to Authentik for every app; the Traefik dashboard and Homepage both use it. A rate-limited break-glass login exists for the Traefik dashboard only and never survives a reboot |
 | Dashboard | **Homepage** at `https://dashboard.<domain>` |
-| Apps | **IT Tools** at `https://tools.<domain>` (static, built locally on a current NGINX base). More apps follow one milestone at a time (R17: Pi-hole, Linkwarden, Netdata, Portainer, Home Assistant) |
+| Apps | **IT Tools** at `https://tools.<domain>` (static, built locally on a current NGINX base). **Pi-hole**: DNS for the LAN on IPv4 port 53 (Quad9 upstream, DNSSEC; the lab names answer the Pi's LAN address), web UI at `https://pihole.<domain>/admin/`. More apps follow one milestone at a time (R17: Linkwarden, Netdata, Portainer, Home Assistant) |
 | Remote access | **Tailscale** (no router port-forwards). Services are allowed from the LAN and tailnet ranges only |
 | Secrets | AWS **SSM Parameter Store** SecureStrings encrypted with a customer-managed key; only the Pi's role can decrypt. Set by the owner with `scripts/set-secret.sh`, fetched at deploy time into `/apps/secrets`, never in git, CI or Terraform state |
 | Deploys | **Signed deploys**: `scripts/deploy.sh` merges and runs only a commit whose SSH signature verifies against a root-owned trust file on the Pi |
@@ -35,11 +35,13 @@ flowchart LR
     authentik["Authentik server, worker, PostgreSQL"]
     homepage["Homepage"]
     ittools["IT Tools"]
+    pihole["Pi-hole (DNS :53)"]
     helper["ra-helper (Roles Anywhere)"]
     ts["Tailscale"]
     traefik -->|forward auth| authentik
     traefik --> homepage
     traefik --> ittools
+    traefik --> pihole
     traefik -->|DNS-01 credentials| helper
   end
   helper -->|short-lived session| aws
@@ -54,6 +56,7 @@ flowchart LR
   alert["daily cert check"] -->|publish| sns
   sns -->|email| owner["Owner"]
   ts --- user
+  lan["LAN devices (router DHCP: Pi-hole first)"] -->|DNS 53| pihole
 ```
 
 Request path in words: browser -> Traefik (TLS, wildcard certificate) -> allowlist (LAN and tailnet only) -> Authentik forward auth (MFA) -> the app.
@@ -64,8 +67,8 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 
 | Path | What is in it |
 |------|---------------|
-| `compose.yaml` | Root Compose project; includes the five stacks below |
-| `traefik/`, `authentik/`, `homepage/`, `tailscale/`, `it-tools/` | One directory per stack (compose file, config, Traefik file-provider routes, Authentik blueprint as code) |
+| `compose.yaml` | Root Compose project; includes the six stacks below |
+| `traefik/`, `authentik/`, `homepage/`, `tailscale/`, `it-tools/`, `pihole/` | One directory per stack (compose file, config, Traefik file-provider routes, Authentik blueprint as code) |
 | `config/` | `lab.env` (public, non-secret settings), `secrets-manifest.tsv` (names, paths and modes of secrets, never values), `allowed_signers.example` |
 | `terraform/bootstrap/` | Owner-applied stack: OIDC provider, HCP plan and apply roles, the Pi's Roles Anywhere identities, the KMS key, the alert topic. Has offline policy tests |
 | `terraform/edge/` | HCP-applied stack: Route 53, records, budget, the non-secret `/home-lab/config/*` parameters |
@@ -81,7 +84,7 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 - **Pinned tools.** Third-party tool images (gitleaks, tflint, trivy, terraform) come from `ci/images/<tool>/Dockerfile`, pinned by digest, and Python tooling from `ci/requirements-ci.txt`. They live outside `.github/` because Dependabot is refused there. The terraform image is bumped by hand together with `required_version` in the stacks; the others are bumped by Dependabot.
 - **Dependabot** (weekly, grouped, with a few days of cooldown) covers GitHub Actions, Terraform providers, Compose and Docker images, pip and pre-commit. Pull requests are merged locally and covered by a signed release commit (see `docs/runbooks/release-and-deploy.md`).
 - **Secret scan.** gitleaks runs over the full history and the working tree with the public rules in `.gitleaks.toml`; the rules have their own test (`scripts/test-gitleaks-rules.sh`). A private denylist of your real identifiers is checked locally with `scripts/check-private-denylist.sh` and never leaves your machine.
-- **Self-tests** run the shell scripts against mock `aws` and local servers, check Traefik, Authentik, Homepage and IT Tools configuration (IT Tools with a real image build and the real Traefik routers), run the Terraform IAM and KMS policy tests offline, run shellcheck, yamllint and tflint, and run `trivy config` over the Terraform code. `scripts/scan-images.sh` scans the container images and is run by hand, not in CI.
+- **Self-tests** run the shell scripts against mock `aws` and local servers, check Traefik, Authentik, Homepage, IT Tools and Pi-hole configuration (IT Tools and Pi-hole with the real images and the real Traefik routers), run the Terraform IAM and KMS policy tests offline, run shellcheck, yamllint and tflint, and run `trivy config` over the Terraform code. `scripts/scan-images.sh` scans the container images and is run by hand, not in CI.
 
 ## Fork guide: what to change
 
@@ -93,7 +96,8 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 6. **Signing key.** Create an SSH signing key, put the public key in `/etc/home-lab/allowed_signers` on the Pi (see `config/allowed_signers.example`), and sign one release commit per deploy.
 7. **Alerts.** Set `alert_email` in the bootstrap `terraform.tfvars`, confirm the SNS subscription mail, and run `sudo scripts/alert.sh test` (`docs/runbooks/alerting.md`).
 8. **Accounts and secrets.** Create the SecureStrings with `scripts/set-secret.sh --create`, then set them (`docs/runbooks/secrets-ssm.md`). Replace the Authentik blueprint users and groups to match your household.
-9. **Repository settings.** Follow `docs/runbooks/m6-go-live.md` before making your fork public: private denylist, ruleset, secret scanning, push protection.
+9. **Pi-hole (optional).** Set the HCP workspace variable `pi_lan_ipv4` to the Pi's reserved LAN address (stored as `/home-lab/config/pi-lan-ip`), pick the upstreams in `PIHOLE_UPSTREAMS` (`config/lab.env`), set `pihole/admin-password`, then point your router's DHCP DNS at the Pi (`docs/runbooks/m8-pihole.md`).
+10. **Repository settings.** Follow `docs/runbooks/m6-go-live.md` before making your fork public: private denylist, ruleset, secret scanning, push protection.
 
 ## Security model in short
 
@@ -115,7 +119,8 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 | M4 | Authentik SSO with enforced MFA and forward auth | Done |
 | M5 | Homepage dashboard | Done |
 | M6 | Production certificate, alerting, hardening, repository made public | In progress (`docs/runbooks/m6-go-live.md`) |
-| M7 | IT Tools (first R17 app) | In progress (`docs/runbooks/m7-it-tools.md`) |
+| M7 | IT Tools (first R17 app) | Done (`docs/runbooks/m7-it-tools.md`) |
+| M8 | Pi-hole for the LAN | In progress (`docs/runbooks/m8-pihole.md`) |
 
 Backups (K5): a nightly age-encrypted `pg_dump` of the Authentik database goes to a write-only, versioned S3 bucket (`docs/runbooks/authentik-backup.md`), and the offline CA has a documented, testable backup (`docs/runbooks/ca-backup.md`). The recovery drill (`docs/runbooks/pi-recovery.md`) is the owner's to run.
 

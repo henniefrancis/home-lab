@@ -22,6 +22,7 @@ gitignored `adopt-snapshot/`) and from `terraform output` of the bootstrap stack
 | `create_planned_records` | terraform, HCL | no | `false` during adoption, `true` in the follow-up apply |
 | `create_ssm_parameters` | terraform, HCL | no | `false` during adoption, `true` in a follow-up apply (then run the verification in `docs/runbooks/secrets-ssm.md`) |
 | `pi_tailnet_ipv4` | terraform | no | omit until M2, then `100.x.y.z` |
+| `pi_lan_ipv4` | terraform | no | omit until M8, then the Pi's reserved LAN address, for example `10.0.0.x` (Pi-hole's local answers; SSM `config/pi-lan-ip` only) |
 | `ra_trust_anchor_arn` | terraform | no | bootstrap output `trust_anchor_arn` (mirrored into SSM only; the identity lives in `terraform/bootstrap`) |
 | `ra_acme_profile_arn` | terraform | no | bootstrap output `traefik_profile_arn` |
 | `ra_acme_role_arn` | terraform | no | bootstrap output `dns01_role_arn` |

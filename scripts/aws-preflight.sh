@@ -355,7 +355,7 @@ if ssm_out="$(aws_ ssm describe-parameters --region af-south-1   --parameter-fil
   if [ -z "$ssm_out" ]; then
     pass "No existing /home-lab/* parameters (names only are ever listed, never values)"
   else
-    warn "Existing /home-lab/* parameters (names only). The six SecureStrings are owner-managed (ADR-013, scripts/set-secret.sh) and Terraform never touches them; only the config/* parameters are Terraform's, and an existing config/* one must be imported into terraform/edge first:"
+    warn "Existing /home-lab/* parameters (names only). The SecureStrings are owner-managed (ADR-013, scripts/set-secret.sh) and Terraform never touches them; only the config/* parameters are Terraform's, and an existing config/* one must be imported into terraform/edge first:"
     printf '%s\n' "$ssm_out" | tr '\t' '\n' | sed 's/^/        /'
   fi
 else

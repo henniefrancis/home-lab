@@ -8,7 +8,7 @@ locals {
   host_role_arn = "arn:${local.partition}:iam::${local.account_id}:role/home-lab-pi-host"
   budget_arn    = "arn:${local.partition}:budgets::${local.account_id}:budget/home-lab-monthly"
   ssm_region    = "af-south-1"
-  # Only the Terraform-owned String parameters (decision 2026-11-08, ADR-013). The six SecureStrings are set by the owner with
+  # Only the Terraform-owned String parameters (decision 2026-11-08, ADR-013). The SecureStrings are set by the owner with
   # scripts/set-secret.sh and are outside the reach of both HCP roles.
   ssm_params = "arn:${local.partition}:ssm:${local.ssm_region}:${local.account_id}:parameter/home-lab/config/*"
 

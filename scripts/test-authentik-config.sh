@@ -40,7 +40,7 @@ command -v jq > /dev/null || {
 }
 export MSYS_NO_PATHCONV=1 # Git Bash on Windows: keep "container:/path" arguments intact
 # Hermetic: the shell environment would win over --env-file, so drop anything that lab.env defines.
-unset PROXY_SUBNET AUTHENTIK_AUTH_SUBNET APPS_ROOT DOMAIN AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID TRAEFIK_UID TRAEFIK_GID
+unset PROXY_SUBNET AUTHENTIK_AUTH_SUBNET APPS_ROOT DOMAIN AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID TRAEFIK_UID TRAEFIK_GID ITTOOLS_UID ITTOOLS_GID PIHOLE_UID PIHOLE_GID PIHOLE_UPSTREAMS PI_LAN_IP
 
 fails=0
 ok() { printf 'PASS  %s\n' "$*"; }
@@ -103,7 +103,7 @@ if chown 10002:10002 "$stage/secrets/authentik/secret-key" 2> /dev/null && [ "$(
 fi
 
 export APPS_ROOT="$apps_host" DOMAIN="$DOMAIN_T" ROUTE53_ZONE_ID=Z0000000000000000000
-export RA_TRUST_ANCHOR_ARN=dummy-trust-anchor RA_ACME_PROFILE_ARN=dummy-profile RA_ACME_ROLE_ARN=dummy-role
+export RA_TRUST_ANCHOR_ARN=dummy-trust-anchor RA_ACME_PROFILE_ARN=dummy-profile RA_ACME_ROLE_ARN=dummy-role PI_LAN_IP=10.0.0.2
 export ACME_CA_SERVER=https://127.0.0.1:1/dir
 all="$(docker compose --env-file config/lab.env config --format json)"
 ak="$(jq -c '.services | with_entries(select(.key | startswith("authentik-")))' <<< "$all")"
@@ -155,12 +155,12 @@ check "preflight.sh checks that the service ids are not host users" grep -q 'svc
 
 echo "--- static: blueprint, Traefik labels and middleware"
 bp=authentik/blueprints/homelab-apps.yaml
-check "blueprint: three forward_single proxy providers (Traefik, dashboard, IT Tools), no cookie domain" bash -c 'f=$1; [ "$(grep -v "^\s*#" $f | grep -c "mode: forward_single")" = 3 ] && ! grep -v "^\s*#" $f | grep -q cookie_domain' _ $bp
+check "blueprint: four forward_single proxy providers (Traefik, dashboard, IT Tools, Pi-hole), no cookie domain" bash -c 'f=$1; [ "$(grep -v "^\s*#" $f | grep -c "mode: forward_single")" = 4 ] && ! grep -v "^\s*#" $f | grep -q cookie_domain' _ $bp
 check "blueprint: external hosts use the DOMAIN env var, no literal domain" bash -c '[ "$(grep -c "!Env DOMAIN" "$1")" -ge 5 ] && ! grep -v "^\s*#" "$1" | grep -Eq "https://[a-z]+\.[a-z0-9-]+\.[a-z]{2,}"' _ $bp
 check "blueprint: MFA enforced (configure, totp + webauthn)" bash -c 'grep -q "not_configured_action: configure" "$1" && grep -q "^        - totp" "$1" && grep -q "^        - webauthn" "$1"' _ $bp
-check "blueprint: group homelab-admins bound to all three applications (fail-closed)" test "$(grep -c 'group: !KeyOf group-admins' $bp)" = 3 -a "$(grep -c 'name: homelab-admins' $bp)" = 1
+check "blueprint: group homelab-admins bound to all four applications (fail-closed)" test "$(grep -c 'group: !KeyOf group-admins' $bp)" = 4 -a "$(grep -c 'name: homelab-admins' $bp)" = 1
 check "blueprint: group membership is seeded once (state: created), never overwritten" bash -c 'awk "/id: group-admins/{f=1} f&&/state: created/{print; exit}" "$1" | grep -q created' _ $bp
-check "blueprint: embedded outpost carries all three providers" bash -c 'grep -q "managed: goauthentik.io/outposts/embedded" "$1" && [ "$(awk "/managed: goauthentik.io\/outposts\/embedded/{f=1} f&&/- !KeyOf provider-/" "$1" | wc -l)" = 3 ]' _ $bp
+check "blueprint: embedded outpost carries all four providers" bash -c 'grep -q "managed: goauthentik.io/outposts/embedded" "$1" && [ "$(awk "/managed: goauthentik.io\/outposts\/embedded/{f=1} f&&/- !KeyOf provider-/" "$1" | wc -l)" = 4 ]' _ $bp
 check "blueprint is mounted read-only into server and worker" test "$(jq -c '[.["authentik-server"].volumes[], .["authentik-worker"].volumes[] | select(.target == "/blueprints/custom") | .read_only]' <<< "$ak")" = '[true,true]'
 
 tjson="$(docker compose -f traefik/compose.yaml --env-file config/lab.env config --format json)"
@@ -169,7 +169,7 @@ check "routers.yml: dashboard router = lan-allowlist then authentik, service api
 router_block() { awk -v r="$1" '$0 == "    " r ":" {f=1; next} /^    [a-z-]+:$/ {f=0} /^  [a-z]+:$/ {f=0} f' "$rt"; }
 export -f router_block
 export rt
-check "routers.yml: each *-outpost router = app host + /outpost.goauthentik.io/ -> service authentik, priority 100, allowlist only (no forward auth: it would loop)" bash -c 'for r in dashboard-outpost homepage-outpost it-tools-outpost; do b="$(router_block $r)"; grep -q "PathPrefix" <<< "$b" && grep -q "/outpost.goauthentik.io/" <<< "$b" && grep -q "priority: 100" <<< "$b" && grep -q "service: authentik$" <<< "$b" && grep -q -- "- lan-allowlist$" <<< "$b" && ! grep -q -- "- authentik$" <<< "$b" || exit 1; done' _
+check "routers.yml: each *-outpost router = app host + /outpost.goauthentik.io/ -> service authentik, priority 100, allowlist only (no forward auth: it would loop)" bash -c 'for r in dashboard-outpost homepage-outpost it-tools-outpost pihole-outpost; do b="$(router_block $r)"; grep -q "PathPrefix" <<< "$b" && grep -q "/outpost.goauthentik.io/" <<< "$b" && grep -q "priority: 100" <<< "$b" && grep -q "service: authentik$" <<< "$b" && grep -q -- "- lan-allowlist$" <<< "$b" && ! grep -q -- "- authentik$" <<< "$b" || exit 1; done' _
 check "break-glass is not a router of the default config (only the drop-in provides it)" bash -c '! grep -q "bg-traefik" traefik/dynamic/*.yml && grep -q "breakglass-auth" traefik/breakglass/bg-traefik.yml && grep -q "lan-allowlist" traefik/breakglass/bg-traefik.yml'
 check "middleware authentik: embedded outpost address on the authentik-auth network, trustForwardHeader, the 12 documented headers" bash -c 'f=traefik/dynamic/middlewares.yml; grep -q "address: http://authentik-server:9000/outpost.goauthentik.io/auth/traefik" $f && grep -q "trustForwardHeader: true" $f && [ "$(grep -c "^          - X-authentik-" $f)" = 12 ]'
 check "lan-allowlist ranges unchanged (LAN + tailnet)" bash -c 'f=traefik/dynamic/middlewares.yml; grep -q "10.0.0.0/24" $f && grep -q "100.64.0.0/10" $f'
@@ -286,8 +286,8 @@ state="$(printf '%s\n' \
   'print("STATE mfa", s.not_configured_action, s.device_classes)' | akshell | sed -n 's/^STATE //p')"
 check "akadmin exists and the bootstrap secret file is her password (wrapper exported it for the blueprint)" grep -q '^pw True' <<< "$state"
 check "akadmin is a member of homelab-admins (seeded by the blueprint)" grep -q "^groups \[.*'homelab-admins'" <<< "$state"
-check "all three providers are forward_single with the right external host and an EMPTY cookie domain" grep -q "^providers \[('homelab-dashboard', 'forward_single', 'https://dashboard.${DOMAIN_T}', ''), ('homelab-it-tools', 'forward_single', 'https://tools.${DOMAIN_T}', ''), ('homelab-traefik', 'forward_single', 'https://traefik.${DOMAIN_T}', '')\]" <<< "$state"
-check "the embedded outpost carries all three providers and points at https://auth.<domain>" grep -q "^outpost \[('goauthentik.io/outposts/embedded', \['homelab-dashboard', 'homelab-it-tools', 'homelab-traefik'\], 'https://auth.${DOMAIN_T}')\]" <<< "$state"
+check "all four providers are forward_single with the right external host and an EMPTY cookie domain" grep -q "^providers \[('homelab-dashboard', 'forward_single', 'https://dashboard.${DOMAIN_T}', ''), ('homelab-it-tools', 'forward_single', 'https://tools.${DOMAIN_T}', ''), ('homelab-pihole', 'forward_single', 'https://pihole.${DOMAIN_T}', ''), ('homelab-traefik', 'forward_single', 'https://traefik.${DOMAIN_T}', '')\]" <<< "$state"
+check "the embedded outpost carries all four providers and points at https://auth.<domain>" grep -q "^outpost \[('goauthentik.io/outposts/embedded', \['homelab-dashboard', 'homelab-it-tools', 'homelab-pihole', 'homelab-traefik'\], 'https://auth.${DOMAIN_T}')\]" <<< "$state"
 check "MFA validation stage: configure, totp + webauthn" grep -q "^mfa configure \['totp', 'webauthn'\]" <<< "$state"
 
 echo "--- recovery path"

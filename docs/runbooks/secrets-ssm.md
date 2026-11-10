@@ -7,7 +7,7 @@ Nothing secret is in git, Terraform state, CI or the repo checkout on the Pi.
 
 ## Model (ADR-013: script-managed, not Terraform-managed)
 
-- **The six SecureStrings are owner-managed.** `config/secrets-manifest.tsv` (rows that do not start with `config/`) is the source of truth for the list:
+- **The SecureStrings are owner-managed.** `config/secrets-manifest.tsv` (rows that do not start with `config/`) is the source of truth for the list:
   `authentik/secret-key`, `authentik/postgres-password`, `authentik/bootstrap-password`, `traefik/breakglass-htpasswd`, `tailscale/auth-key`, `homepage/authentik-token`.
   They are created, set and checked with `scripts/set-secret.sh` on the laptop (`--create`, set, `--unset`, `--check`). No Terraform resource or data source
   touches them. Why: the AWS provider reads a SecureString WithDecryption even for a write-only value, and the home-lab key policy correctly denies Decrypt to the HCP
@@ -21,7 +21,7 @@ Nothing secret is in git, Terraform state, CI or the repo checkout on the Pi.
 
 ```bash
 aws sso login --profile henniefrancis
-scripts/set-secret.sh --check                       # lists the six SecureStrings with key and version (never a value); fails if one is missing or not on alias/home-lab-ssm
+scripts/set-secret.sh --check                       # lists the owner-managed SecureStrings with key and version (never a value); fails if one is missing or not on alias/home-lab-ssm
 scripts/set-secret.sh --create tailscale/auth-key   # only for a missing one: creates it with the UNSET placeholder (key alias/home-lab-ssm, Standard, tags Project and ManagedBy=set-secret.sh); refuses to overwrite
 scripts/set-secret.sh authentik/secret-key          # set the value
 ```

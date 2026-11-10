@@ -26,8 +26,8 @@ check() { # check <name> <command...>
 manifest_secrets="$(grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv" | cut -f1 | grep -v '^config/' | sort)"
 manifest_config="$(grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv" | cut -f1 | grep '^config/' | sort)"
 tf_config="$(grep -oE '"config/[a-z0-9-]+"' "$REPO/terraform/edge/ssm.tf" | tr -d '"' | sort -u)"
-check "the six SecureStrings are owner-managed (ADR-013): the manifest lists six, ssm.tf has no SecureString resource and forgets the old ones" bash -c 'test "$(printf "%s
-" "$1" | wc -l)" -eq 6 && ! grep -Eq "^resource \"aws_ssm_parameter\" \"secret\"" "$2" && grep -q "from = aws_ssm_parameter.secret" "$2"' _ "$manifest_secrets" "$REPO/terraform/edge/ssm.tf"
+check "the seven SecureStrings are owner-managed (ADR-013): the manifest lists seven, ssm.tf has no SecureString resource and forgets the old ones" bash -c 'test "$(printf "%s
+" "$1" | wc -l)" -eq 7 && ! grep -Eq "^resource \"aws_ssm_parameter\" \"secret\"" "$2" && grep -q "from = aws_ssm_parameter.secret" "$2"' _ "$manifest_secrets" "$REPO/terraform/edge/ssm.tf"
 check "manifest config rows == ssm.tf config_params" test "$manifest_config" = "$tf_config"
 check "manifest has a tab-separated row per parameter" test "$(grep -vcE '^(#|$)' "$REPO/config/secrets-manifest.tsv")" -ge 11
 
@@ -75,6 +75,8 @@ V_HT='admin:$2y$05$fixturehashCCCC3333'
 V_TS="tskey-auth-fixtureDDDD4444"
 V_DOM="lab.example.test"
 V_ZONE="ZFIXTURE5555"
+V_PH="fixture-pihole-admin-EEEE6666"
+V_LAN="10.0.0.77"
 PH="UNSET-set-via-set-secret"
 
 # mkjson <out> [name=value ...]: overrides per name; type String for config/*, SecureString otherwise.
@@ -83,9 +85,9 @@ mkjson() {
   shift
   local -A val=(
     [authentik/secret-key]="$V_SK" [authentik/postgres-password]="$V_PG" [authentik/bootstrap-password]="$PH"
-    [traefik/breakglass-htpasswd]="$V_HT" [tailscale/auth-key]="$PH" [homepage/authentik-token]="$PH"
+    [traefik/breakglass-htpasswd]="$V_HT" [tailscale/auth-key]="$PH" [homepage/authentik-token]="$PH" [pihole/admin-password]="$V_PH"
     [config/domain]="$V_DOM" [config/route53-zone-id]="$V_ZONE" [config/ra-trust-anchor-arn]="$ta"
-    [config/ra-acme-profile-arn]="$pr" [config/ra-acme-role-arn]="$ro"
+    [config/ra-acme-profile-arn]="$pr" [config/ra-acme-role-arn]="$ro" [config/pi-lan-ip]="$V_LAN"
   )
   local kv k
   for kv in "$@"; do
@@ -110,7 +112,7 @@ run() { # run <extra args...>; sets rc, output in $T/out.log
 }
 no_values_in_output() {
   local v
-  for v in "$V_SK" "$V_PG" "$V_HT" "$V_TS" "$V_DOM" "$V_ZONE" "$ta" "$pr" "$ro" "$acct"; do
+  for v in "$V_SK" "$V_PG" "$V_HT" "$V_TS" "$V_DOM" "$V_ZONE" "$V_PH" "$V_LAN" "$ta" "$pr" "$ro" "$acct"; do
     grep -qF -- "$v" "$T/out.log" && return 1
   done
   return 0
@@ -135,7 +137,8 @@ check "bootstrap-password is an EMPTY 10002:10002 0400 file while UNSET (compose
 check "optional placeholder omitted (homepage token)" test ! -e "$AR/secrets/homepage/authentik-token"
 check "tailscale.env is an empty 0:0 0600 file while UNSET" test "$(attrs tailscale/tailscale.env)" = "0:0 600" -a ! -s "$AR/secrets/tailscale/tailscale.env"
 check "runtime.env 0:0 0600" test "$(attrs runtime.env)" = "0:0 600"
-check "runtime.env has the 5 variables" test "$(grep -cE '^(DOMAIN|ROUTE53_ZONE_ID|RA_TRUST_ANCHOR_ARN|RA_ACME_PROFILE_ARN|RA_ACME_ROLE_ARN)=' "$AR/secrets/runtime.env")" -eq 5
+check "runtime.env has the 6 variables" test "$(grep -cE '^(DOMAIN|ROUTE53_ZONE_ID|RA_TRUST_ANCHOR_ARN|RA_ACME_PROFILE_ARN|RA_ACME_ROLE_ARN|PI_LAN_IP)=' "$AR/secrets/runtime.env")" -eq 6
+check "pihole/admin-password 10006:10006 0400 (read by the Pi-hole entrypoint, M8)" test "$(attrs pihole/admin-password)" = "10006:10006 400"
 check "no secret value or ARN in the script output" no_values_in_output
 check "no staging dir left behind" no_staging
 check "aws-config is root 0600 and has no key material" test "$(stat -c '%u %a' "$T/etc/aws-config")" = "0 600"
@@ -247,7 +250,7 @@ check "fixture really lacks a trailing newline" test "$(tail -c 1 "$T/nonl.tsv" 
 run3 "$T/nonl.tsv"
 check "manifest without a trailing newline: exit 0 (QA-M-1)" test "$rc" -eq 0
 check "manifest without a trailing newline: the LAST row ($last_param) is written (QA-M-1)" grep -q "^${last_var}=" "$AR3/secrets/runtime.env"
-check "row count in runtime.env equals the 5 env rows of runtime.env" test "$(grep -c '=' "$AR3/secrets/runtime.env")" -eq 5
+check "row count in runtime.env equals the 6 env rows of runtime.env" test "$(grep -c '=' "$AR3/secrets/runtime.env")" -eq 6
 # CRLF manifest
 good_manifest | sed 's/$/\r/' > "$T/crlf.tsv"
 run3 "$T/crlf.tsv"

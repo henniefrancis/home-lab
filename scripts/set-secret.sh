@@ -9,7 +9,7 @@
 #   scripts/set-secret.sh --check           list every expected SecureString with its key and version (never a value); exit 1 when one is
 #                                           missing, is not a SecureString or is not on the home-lab key
 #
-# The six SecureStrings are owner-managed, NOT Terraform-managed (ADR-013): config/secrets-manifest.tsv (rows that do not start with
+# The SecureStrings are owner-managed, NOT Terraform-managed (ADR-013): config/secrets-manifest.tsv (rows that do not start with
 # config/) is the source of truth for the list. Terraform owns only /home-lab/config/*.
 #
 # Every write passes --key-id (default alias/home-lab-ssm, the customer-managed key from terraform/bootstrap), so a re-set

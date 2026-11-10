@@ -38,7 +38,7 @@ for t in docker jq curl openssl; do
 done
 export MSYS_NO_PATHCONV=1 # Git Bash on Windows: keep "container:/path" arguments intact
 # Hermetic: the shell environment would win over --env-file, so drop anything that lab.env defines.
-unset PROXY_SUBNET AUTHENTIK_AUTH_SUBNET APPS_ROOT DOMAIN AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID ITTOOLS_UID ITTOOLS_GID TZ
+unset PROXY_SUBNET AUTHENTIK_AUTH_SUBNET APPS_ROOT DOMAIN AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID ITTOOLS_UID ITTOOLS_GID PIHOLE_UID PIHOLE_GID PIHOLE_UPSTREAMS PI_LAN_IP TZ
 
 fails=0
 ok() { printf 'PASS  %s\n' "$*"; }
@@ -74,7 +74,7 @@ mkdir -p "$stage/secrets/tailscale" "$stage/secrets/authentik" "$stage/secrets/t
 : > "$stage/secrets/tailscale/tailscale.env"
 
 export APPS_ROOT="$here" DOMAIN="$DOMAIN_T" ROUTE53_ZONE_ID=Z0000000000000000000
-export RA_TRUST_ANCHOR_ARN=dummy-trust-anchor RA_ACME_PROFILE_ARN=dummy-profile RA_ACME_ROLE_ARN=dummy-role
+export RA_TRUST_ANCHOR_ARN=dummy-trust-anchor RA_ACME_PROFILE_ARN=dummy-profile RA_ACME_ROLE_ARN=dummy-role PI_LAN_IP=10.0.0.2
 export ACME_CA_SERVER=https://127.0.0.1:1/dir
 all="$(docker compose --env-file config/lab.env config --format json)"
 alone="$(docker compose -f it-tools/compose.yaml --env-file config/lab.env config --format json)"

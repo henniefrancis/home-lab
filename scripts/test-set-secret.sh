@@ -127,9 +127,9 @@ check "--create refuses a name that is not a SecureString row of the manifest (e
 run 'x\nx\n' tailscale/auth-key
 check "a normal set never sends Tags (they are only valid with Overwrite false)" bash -c '! jq -e "has(\"Tags\")" "$1"' _ "$MOCK_OUT/req.json"
 
-good='[{"n":"/home-lab/authentik/secret-key","t":"SecureString","k":"alias/home-lab-ssm","v":3},{"n":"/home-lab/authentik/postgres-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/authentik/bootstrap-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/traefik/breakglass-htpasswd","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/tailscale/auth-key","t":"SecureString","k":"alias/home-lab-ssm","v":4},{"n":"/home-lab/homepage/authentik-token","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/config/domain","t":"String","k":null,"v":1}]'
+good='[{"n":"/home-lab/authentik/secret-key","t":"SecureString","k":"alias/home-lab-ssm","v":3},{"n":"/home-lab/authentik/postgres-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/authentik/bootstrap-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/traefik/breakglass-htpasswd","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/tailscale/auth-key","t":"SecureString","k":"alias/home-lab-ssm","v":4},{"n":"/home-lab/homepage/authentik-token","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/pihole/admin-password","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/config/domain","t":"String","k":null,"v":1}]'
 MOCK_PARAMS="$good" run '' --check
-check "--check passes when all six SecureStrings exist on alias/home-lab-ssm (config/* is not required to be a SecureString)" bash -c 'test "$1" -eq 0 && grep -q "check OK" "$2" && grep -q "authentik/secret-key" "$2"' _ "$rc" "$work/o"
+check "--check passes when all seven SecureStrings exist on alias/home-lab-ssm (config/* is not required to be a SecureString)" bash -c 'test "$1" -eq 0 && grep -q "check OK" "$2" && grep -q "authentik/secret-key" "$2"' _ "$rc" "$work/o"
 check "--check prints key and version only: no value, nothing was written" bash -c '! grep -qi "value" "$1" && test ! -f "$2/req.json"' _ "$work/o" "$MOCK_OUT"
 bad_missing="$(jq -c 'map(select(.n != "/home-lab/tailscale/auth-key"))' <<< "$good")"
 MOCK_PARAMS="$bad_missing" run '' --check
@@ -142,7 +142,7 @@ MOCK_PARAMS="$bad_type" run '' --check
 check "--check fails when a parameter is a plain String" bash -c 'test "$1" -eq 1 && grep -q "NOT a SecureString" "$2"' _ "$rc" "$work/o"
 run 'x\n' --check authentik/secret-key
 check "--check takes no name (exit 2)" test "$rc" -eq 2
-check "the expected list is the manifest: six SecureStrings" test "$(grep -vE '^(#|$)' config/secrets-manifest.tsv | cut -f1 | grep -vc '^config/')" -eq 6
+check "the expected list is the manifest: seven SecureStrings" test "$(grep -vE '^(#|$)' config/secrets-manifest.tsv | cut -f1 | grep -vc '^config/')" -eq 7
 
 # NEW-10: --check and --create must not pass vacuously on an unreadable, empty or comment-only manifest, and must survive a huge one
 printf '# only comments\n\n' > "$work/comments.tsv"

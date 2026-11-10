@@ -389,7 +389,7 @@ check_layout() {
   check_dir "$ETC_DIR" 0:0 700 etc-home-lab
   check_dir "$PKI_DIR" 0:0 700 pki-dir
   check_dir "$APPS_ROOT/secrets" 0:0 700 secrets-dir
-  for d in traefik authentik homepage tailscale; do
+  for d in traefik authentik homepage tailscale pihole; do
     if [ -d "$APPS_ROOT/$d" ]; then pass "apps-$d" "$APPS_ROOT/$d"; else fail "apps-$d" "$APPS_ROOT/$d missing (run bootstrap.sh)"; fi
   done
   for d in proxy authentik-internal authentik-auth; do
@@ -397,7 +397,7 @@ check_layout() {
   done
   # F02: the service uids must not be real host users (a file owned by the login user is readable by whoever logs in).
   local k id
-  for k in AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID; do
+  for k in AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID ITTOOLS_UID ITTOOLS_GID PIHOLE_UID PIHOLE_GID; do
     id="$(lab_env_get "$LAB_ENV" "$k")"
     if ! [[ "$id" =~ ^[0-9]+$ ]]; then
       fail "svc-id:$k" "$k missing or not numeric in $LAB_ENV"
@@ -414,6 +414,11 @@ check_layout() {
     check_dir "$APPS_ROOT/authentik/postgres" "$(lab_env_get "$LAB_ENV" AUTHENTIK_PG_UID):$(lab_env_get "$LAB_ENV" AUTHENTIK_PG_GID)" 700 authentik-postgres
   else
     fail authentik-data "$APPS_ROOT/authentik/data missing (re-run bootstrap.sh)"
+  fi
+  if [ -d "$APPS_ROOT/pihole/etc-pihole" ]; then
+    check_dir "$APPS_ROOT/pihole/etc-pihole" "$(lab_env_get "$LAB_ENV" PIHOLE_UID):$(lab_env_get "$LAB_ENV" PIHOLE_GID)" 700 pihole-data
+  else
+    fail pihole-data "$APPS_ROOT/pihole/etc-pihole missing (re-run bootstrap.sh)"
   fi
   # Under pipefail, `lsmod | grep -q` reported a loaded module as missing: grep -q exits at the first match, lsmod dies of SIGPIPE on its next
   # write and the pipeline fails (seen live 2026-11-10). What Tailscale needs is the device, whether tun is a module or built in.
@@ -517,6 +522,17 @@ check_hardening() {
       fail ports-ipv6 "a listener on [::]:80 or [::]:443 exists: a global IPv6 address would expose Traefik (publish IPv4 only, see traefik/compose.yaml)"
     else
       pass ports-ipv6 "no wildcard IPv6 listener on 80/443"
+    fi
+    # M8: Pi-hole publishes 53 on IPv4 only. The Pi has a global IPv6 address and no IPv6 firewall, so a listener on [::]:53 (or any
+    # non-loopback IPv6 address) would be an open resolver on the internet. TCP and UDP are both checked.
+    # `ss` prints a dual-stack wildcard as *:53, an IPv6 one as [::]:53 or [addr]:53; only [::1] (loopback) is harmless.
+    listeners="$( { ss -H -tln; ss -H -uln; } 2> /dev/null | awk '{print $4}')"
+    local dns6
+    dns6="$(grep -E '^(\[[^]]*\]|\*):53$' <<< "$listeners" | grep -vE '^\[::1\]:53$' || true)"
+    if [ -n "$dns6" ]; then
+      fail dns-ipv6 "a DNS listener on an IPv6 address (port 53): an open resolver on the internet (Pi-hole must publish IPv4 only, pihole/compose.yaml)"
+    else
+      pass dns-ipv6 "no IPv6 DNS listener on port 53"
     fi
   fi
   check_units

@@ -10,3 +10,4 @@ include:
   - path: tailscale/compose.yaml
   - path: homepage/compose.yaml
   - path: it-tools/compose.yaml
+  - path: pihole/compose.yaml

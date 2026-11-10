@@ -20,6 +20,10 @@
         icon: it-tools.png
         href: https://tools.{{HOMEPAGE_VAR_DOMAIN}}/
         description: Handy developer utilities
+    - Pi-hole:
+        icon: pi-hole.png
+        href: https://pihole.{{HOMEPAGE_VAR_DOMAIN}}/admin/
+        description: DNS filtering for the house
 
 - Coming soon:
     - Home Assistant:
@@ -34,10 +38,6 @@
         icon: netdata.png
         href: https://netdata.{{HOMEPAGE_VAR_DOMAIN}}/
         description: Host monitoring
-    - Pi-hole:
-        icon: pi-hole.png
-        href: https://pihole.{{HOMEPAGE_VAR_DOMAIN}}/
-        description: DNS filtering
     - Portainer:
         icon: portainer.png
         href: https://portainer.{{HOMEPAGE_VAR_DOMAIN}}/

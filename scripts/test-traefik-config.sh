@@ -48,6 +48,7 @@ export ROUTE53_ZONE_ID=Z0000000000000000000
 export RA_TRUST_ANCHOR_ARN=dummy-trust-anchor-arn
 export RA_ACME_PROFILE_ARN=dummy-profile-arn
 export RA_ACME_ROLE_ARN=dummy-role-arn
+export PI_LAN_IP=10.0.0.2
 export ACME_CA_SERVER=https://127.0.0.1:1/dir
 
 json="$(docker compose -f traefik/compose.yaml --env-file config/lab.env config --format json)"

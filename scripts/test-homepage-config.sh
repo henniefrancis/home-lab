@@ -43,7 +43,7 @@ command -v jq > /dev/null || {
 }
 export MSYS_NO_PATHCONV=1 # Git Bash on Windows: keep "container:/path" arguments intact
 # Hermetic: the shell environment would win over --env-file, so drop anything that lab.env defines.
-unset PROXY_SUBNET AUTHENTIK_AUTH_SUBNET APPS_ROOT DOMAIN AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID TZ
+unset PROXY_SUBNET AUTHENTIK_AUTH_SUBNET APPS_ROOT DOMAIN AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID ITTOOLS_UID ITTOOLS_GID PIHOLE_UID PIHOLE_GID PIHOLE_UPSTREAMS PI_LAN_IP TZ
 
 fails=0
 ok() { printf 'PASS  %s\n' "$*"; }
@@ -81,7 +81,7 @@ mkdir -p "$stage/secrets/tailscale" "$stage/secrets/authentik" "$stage/secrets/t
 : > "$stage/secrets/tailscale/tailscale.env"
 
 export APPS_ROOT="$here" DOMAIN="$DOMAIN_T" ROUTE53_ZONE_ID=Z0000000000000000000
-export RA_TRUST_ANCHOR_ARN=dummy-trust-anchor RA_ACME_PROFILE_ARN=dummy-profile RA_ACME_ROLE_ARN=dummy-role
+export RA_TRUST_ANCHOR_ARN=dummy-trust-anchor RA_ACME_PROFILE_ARN=dummy-profile RA_ACME_ROLE_ARN=dummy-role PI_LAN_IP=10.0.0.2
 export ACME_CA_SERVER=https://127.0.0.1:1/dir
 all="$(docker compose --env-file config/lab.env config --format json)"
 alone="$(docker compose -f homepage/compose.yaml --env-file config/lab.env config --format json)"
@@ -136,7 +136,7 @@ check "tiles are plain links: no docker server or container key anywhere in serv
 for h in traefik auth ha tools links netdata pihole portainer; do
   check "tile href https://$h.{{HOMEPAGE_VAR_DOMAIN}}/" grep -q "href: https://$h\.{{HOMEPAGE_VAR_DOMAIN}}/" "$(cfgfile services.yaml)"
 done
-check "the five services still to come are in the Coming soon group, IT Tools (M7) is live in Tools" bash -c 'awk "/^- Coming soon:/{f=1} f" "$1" | grep -c "href:" | grep -qx 5 && awk "/^- Tools:/{f=1;next} /^- /{f=0} f" "$1" | grep -q "href: https://tools\."' _ "$(cfgfile services.yaml)"
+check "the four services still to come are in the Coming soon group; IT Tools (M7) and Pi-hole (M8) are live in Tools" bash -c 'awk "/^- Coming soon:/{f=1} f" "$1" | grep -c "href:" | grep -qx 4 && t="$(awk "/^- Tools:/{f=1;next} /^- /{f=0} f" "$1")" && grep -q "href: https://tools\." <<< "$t" && grep -q "href: https://pihole\." <<< "$t"' _ "$(cfgfile services.yaml)"
 check "settings: update check off, version hidden" bash -c 'grep -qx "disableUpdateCheck: true" "$1" && grep -qx "hideVersion: true" "$1"' _ "$(cfgfile settings.yaml)"
 check "widgets make no external request (no search, weather or API widget)" bash -c '! grep -Eq "^- (search|openmeteo|openweathermap|weatherapi|glances|unifi)" "$1"' _ "$(cfgfile widgets.yaml)"
 check "no HOMEPAGE_FILE_/key placeholder in committed config (the Authentik widget is opt-in: runbook)" bash -c '! grep -rq "HOMEPAGE_FILE_\|HOMEPAGE_VAR_.*KEY" homepage/config' _

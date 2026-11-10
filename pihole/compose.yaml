@@ -1,0 +1,95 @@
+---
+# Pi-hole (R17, milestone M8): DNS for the whole LAN (the router hands out the Pi first and itself second), web UI at
+# https://pihole.${DOMAIN} behind Authentik forward auth plus Pi-hole's own password.
+#
+# Start (Pi):  sudo scripts/deploy.sh --only pihole       (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       config/lab.env (PIHOLE_UID, PIHOLE_UPSTREAMS) + ${APPS_ROOT}/secrets/runtime.env (DOMAIN, PI_LAN_IP from SSM
+#              config/pi-lan-ip), the secret file pihole/admin-password (SSM SecureString, scripts/set-secret.sh), the proxy network and
+#              ${APPS_ROOT}/pihole/etc-pihole from scripts/bootstrap.sh, Traefik and Authentik for the web UI.
+# Runbook:     docs/runbooks/m8-pihole.md        Self-test: scripts/test-pihole-config.sh
+#
+# DNS is published on IPv4 ONLY ("0.0.0.0:53"): the Pi has a global IPv6 address and no IPv6 firewall, so a listener on [::]:53 would be
+# an open resolver on the internet (preflight.sh: dns-ipv6 FAIL). IPv4 is not forwarded by the router (ADR-003), so only the LAN and the
+# tailnet reach it. No DHCP (the router keeps DHCP), no NTP server or client.
+#
+# Identity: the image's start script runs as root only to prepare the container, then FTL (DNS and web server) runs as PIHOLE_UID
+# (10006; the image default 1000 is the Pi's login user, so it is overridden). Capabilities are dropped to the list the image documents
+# for this setup: CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID for the root start script, SETFCAP so it can grant FTL exactly
+# NET_BIND_SERVICE (port 53) and CHOWN as file capabilities, and NET_BIND_SERVICE itself. No NET_ADMIN or NET_RAW (no DHCP), no SYS_TIME
+# (no NTP), no SYS_NICE. no-new-privileges is NOT set: it would stop FTL from receiving those file capabilities, and the image then
+# refuses to run FTL as non-root (the alternative, FTL as root, is worse). The root file system stays writable because the start
+# script edits /etc/passwd for PIHOLE_UID; logs and scratch files are tmpfs.
+#
+# Every FTL setting given here is read-only in the web UI ("single source of truth", Pi-hole docs). SD-card wear: the query database
+# keeps 7 days, the log is in memory.
+services:
+  pihole:
+    image: pihole/pihole:2026.10.1@sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9
+    container_name: pihole
+    hostname: pihole
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+      - SETFCAP
+      - NET_BIND_SERVICE
+    mem_limit: 256m
+    pids_limit: 128
+    # IPv4 only (see the header): a bare "53:53" also makes docker-proxy listen on [::].
+    ports:
+      - "0.0.0.0:53:53/udp"
+      - "0.0.0.0:53:53/tcp"
+    networks:
+      - proxy
+    tmpfs:
+      - /tmp
+      - /var/log/pihole
+    environment:
+      TZ: ${TZ:-UTC}
+      PIHOLE_UID: ${PIHOLE_UID:?set PIHOLE_UID in config/lab.env}
+      PIHOLE_GID: ${PIHOLE_GID:?set PIHOLE_GID in config/lab.env}
+      # The web password comes from the secret file (name under /run/secrets), never from the environment.
+      WEBPASSWORD_FILE: pihole_admin_password
+      # Bridge network: queries arrive from the Docker gateway's side, so FTL must listen on all interfaces (Pi-hole docs).
+      FTLCONF_dns_listeningMode: ALL
+      FTLCONF_dns_upstreams: ${PIHOLE_UPSTREAMS:?set PIHOLE_UPSTREAMS in config/lab.env}
+      FTLCONF_dns_dnssec: "true"
+      FTLCONF_dns_domainNeeded: "true"
+      FTLCONF_dns_bogusPriv: "true"
+      # Lab names answer with the Pi's LAN address for LAN clients (tailnet clients keep using public DNS, which answers the tailnet
+      # address). An explicit list, not a domain-wide wildcard: the apex and www are never answered with the Pi (R5). Every Traefik host
+      # must be here; scripts/test-pihole-config.sh checks that.
+      FTLCONF_dns_hosts: >-
+        ${PI_LAN_IP:?set PI_LAN_IP (runtime.env, SSM config/pi-lan-ip)}
+        auth.${DOMAIN:?set DOMAIN (runtime.env)} dashboard.${DOMAIN} traefik.${DOMAIN} bg-traefik.${DOMAIN} tools.${DOMAIN}
+        pihole.${DOMAIN} links.${DOMAIN} netdata.${DOMAIN} portainer.${DOMAIN} ha.${DOMAIN}
+      FTLCONF_webserver_port: "80"
+      FTLCONF_webserver_domain: pihole.${DOMAIN}
+      FTLCONF_database_maxDBdays: "7"
+      FTLCONF_misc_nice: "-999"
+      FTLCONF_ntp_ipv4_active: "false"
+      FTLCONF_ntp_ipv6_active: "false"
+      FTLCONF_ntp_sync_active: "false"
+      FTLCONF_dhcp_active: "false"
+    secrets:
+      - pihole_admin_password
+    volumes:
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/pihole/etc-pihole:/etc/pihole
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  proxy:
+    external: true
+
+secrets:
+  pihole_admin_password:
+    file: ${APPS_ROOT}/secrets/pihole/admin-password

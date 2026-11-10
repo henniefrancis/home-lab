@@ -78,6 +78,24 @@ http:
       middlewares:
         - lan-allowlist
 
+    # Pi-hole web UI and API (M8), same pattern; Pi-hole asks for its own password after the Authentik login.
+    pihole:
+      rule: Host(`pihole.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: pihole
+      middlewares:
+        - lan-allowlist
+        - authentik
+    pihole-outpost:
+      rule: Host(`pihole.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
   services:
     # authentik-server on the dedicated authentik-auth network (shared with Traefik only). Also the target of the forward-auth
     # middleware in middlewares.yml.
@@ -93,3 +111,7 @@ http:
       loadBalancer:
         servers:
           - url: http://it-tools:8080
+    pihole:
+      loadBalancer:
+        servers:
+          - url: http://pihole:80

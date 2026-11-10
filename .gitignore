@@ -46,6 +46,7 @@ Thumbs.db
 .authentik-test.*/
 .homepage-test.*/
 .it-tools-test.*/
+.pihole-test.*/
 .traefik-test.*/
 .traefik-test-apps.*/
 

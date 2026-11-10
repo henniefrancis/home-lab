@@ -50,7 +50,7 @@ trivy_img="$(awk '$1=="FROM" && $4=="trivy" {print $2}' ci/images/trivy/Dockerfi
 # Pulled images from the compose files, plus the runtime base images of the two locally built ones (ra-helper, it-tools). The
 # it-tools "AS app" stage is left out on purpose: only its static files are copied into our image, none of its packages ship.
 images="$({
-  grep -hE '^[[:space:]]+image:[[:space:]]' traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml |
+  grep -hE '^[[:space:]]+image:[[:space:]]' traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml pihole/compose.yaml |
     awk '{print $2}'
   grep -hE '^FROM ' traefik/ra-helper/Dockerfile it-tools/Dockerfile | grep -v ' AS app$' | awk '{print $2}'
 } | grep '@sha256:' | sort -u)"
