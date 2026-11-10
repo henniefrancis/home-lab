@@ -175,7 +175,7 @@ served 4 "a bad SERVED_CERT_EXPECT value" SERVED_CERT_EXPECT=bogus
 rc=0
 HOME_LAB_SERVED_ADDR="127.0.0.1:$PORT" SERVED_CERT_HOST='a b' bash scripts/served-cert-check.sh > "$T/o" 2>&1 || rc=$?
 check "a host name with a space is refused (exit 4)" test "$rc" -eq 4
-# the repository's own config/lab.env asks for the staging CA: with no override the expectation comes from it
+# with no override the expectation comes from the CA that the repository's own config/lab.env asks for (staging before M6, production after)
 check "with no override the expectation comes from ACME_CA_SERVER in config/lab.env" bash -c 'grep -q "ACME_CA_SERVER" scripts/served-cert-check.sh && grep -q "acme-v02" scripts/served-cert-check.sh && grep -q "acme-staging-v02" scripts/served-cert-check.sh'
 
 # ---------------------------------------------------------------- alert.sh with a mock aws

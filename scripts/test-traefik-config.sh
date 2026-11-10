@@ -85,7 +85,7 @@ check "breakglass_users secret file is owned for the traefik uid (manifest 10004
 check "traefik key is mounted only into ra-helper" test "$(jq -c '[.services | to_entries[] | select((.value.secrets // []) | map(.source) | index("ra_acme_key")) | .key]' <<< "$json")" = '["ra-helper"]'
 check "no host key reference anywhere" bash -c '! printf "%s" "$1" | grep -q "host\.key"' _ "$json"
 check "ra-helper shares traefik's network namespace" test "$(jq -r '.services["ra-helper"].network_mode' <<< "$json")" = "service:traefik"
-check "ACME storage file is per CA environment" bash -c 'printf "%s\n" "$@" | grep -q -- "acme\.storage=/letsencrypt/acme-staging\.json"' _ "${flags[@]}"
+check "ACME storage file is per CA environment (acme-<ACME_ENV>.json from lab.env)" bash -c 'e="$1"; shift; [ -n "$e" ] && printf "%s\n" "$@" | grep -q -- "acme\.storage=/letsencrypt/acme-${e}\.json"' _ "$(sed -n 's/^ACME_ENV=//p' config/lab.env)" "${flags[@]}"
 
 check "tailscale keeps NoSNAT (real client source reaches the allowlist)" grep -q -- "snat-subnet-routes=false" tailscale/compose.yaml
 check "tailscale: cap_drop ALL with NET_ADMIN only (no NET_RAW), read-only root, no-new-privileges (SEC-M4)" bash -c 'allj | jq -e ".services.tailscale | (.cap_drop == [\"ALL\"]) and (.cap_add == [\"NET_ADMIN\"]) and (.read_only == true) and (.security_opt | index(\"no-new-privileges:true\"))"'
