@@ -388,6 +388,7 @@ check_layout() {
   local d
   check_dir "$ETC_DIR" 0:0 700 etc-home-lab
   check_dir "$PKI_DIR" 0:0 700 pki-dir
+  check_dir "$APPS_ROOT" 0:0 700 apps-root
   check_dir "$APPS_ROOT/secrets" 0:0 700 secrets-dir
   for d in traefik authentik homepage tailscale pihole; do
     if [ -d "$APPS_ROOT/$d" ]; then pass "apps-$d" "$APPS_ROOT/$d"; else fail "apps-$d" "$APPS_ROOT/$d missing (run bootstrap.sh)"; fi
@@ -416,7 +417,8 @@ check_layout() {
     fail authentik-data "$APPS_ROOT/authentik/data missing (re-run bootstrap.sh)"
   fi
   if [ -d "$APPS_ROOT/pihole/etc-pihole" ]; then
-    check_dir "$APPS_ROOT/pihole/etc-pihole" "$(lab_env_get "$LAB_ENV" PIHOLE_UID):$(lab_env_get "$LAB_ENV" PIHOLE_GID)" 700 pihole-data
+    # 755 is what the image enforces on every start (pihole-FTL-prestart.sh); $APPS_ROOT (root 0700) keeps other users out.
+    check_dir "$APPS_ROOT/pihole/etc-pihole" "$(lab_env_get "$LAB_ENV" PIHOLE_UID):$(lab_env_get "$LAB_ENV" PIHOLE_GID)" 755 pihole-data
   else
     fail pihole-data "$APPS_ROOT/pihole/etc-pihole missing (re-run bootstrap.sh)"
   fi

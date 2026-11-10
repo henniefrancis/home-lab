@@ -76,7 +76,9 @@ else
 fi
 
 step "3/7 Directory layout"
-install -d -m 0755 -o root -g root "$APPS_ROOT"
+# 0700 like fetch-secrets.sh sets it on every deploy: only root (and the Docker daemon) traverses $APPS_ROOT. Containers reach their
+# directories through bind mounts, never through this path, so nothing needs to cross it as another user.
+install -d -m 0700 -o root -g root "$APPS_ROOT"
 for d in traefik authentik homepage tailscale pihole; do
   install -d -m 0755 -o root -g root "$APPS_ROOT/$d"
 done
@@ -107,7 +109,9 @@ install -d -m 0700 -o "$TR_UID" -g "$TR_GID" "$APPS_ROOT/traefik/letsencrypt"
 chown -R "$TR_UID:$TR_GID" "$APPS_ROOT/traefik/letsencrypt"
 install -d -m 0700 -o "$AK_UID" -g "$AK_GID" "$APPS_ROOT/authentik/data"
 install -d -m 0700 -o "$PG_UID" -g "$PG_GID" "$APPS_ROOT/authentik/postgres"
-install -d -m 0700 -o "$PH_UID" -g "$PH_GID" "$APPS_ROOT/pihole/etc-pihole"
+# 0755, not 0700: the image's pihole-FTL-prestart.sh resets every directory under /etc/pihole to 0755 (files 0640) on each start.
+# Nothing below is reachable by other users anyway: $APPS_ROOT itself is root 0700.
+install -d -m 0755 -o "$PH_UID" -g "$PH_GID" "$APPS_ROOT/pihole/etc-pihole"
 # fetch-secrets.sh publishes releases under .secrets.d and points $APPS_ROOT/secrets at the current one (atomic swap).
 install -d -m 0700 -o root -g root "$APPS_ROOT/.secrets.d"
 if [ ! -L "$APPS_ROOT/secrets" ]; then
