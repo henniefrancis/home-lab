@@ -209,6 +209,9 @@ GHCR and GitHub. It ends with `Summary: N PASS, N WARN, N FAIL`. WARNs are decis
 | `ip-reservation` WARN | Create the DHCP reservation in the router (U5) using the MAC the line prints. |
 | `boot-device` WARN | Move to a USB SSD when convenient (plan R5). Not blocking. |
 | `ssh` WARN (password auth on) | Switch to key-only SSH, or keep SSH off and use Pi Connect (A4). |
+| `auto-updates` WARN (full stage) | `sudo scripts/bootstrap.sh`: installs `unattended-upgrades` and writes `/etc/apt/apt.conf.d/52home-lab-auto-upgrades` (daily Debian security updates, never an automatic reboot; Docker and Raspberry Pi archive updates stay manual) (H1). |
+| `reboot-required` WARN (full stage) | An update (often the kernel) needs a reboot: `sudo reboot` at a quiet moment, then `sudo scripts/preflight.sh --stage full`. |
+| `lan-services` WARN (full stage) | `sudo scripts/bootstrap.sh` stops and masks avahi (mDNS) and Bluetooth, which the lab does not use (H2). Undo: `sudo systemctl unmask <unit> && sudo systemctl enable --now <unit>`. |
 | `https:*` FAIL | A firewall or DNS problem between the Pi and the named host. |
 
 Re-run `scripts/preflight.sh` until there is no FAIL.

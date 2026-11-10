@@ -6,14 +6,16 @@
 # What it does (safe to re-run; each step skips when already satisfied):
 #   1. Refuses to continue if scripts/preflight.sh reports a FAIL.
 #   2. apt: curl, unzip, gnupg, jq, openssl, ca-certificates, git, openssh-client (ssh-keygen: commit signature check), util-linux
-#      (flock), age (client-side encryption of the Authentik backup, K5) - only the missing ones. age comes from Debian's own package
-#      (trixie: 1.2.x, apt's signature check is the integrity control); nothing is pinned beyond what apt installs.
+#      (flock), age (client-side encryption of the Authentik backup, K5), unattended-upgrades (H1) - only the missing ones. age comes
+#      from Debian's own package (trixie: 1.2.x, apt's signature check is the integrity control); nothing is pinned beyond what apt installs.
 #   3. Directory layout: $APPS_ROOT/{traefik,authentik,homepage,tailscale,secrets}, /etc/home-lab, /etc/home-lab/pki; the Authentik
 #      data and Postgres directories owned by the service uids from config/lab.env (never the login user).
 #   4. Docker networks (plan 6.1): proxy, authentik-auth (Traefik <-> Authentik forward auth only), authentik-internal (internal).
 #      No docker socket proxy exists any more (SEC-H2).
 #   5. Loads and persists the tun kernel module and sets net.ipv4.conf.all.src_valid_mark=1 on the host (Tailscale; the
-#      container cannot write /proc/sys, so this is done here instead of adding capabilities).
+#      container cannot write /proc/sys, so this is done here instead of adding capabilities). Host hardening (scripts/lib/host.sh):
+#      key-only SSH (A4), daily Debian security updates with no automatic reboot (H1), avahi and bluetooth masked (H2), and a cloud-init
+#      drop-in that only turns SSH passwords on is removed (H3).
 #   6. Installs AWS CLI v2 (aarch64): official installer, GPG signature verified against the AWS CLI team key.
 #   7. Installs aws_signing_helper at the pinned version: SHA256 verified against the AWS user guide value
 #      (scripts/lib/pins.sh cites the source), installed 0555 root.
@@ -28,6 +30,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/units.sh"
 # shellcheck source=lib/pins.sh
 . "$SCRIPT_DIR/lib/pins.sh"
+# shellcheck source=lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 REPO_DIR="$(repo_dir "${BASH_SOURCE[0]}")"
 LAB_ENV="$REPO_DIR/config/lab.env"
 
@@ -36,7 +40,7 @@ for a in "$@"; do
   case "$a" in
     --upgrade-aws) UPGRADE_AWS=1 ;;
     -h | --help)
-      sed -n '2,17p' "$0"
+      sed -n '2,22p' "$0"
       exit 0
       ;;
     *) die "unknown argument: $a" ;;
@@ -60,7 +64,7 @@ step "1/7 Preflight (system checks)"
 
 step "2/7 Required packages"
 missing=()
-for pair in curl:curl unzip:unzip gpg:gnupg jq:jq openssl:openssl git:git ssh-keygen:openssh-client flock:util-linux age:age; do
+for pair in curl:curl unzip:unzip gpg:gnupg jq:jq openssl:openssl git:git ssh-keygen:openssh-client flock:util-linux age:age unattended-upgrade:unattended-upgrades; do
   command -v "${pair%%:*}" > /dev/null 2>&1 || missing+=("${pair##*:}")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -170,7 +174,42 @@ if [ -f /etc/ssh/sshd_config ]; then
       if systemctl is-active --quiet ssh 2> /dev/null; then systemctl reload ssh 2> /dev/null || warn "could not reload ssh"; fi
     fi
   fi
+  # H3: Raspberry Pi Imager's cloud-init writes 50-cloud-init.conf with "PasswordAuthentication yes" when password SSH was ticked. The
+  # 00- file above already wins, but the stale line misleads whoever reads the directory. Removed only when that is its sole setting.
+  if cloud_init_pw_only "$CLOUD_INIT_SSHD_FILE"; then
+    rm -f "$CLOUD_INIT_SSHD_FILE"
+    info "removed $CLOUD_INIT_SSHD_FILE (its only setting was PasswordAuthentication yes)"
+  elif [ -f "$CLOUD_INIT_SSHD_FILE" ]; then
+    info "left $CLOUD_INIT_SSHD_FILE in place: it holds more than the password setting (the 00- file still wins)"
+  fi
 fi
+
+# H1: daily Debian security updates (unattended-upgrades), no automatic reboot; preflight.sh warns when a reboot is pending.
+AUTO_WANT="$(auto_updates_conf)"
+if [ "$(cat "$AUTO_UPDATES_FILE" 2> /dev/null || true)" != "$AUTO_WANT" ]; then
+  install -d -m 0755 "$APT_CONF_DIR"
+  printf '%s\n' "$AUTO_WANT" > "$AUTO_UPDATES_FILE"
+  chmod 0644 "$AUTO_UPDATES_FILE"
+  info "wrote $AUTO_UPDATES_FILE (daily security updates, no automatic reboot)"
+fi
+if systemctl enable --now apt-daily.timer apt-daily-upgrade.timer > /dev/null 2>&1; then
+  info "apt-daily.timer and apt-daily-upgrade.timer enabled (they run unattended-upgrade)"
+else
+  warn "could not enable apt-daily.timer and apt-daily-upgrade.timer: security updates will not install on their own"
+fi
+
+# H2: no mDNS or Bluetooth on a server: fewer listeners on the LAN. Masked because both are D-Bus activatable (lib/host.sh).
+masked=()
+for u in "${LAN_SERVICE_UNITS[@]}"; do
+  systemctl cat "$u" > /dev/null 2>&1 || continue
+  [ "$(systemctl is-enabled "$u" 2> /dev/null || true)" = masked ] && continue
+  if systemctl disable --now "$u" > /dev/null 2>&1 && systemctl mask "$u" > /dev/null 2>&1; then
+    masked+=("$u")
+  else
+    warn "could not stop and mask $u"
+  fi
+done
+[ "${#masked[@]}" -eq 0 ] || info "stopped and masked: ${masked[*]} (undo: systemctl unmask <unit> && systemctl enable --now <unit>)"
 
 # Daily certificate expiry check (QA-M-4) and nightly Authentik backup (K5): systemd timers; a failing run shows in `systemctl --failed`,
 # the journal and an alert mail. The backup timer is enabled even before the owner has configured the recipient: the first nightly run then

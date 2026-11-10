@@ -89,7 +89,7 @@ Rebuild the Raspberry Pi 4B home lab as a fresh, **fully public** GitHub repo, s
 | A1 | Raspberry Pi OS 64-bit (arm64 userland), Docker apt repo, Compose >= 2.20 | ASSUMPTION; verified by `scripts/preflight.sh` |
 | A2 | Boot device | Preflight WARN; SSD recommended (R5) |
 | A3 | Pi IP | U5 DHCP reservation |
-| A4 | SSH | Preflight reports it; key-only recommended; Pi Connect is break-glass |
+| A4 | SSH | Preflight reports it; key-only recommended; Pi Connect is break-glass. `bootstrap.sh` writes a key-only drop-in and removes a cloud-init drop-in whose only line is `PasswordAuthentication yes` (H3) |
 | A5 | Existing Route 53 state | FACT: the zone and registered NS were made by hand. `aws-preflight.sh` inventories them (6.9) |
 | A6 | DNSSEC | FACT: off. Phase 2 |
 | A7 | Cloudflare | Gone (account deleted); old secrets are moot |
@@ -110,6 +110,7 @@ Rebuild the Raspberry Pi 4B home lab as a fresh, **fully public** GitHub repo, s
 | **A22** | **Secret store** | **SSM Parameter Store, SecureString, Standard tier, AWS-managed key `aws/ssm`, region af-south-1.** (Superseded by SEC-M2: the SecureStrings now use the customer-managed key `alias/home-lab-ssm`, about USD 1/month, because the AWS-managed key policy let any account principal decrypt.) Originally: no customer-managed KMS key, because about USD 1/month is 20% of the budget, and IAM path scoping plus Roles Anywhere gives the needed control (R46). GitHub Actions secrets are **not** used for runtime secrets |
 | **A23** | **Pi identities** | **Two separate keys and certs**, both signed by the offline CA: `home-lab-pi-traefik` (mounted only into the ra-helper container) and `home-lab-pi-host` (root-only on the host, never mounted into any container). A compromised Traefik container therefore cannot read SSM |
 | **A24** | **Secret files on the Pi** | **Persistent** under `/apps/secrets` (root-owned dir 0700, files 0400/0600) rather than tmpfs. Reason: the lab must come back after a power cut even when the internet is down. The host's Roles Anywhere key already lives on disk and can fetch every secret, so tmpfs adds little protection (R41) |
+| A25 | OS patching and host services (added 2026-11-10 after the go-live recon) | `bootstrap.sh`: daily Debian security updates via `unattended-upgrades`, no automatic reboot (H1); avahi and Bluetooth masked (H2). Preflight warns on each, and on a pending reboot |
 
 ## 3. Architecture
 

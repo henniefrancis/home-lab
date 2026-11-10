@@ -19,6 +19,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/verify-commit.sh"
 # shellcheck source=lib/units.sh
 . "$SCRIPT_DIR/lib/units.sh"
+# shellcheck source=lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 REPO_DIR="$(repo_dir "${BASH_SOURCE[0]}")"
 LAB_ENV="$REPO_DIR/config/lab.env"
 
@@ -518,6 +520,37 @@ check_hardening() {
     fi
   fi
   check_units
+  check_host_services
+}
+
+# H1 and H2 (scripts/lib/host.sh, applied by bootstrap.sh): security updates install on their own, a pending reboot is visible, and no
+# mDNS or Bluetooth daemon runs. All WARN: none of them breaks the lab, each is a gap to close with sudo scripts/bootstrap.sh.
+check_host_services() {
+  local periodic u active=() pkgs
+  periodic="$(apt-config dump APT::Periodic::Unattended-Upgrade 2> /dev/null || true)"
+  if ! command -v "$UNATTENDED_BIN" > /dev/null 2>&1; then
+    warnx auto-updates "unattended-upgrades is not installed: security updates only arrive when you run apt by hand (sudo scripts/bootstrap.sh installs it)"
+  elif ! grep -qF 'APT::Periodic::Unattended-Upgrade "1";' <<< "$periodic"; then
+    warnx auto-updates "unattended-upgrades is installed but switched off (APT::Periodic::Unattended-Upgrade is not 1): sudo scripts/bootstrap.sh"
+  elif ! systemctl is-enabled apt-daily-upgrade.timer > /dev/null 2>&1; then
+    warnx auto-updates "apt-daily-upgrade.timer is not enabled, so unattended-upgrade never runs: sudo scripts/bootstrap.sh"
+  else
+    pass auto-updates "daily Debian security updates are on (no automatic reboot)"
+  fi
+  if [ -e "$RUN_DIR/reboot-required" ]; then
+    pkgs="$(sort -u "$RUN_DIR/reboot-required.pkgs" 2> /dev/null | head -n 5 | paste -sd' ' - || true)"
+    warnx reboot-required "an update needs a reboot${pkgs:+ ($pkgs)}: sudo reboot at a quiet moment, then sudo scripts/preflight.sh --stage full"
+  else
+    pass reboot-required "no reboot pending"
+  fi
+  for u in "${LAN_SERVICE_UNITS[@]}"; do
+    systemctl is-active --quiet "$u" 2> /dev/null && active+=("$u")
+  done
+  if [ "${#active[@]}" -gt 0 ]; then
+    warnx lan-services "running but not used by the lab: ${active[*]} (mDNS/Bluetooth listeners): sudo scripts/bootstrap.sh masks them"
+  else
+    pass lan-services "no avahi (mDNS) or Bluetooth daemon running"
+  fi
 }
 
 # QA-M-3: units are installed by bootstrap.sh, not by deploy.sh. A unit changed by a release but never installed leaves the alert path

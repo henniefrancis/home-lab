@@ -5,6 +5,7 @@
 #   - signed-deploy verification (scripts/lib/verify-commit.sh): good signature, unsigned, wrong key, bad trust file, tamper
 #   - cert-expiry.sh thresholds (30 and 14 days, missing)
 #   - preflight.sh --stage argument handling (no endless loop)
+#   - host hardening H1-H3 (lib/host.sh): the cloud-init SSH matcher, the apt file, preflight check_host_services with stubs
 #   - breakglass.sh on/off/status and bad arguments
 #   - pi-install-cert.sh --help and the notBefore check
 #   - aws-preflight.sh --snapshot against a MOCK aws (CRLF output, duplicate zones, HCL escaping of the zone comment)
@@ -183,6 +184,69 @@ check "preflight --stage without a value exits 2 (no endless loop)" bash -c 'tes
 rc=0
 timeout 10 bash scripts/preflight.sh --stage nonsense > "$T/o" 2>&1 || rc=$?
 check "preflight --stage nonsense exits 2" test "$rc" -eq 2
+
+# ---------------------------------------------------------------- host hardening H1-H3 (scripts/lib/host.sh, bootstrap.sh, preflight.sh)
+mkdir -p "$T/sshd"
+ci="$T/sshd/50-cloud-init.conf"
+printf '# written by cloud-init\nPasswordAuthentication yes\n' > "$ci"
+check "H3: a cloud-init drop-in whose only setting is PasswordAuthentication yes is recognised" bash -c '. scripts/lib/host.sh && cloud_init_pw_only "$1"' _ "$ci"
+printf '  passwordauthentication    yes   # trailing comment\n\n' > "$ci"
+check "H3: case, extra spaces, blank lines and a trailing comment do not hide it" bash -c '. scripts/lib/host.sh && cloud_init_pw_only "$1"' _ "$ci"
+printf 'PasswordAuthentication yes\nUsePAM yes\n' > "$ci"
+check "H3: a drop-in with any other setting is left alone" bash -c '. scripts/lib/host.sh && ! cloud_init_pw_only "$1"' _ "$ci"
+printf 'PasswordAuthentication no\n' > "$ci"
+check "H3: PasswordAuthentication no is not matched" bash -c '. scripts/lib/host.sh && ! cloud_init_pw_only "$1"' _ "$ci"
+check "H3: a missing file is not matched" bash -c '. scripts/lib/host.sh && ! cloud_init_pw_only "$1"' _ "$T/sshd/none.conf"
+bash -c '. scripts/lib/host.sh && auto_updates_conf' > "$T/52auto"
+check "H1: the apt file turns on daily lists and unattended upgrades and never reboots" bash -c 'grep -qx "APT::Periodic::Update-Package-Lists \"1\";" "$1" && grep -qx "APT::Periodic::Unattended-Upgrade \"1\";" "$1" && grep -qx "Unattended-Upgrade::Automatic-Reboot \"false\";" "$1" && ! grep -q "Origins-Pattern\|Allowed-Origins" "$1"' _ "$T/52auto"
+if command -v apt-config > /dev/null 2>&1; then
+  check "H1: apt parses the file (apt-config -c)" bash -c 'out="$(apt-config -c "$1" dump APT::Periodic::Unattended-Upgrade Unattended-Upgrade::Automatic-Reboot)" && grep -qF "APT::Periodic::Unattended-Upgrade \"1\";" <<< "$out" && grep -qF "Unattended-Upgrade::Automatic-Reboot \"false\";" <<< "$out"' _ "$T/52auto"
+else
+  printf 'SKIP  H1: apt-config not installed here (the CI runner has it)\n'
+fi
+check "bootstrap.sh applies H1-H3 from lib/host.sh and installs unattended-upgrades" bash -c 'grep -q "lib/host.sh" scripts/bootstrap.sh && grep -q "unattended-upgrade:unattended-upgrades" scripts/bootstrap.sh && grep -q "auto_updates_conf" scripts/bootstrap.sh && grep -q "LAN_SERVICE_UNITS" scripts/bootstrap.sh && grep -q "systemctl mask" scripts/bootstrap.sh && grep -q "cloud_init_pw_only" scripts/bootstrap.sh'
+check "bootstrap.sh --help prints the whole header (up to the Plan line)" bash -c 'sed -n "$(grep -o "sed -n .[0-9]*,[0-9]*p" scripts/bootstrap.sh | grep -o "[0-9]*,[0-9]*")p" scripts/bootstrap.sh | tail -n 1 | grep -q "^# Plan:"'
+check "H2: avahi and bluetooth are in the masked list" bash -c '. scripts/lib/host.sh && [[ " ${LAN_SERVICE_UNITS[*]} " == *" avahi-daemon.socket avahi-daemon.service bluetooth.service "* ]]'
+sed -n '/^check_host_services() {/,/^}/p' scripts/preflight.sh > "$T/check_host_services.sh"
+check "preflight.sh has a check_host_services function to test" test -s "$T/check_host_services.sh"
+mkdir -p "$T/hs-bin" "$T/hs-run"
+printf '#!/bin/sh\nexit 0\n' > "$T/hs-bin/unattended-upgrade"
+chmod +x "$T/hs-bin/unattended-upgrade"
+hs() { # hs <unattended bin> <periodic value> <timer enabled 0|1> <active units...> : the verdict lines of check_host_services (stubbed)
+  local bin="$1" per="$2" timer="$3"
+  shift 3
+  env HOME_LAB_RUN_DIR="$T/hs-run" HOME_LAB_UNATTENDED_BIN="$bin" PER="$per" TIMER="$timer" ACTIVE="$*" bash -c '
+    . scripts/lib/host.sh
+    pass() { printf "[PASS] %s %s\n" "$1" "${2:-}"; }
+    warnx() { printf "[WARN] %s %s\n" "$1" "${2:-}"; }
+    fail() { printf "[FAIL] %s %s\n" "$1" "${2:-}"; }
+    apt-config() { printf "APT::Periodic::Unattended-Upgrade \"%s\";\n" "$PER"; }
+    systemctl() {
+      case "$1" in
+        is-enabled) [ "$TIMER" = 1 ] ;;
+        is-active) [[ " $ACTIVE " == *" ${!#} "* ]] ;;
+        *) return 1 ;;
+      esac
+    }
+    . "$1"
+    check_host_services' _ "$T/check_host_services.sh"
+}
+rm -f "$T/hs-run/reboot-required" "$T/hs-run/reboot-required.pkgs"
+out="$(hs "$T/hs-bin/unattended-upgrade" 1 1)"
+check "preflight H1/H2: all in place -> PASS auto-updates, reboot-required and lan-services, nothing else" bash -c 'grep -q "^\[PASS\] auto-updates" <<< "$1" && grep -q "^\[PASS\] reboot-required" <<< "$1" && grep -q "^\[PASS\] lan-services" <<< "$1" && ! grep -q "^\[WARN\]\|^\[FAIL\]" <<< "$1"' _ "$out"
+out="$(hs "$T/hs-bin/not-installed" 1 1)"
+check "preflight H1: unattended-upgrades not installed -> WARN auto-updates (not installed)" bash -c 'grep -q "^\[WARN\] auto-updates .*not installed" <<< "$1" && ! grep -q "^\[FAIL\]" <<< "$1"' _ "$out"
+out="$(hs "$T/hs-bin/unattended-upgrade" 0 1)"
+check "preflight H1: Unattended-Upgrade \"0\" -> WARN auto-updates (switched off)" bash -c 'grep -q "^\[WARN\] auto-updates .*switched off" <<< "$1"' _ "$out"
+out="$(hs "$T/hs-bin/unattended-upgrade" 1 0)"
+check "preflight H1: apt-daily-upgrade.timer disabled -> WARN auto-updates (timer)" bash -c 'grep -q "^\[WARN\] auto-updates .*apt-daily-upgrade.timer" <<< "$1"' _ "$out"
+printf '*** System restart required ***\n' > "$T/hs-run/reboot-required"
+printf 'linux-image-rpi-v8\nlinux-image-rpi-v8\n' > "$T/hs-run/reboot-required.pkgs"
+out="$(hs "$T/hs-bin/unattended-upgrade" 1 1)"
+check "preflight H1: /run/reboot-required -> WARN reboot-required naming the package once" bash -c 'grep -q "^\[WARN\] reboot-required .*(linux-image-rpi-v8)" <<< "$1"' _ "$out"
+rm -f "$T/hs-run/reboot-required" "$T/hs-run/reboot-required.pkgs"
+out="$(hs "$T/hs-bin/unattended-upgrade" 1 1 avahi-daemon.service bluetooth.service)"
+check "preflight H2: avahi and bluetooth running -> WARN lan-services naming both" bash -c 'grep -q "^\[WARN\] lan-services .*avahi-daemon.service bluetooth.service" <<< "$1" && ! grep -q "^\[FAIL\]" <<< "$1"' _ "$out"
 
 # ---------------------------------------------------------------- breakglass.sh (SEC-L3)
 export BREAKGLASS_DIR="$T/bg" BREAKGLASS_NO_ROOT_CHECK=1 BREAKGLASS_NO_TIMER=1
