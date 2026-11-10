@@ -55,12 +55,15 @@ DOMAIN_T=lab.example.test
 LAN_T=10.0.0.2
 PW_T="phtest-$(openssl rand -hex 12)"
 NET_PROXY=phtest-proxy
+# A named volume, not a bind mount, for /etc/pihole: FTL makes its files owned by 10006, which the runner user could not delete.
+VOL_ETC=phtest-etc-pihole
 stage=""
 cleanup() {
   [ "${KEEP:-0}" = 1 ] && return 0
   if [ "$STATIC_ONLY" -eq 0 ]; then
     docker rm -f phtest-pihole phtest-traefik phtest-auth > /dev/null 2>&1 || true
     docker network rm "$NET_PROXY" > /dev/null 2>&1 || true
+    docker volume rm "$VOL_ETC" > /dev/null 2>&1 || true
   fi
   [ -z "$stage" ] || rm -rf "$stage"
 }
@@ -68,7 +71,7 @@ trap cleanup EXIT
 
 stage="$(mktemp -d -p "${PIHOLE_TEST_TMP:-.}" .pihole-test.XXXXXX)"
 here="$(cd "$stage" && { pwd -W 2> /dev/null || pwd; })" # a path docker.exe understands under Git Bash, plain pwd elsewhere
-mkdir -p "$stage/secrets/tailscale" "$stage/secrets/authentik" "$stage/secrets/traefik" "$stage/secrets/pihole" "$stage/pihole/etc-pihole"
+mkdir -p "$stage/secrets/tailscale" "$stage/secrets/authentik" "$stage/secrets/traefik" "$stage/secrets/pihole"
 : > "$stage/secrets/tailscale/tailscale.env"
 printf '%s' "$PW_T" > "$stage/secrets/pihole/admin-password"
 chmod 644 "$stage/secrets/pihole/admin-password"
@@ -143,10 +146,11 @@ fi
 # --------------------------------------------------------------------------------------------------------------------
 echo "--- containers"
 docker network create "$NET_PROXY" > /dev/null
+docker volume rm "$VOL_ETC" > /dev/null 2>&1 || true
 args=(--name phtest-pihole --network "$NET_PROXY" --network-alias pihole --hostname pihole --memory "$(jq -r '.mem_limit' <<< "$ph")"
   --pids-limit "$(jq -r '.pids_limit' <<< "$ph")" --cap-drop ALL
   --mount "type=bind,source=$here/secrets/pihole/admin-password,target=/run/secrets/pihole_admin_password,readonly"
-  --mount "type=bind,source=$here/pihole/etc-pihole,target=/etc/pihole")
+  --mount "type=volume,source=$VOL_ETC,target=/etc/pihole")
 while IFS= read -r l; do args+=(--cap-add "$l"); done < <(jq -r '.cap_add[]' <<< "$ph" | tr -d '\r')
 while IFS= read -r l; do args+=(--tmpfs "$l"); done < <(jq -r '.tmpfs[]' <<< "$ph" | tr -d '\r')
 while IFS= read -r l; do args+=(-e "$l"); done < <(jq -r '.environment | to_entries[] | "\(.key)=\(.value)"' <<< "$ph" | tr -d '\r')
