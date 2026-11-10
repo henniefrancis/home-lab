@@ -45,8 +45,12 @@ services:
       - "0.0.0.0:80:80"
       - "0.0.0.0:443:443"
     networks:
-      - proxy
-      - authentik-auth
+      proxy: {}
+      authentik-auth: {}
+      # M9: OIDC clients (Linkwarden) reach https://auth.<domain> through this alias; only the Authentik router allows the subnet.
+      oidc:
+        aliases:
+          - auth.${DOMAIN:?set DOMAIN (runtime.env)}
     environment:
       # Filled into the {{ env "DOMAIN" }} placeholders of the dynamic files.
       DOMAIN: ${DOMAIN:?set DOMAIN (runtime.env)}
@@ -166,6 +170,8 @@ networks:
   proxy:
     external: true
   authentik-auth:
+    external: true
+  oidc:
     external: true
 
 secrets:

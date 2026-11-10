@@ -11,3 +11,6 @@ include:
   - path: homepage/compose.yaml
   - path: it-tools/compose.yaml
   - path: pihole/compose.yaml
+  - path: linkwarden/compose.yaml
+  - path: netdata/compose.yaml
+  - path: portainer/compose.yaml

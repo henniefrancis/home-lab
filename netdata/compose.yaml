@@ -1,0 +1,63 @@
+---
+# Netdata (R17, milestone M10): host and container monitoring at https://netdata.${DOMAIN}, behind the LAN/tailnet allowlist and Authentik
+# forward auth (homelab-admins).
+#
+# Start (Pi):  sudo scripts/deploy.sh --only netdata      (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       the data directories from scripts/bootstrap.sh, the proxy network (its gateway 172.30.0.1 is where Netdata listens),
+#              Traefik (router netdata) and Authentik (provider homelab-netdata).
+# Runbook:     docs/runbooks/m10-netdata.md        Self-test: scripts/test-netdata-config.sh
+#
+# ADR-017: Netdata mounts the Docker socket (read-only flag, but the API itself is root-equivalent) to name containers in its charts.
+# Like the official image's recommended setup it uses the host's network and PID namespaces and reads /proc, /sys and / read-only, with
+# SYS_PTRACE (per-process metrics) and SYS_ADMIN (container network interfaces). Every other capability is dropped. The agent starts as
+# root and drops to its own netdata user (the official image does not support `user:`).
+#
+# Exposure: host network, so netdata/netdata.conf binds the web server ONLY to the proxy network's gateway 172.30.0.1 (Traefik) and to the
+# loopback (health check), and allows connections only from those. No published port. Netdata Cloud is never claimed (no Cloud
+# connection exists without a claim), anonymous telemetry is off, the registry, machine learning and Netdata's own alerts are off.
+services:
+  netdata:
+    image: netdata/netdata:v2.12.3@sha256:c7eab00e20901eb60595ebae0fbfe88e59464e663924461874719d40de0735d2
+    container_name: netdata
+    hostname: homelab-pi
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    cap_drop:
+      - ALL
+    cap_add:
+      # The official setup's two, plus what the agent's own start-up needs to drop to the netdata user and read the host's files.
+      - SYS_PTRACE
+      - SYS_ADMIN
+      - SETUID
+      - SETGID
+      - CHOWN
+      - DAC_OVERRIDE
+      - DAC_READ_SEARCH
+      - FOWNER
+    mem_limit: 512m
+    pids_limit: 512
+    environment:
+      DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+      NETDATA_HEALTHCHECK_TARGET: http://127.0.0.1:19999/api/v1/info
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./netdata.conf:/etc/netdata/netdata.conf:ro
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/netdata/lib:/var/lib/netdata
+      - ${APPS_ROOT}/netdata/cache:/var/cache/netdata
+      - /:/host/root:ro,rslave
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /var/log:/host/var/log:ro
+      # ADR-017: container names in the charts.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

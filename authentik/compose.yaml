@@ -140,6 +140,9 @@ services:
           AUTHENTIK_BOOTSTRAP_PASSWORD="$$(cat /run/secrets/authentik_bootstrap_password)"
           export AUTHENTIK_BOOTSTRAP_PASSWORD
         fi
+        # M9: the Linkwarden OAuth2 client secret, read by the blueprint (!Env); the same file is mounted into Linkwarden.
+        LINKWARDEN_OIDC_CLIENT_SECRET="$$(cat /run/secrets/linkwarden_oidc_client_secret)"
+        export LINKWARDEN_OIDC_CLIENT_SECRET
         exec dumb-init -- ak "$$@"
       - ak-worker
     mem_limit: 768m
@@ -150,6 +153,7 @@ services:
       - pg_password
       - authentik_secret_key
       - authentik_bootstrap_password
+      - linkwarden_oidc_client_secret
     volumes:
       - ${APPS_ROOT}/authentik/data:/data
       - ./templates:/templates:ro
@@ -168,3 +172,5 @@ secrets:
     file: ${APPS_ROOT}/secrets/authentik/secret-key
   authentik_bootstrap_password:
     file: ${APPS_ROOT}/secrets/authentik/bootstrap-password
+  linkwarden_oidc_client_secret:
+    file: ${APPS_ROOT}/secrets/authentik/linkwarden-oidc-client-secret

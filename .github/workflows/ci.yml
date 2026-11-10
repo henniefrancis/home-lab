@@ -186,14 +186,18 @@ jobs:
             echo "roles.tf must not use hostedzone/* (scope it to the home-lab zone)."; exit 1
           fi
 
-      - name: Guard - no Docker socket, no Docker provider, images pinned by digest (SEC-H2, SEC-M5)
+      - name: Guard - Docker socket only where ADR-017 allows it, no Docker provider, images pinned by digest (SEC-H2, SEC-M5, ADR-017)
         run: |
           set -eu
           sock_re='docker[.]sock|providers[.]docker|docker-socket-proxy|tecnativa'
-          if git grep -nE "$sock_re" -- traefik authentik homepage tailscale it-tools pihole compose.yaml | grep -v ':[0-9]*:[[:space:]]*#'; then
-            echo "No Docker socket or Docker provider anywhere in the stacks."; exit 1
+          # ADR-017: only netdata/ and portainer/ may mount the socket (and nothing anywhere may use a Docker provider or a socket proxy).
+          if git grep -nE "$sock_re" -- traefik authentik homepage tailscale it-tools pihole linkwarden compose.yaml | grep -v ':[0-9]*:[[:space:]]*#'; then
+            echo "No Docker socket or Docker provider outside the stacks ADR-017 names."; exit 1
           fi
-          files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml pihole/compose.yaml'
+          if git grep -nE 'providers[.]docker|docker-socket-proxy|tecnativa' -- netdata portainer | grep -v ':[0-9]*:[[:space:]]*#'; then
+            echo "No Docker provider or socket proxy, even in the ADR-017 stacks."; exit 1
+          fi
+          files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml pihole/compose.yaml linkwarden/compose.yaml netdata/compose.yaml portainer/compose.yaml'
           # shellcheck disable=SC2086
           bad="$(git grep -hE '^[[:space:]]+image:[[:space:]]' -- $files | grep -Ev 'home-lab/(ra-helper|it-tools)' | grep -Ev '@sha256:[0-9a-f]{64}' || true)"
           if [ -n "$bad" ]; then echo "Images must be pinned tag@sha256:"; echo "$bad"; exit 1; fi
@@ -217,7 +221,7 @@ jobs:
         run: |
           set -eu
           d="$(mktemp -d)"
-          mkdir -p "$d/secrets/tailscale" "$d/secrets/authentik" "$d/secrets/pihole"
+          mkdir -p "$d/secrets/tailscale" "$d/secrets/authentik" "$d/secrets/pihole" "$d/secrets/linkwarden" "$d/secrets/portainer"
           : > "$d/secrets/tailscale/tailscale.env"
           {
             echo "APPS_ROOT=$d"
@@ -244,6 +248,15 @@ jobs:
 
       - name: Self-test - Pi-hole stack (static checks, the real image answering DNS, the lab names, the web UI through the real Traefik routers; dummy values)
         run: bash scripts/test-pihole-config.sh
+
+      - name: Self-test - Linkwarden stack (static checks; the real images with the secret wrappers, OIDC-only login, the OIDC back-channel allowlist)
+        run: bash scripts/test-linkwarden-config.sh
+
+      - name: Self-test - Netdata stack (static checks; on the Linux runner the real image with the host network, the bind and allow lists)
+        run: bash scripts/test-netdata-config.sh
+
+      - name: Self-test - Portainer stack (static checks; the real image without capabilities, the password file, the local environment, forward auth)
+        run: bash scripts/test-portainer-config.sh
 
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |

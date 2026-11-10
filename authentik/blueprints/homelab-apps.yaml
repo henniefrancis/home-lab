@@ -81,6 +81,16 @@ entries:
           - !Find [authentik_core.user, [username, akadmin]]
           - []
 
+  # Household group (M9): people who may use the household apps (Linkwarden) but not the admin tools. Created empty, once; the owner
+  # adds members in the UI (Directory, Groups) and this file never changes the membership.
+  - model: authentik_core.group
+    id: group-users
+    state: created
+    identifiers:
+      name: homelab-users
+    attrs:
+      is_superuser: false
+
   # --- 3. Providers and applications -----------------------------------------------------------------------------------
   - model: authentik_providers_proxy.proxyprovider
     id: provider-traefik
@@ -184,6 +194,101 @@ entries:
       group: !KeyOf group-admins
       order: 0
 
+  # Netdata (M10, R17): forward auth, admins only.
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-netdata
+    identifiers:
+      name: homelab-netdata
+    attrs:
+      mode: forward_single
+      external_host: !Format ["https://netdata.%s", !Env DOMAIN]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      access_token_validity: hours=12
+  - model: authentik_core.application
+    id: app-netdata
+    identifiers:
+      slug: netdata
+    attrs:
+      name: Netdata
+      provider: !KeyOf provider-netdata
+      policy_engine_mode: any
+      meta_launch_url: !Format ["https://netdata.%s/", !Env DOMAIN]
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-netdata
+      group: !KeyOf group-admins
+      order: 0
+
+  # Portainer (M11, R17): forward auth, admins only (then Portainer's own login).
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-portainer
+    identifiers:
+      name: homelab-portainer
+    attrs:
+      mode: forward_single
+      external_host: !Format ["https://portainer.%s", !Env DOMAIN]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      access_token_validity: hours=12
+  - model: authentik_core.application
+    id: app-portainer
+    identifiers:
+      slug: portainer
+    attrs:
+      name: Portainer
+      provider: !KeyOf provider-portainer
+      policy_engine_mode: any
+      meta_launch_url: !Format ["https://portainer.%s/", !Env DOMAIN]
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-portainer
+      group: !KeyOf group-admins
+      order: 0
+
+  # Linkwarden (M9, R17): an OAuth2/OIDC application, not forward auth. Confidential client; the secret comes from the SSM SecureString
+  # linkwarden/oidc-client-secret through the worker's environment (authentik/compose.yaml). Redirect to Linkwarden's NextAuth
+  # callback only. Open to homelab-admins and homelab-users; everyone else is denied.
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider-linkwarden
+    identifiers:
+      name: homelab-linkwarden
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      client_id: linkwarden
+      client_secret: !Env LINKWARDEN_OIDC_CLIENT_SECRET
+      redirect_uris:
+        - matching_mode: strict
+          url: !Format ["https://links.%s/api/v1/auth/callback/authentik", !Env DOMAIN]
+          redirect_uri_type: authorization
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-email]]
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-profile]]
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      access_token_validity: minutes=10
+  - model: authentik_core.application
+    id: app-linkwarden
+    identifiers:
+      slug: linkwarden
+    attrs:
+      name: Linkwarden
+      provider: !KeyOf provider-linkwarden
+      policy_engine_mode: any
+      meta_launch_url: !Format ["https://links.%s/", !Env DOMAIN]
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-linkwarden
+      group: !KeyOf group-admins
+      order: 0
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-linkwarden
+      group: !KeyOf group-users
+      order: 1
+
   # --- 4. Embedded outpost ---------------------------------------------------------------------------------------------
   - model: authentik_outposts.outpost
     id: embedded-outpost
@@ -197,5 +302,7 @@ entries:
         - !KeyOf provider-dashboard
         - !KeyOf provider-it-tools
         - !KeyOf provider-pihole
+        - !KeyOf provider-netdata
+        - !KeyOf provider-portainer
       config:
         authentik_host: !Format ["https://auth.%s", !Env DOMAIN]

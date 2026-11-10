@@ -12,9 +12,12 @@ CLOUD_INIT_SSHD_FILE="$SSHD_CONF_DIR/50-cloud-init.conf"
 RUN_DIR="${HOME_LAB_RUN_DIR:-/run}"
 UNATTENDED_BIN="${HOME_LAB_UNATTENDED_BIN:-unattended-upgrade}"
 
-# H2: masked (not only disabled) because both are D-Bus activatable: a disabled avahi-daemon or bluetoothd is started again by the first
-# D-Bus call for it. Undo with: sudo systemctl unmask <unit> && sudo systemctl enable --now <unit>.
-LAN_SERVICE_UNITS=(avahi-daemon.socket avahi-daemon.service bluetooth.service hciuart.service)
+# H2: masked (not only disabled) because avahi is D-Bus activatable: a disabled avahi-daemon is started again by the first D-Bus call for it.
+# Undo with: sudo systemctl unmask <unit> && sudo systemctl enable --now <unit>.
+LAN_SERVICE_UNITS=(avahi-daemon.socket avahi-daemon.service)
+# M12 (R17, owner decision 2026-11-10): Home Assistant uses the Pi's Bluetooth through BlueZ on the host (D-Bus), so Bluetooth is no longer
+# masked; bootstrap.sh unmasks and enables these if an earlier version masked them. avahi stays masked (Home Assistant does its own mDNS).
+BLUETOOTH_UNITS=(hciuart.service bluetooth.service)
 
 # auto_updates_conf: the apt configuration bootstrap.sh installs. The origins stay the Debian defaults of the unattended-upgrades
 # package (50unattended-upgrades: the Debian security archive), so Docker's and Raspberry Pi's own archives are NOT upgraded unattended

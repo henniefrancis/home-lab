@@ -1,0 +1,68 @@
+---
+# Portainer CE (R17, milestone M11): container overview at https://portainer.${DOMAIN}, behind the LAN/tailnet allowlist, Authentik forward
+# auth (homelab-admins) and Portainer's own admin login.
+#
+# Start (Pi):  sudo scripts/deploy.sh --only portainer      (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       the secret file portainer/admin-password (SSM SecureString, scripts/set-secret.sh: the owner's password), the proxy network
+#              and APPS_ROOT/portainer/data from scripts/bootstrap.sh, Traefik (router portainer) and Authentik (provider homelab-portainer).
+# Runbook:     docs/runbooks/m11-portainer.md        Self-test: scripts/test-portainer-config.sh
+#
+# ADR-017: Portainer mounts the Docker socket read-write (it acts on containers), which is root-equivalent; the risk is accepted there.
+# Working rule: view, logs and restart only. The repository and scripts/deploy.sh stay the source of truth: a stack changed in Portainer
+# is put back silently by the next signed deploy.
+# Hardening: it runs as root inside the container (the socket is root's), but with every capability dropped, no-new-privileges and a
+# read-only root; only /data (its database) and /tmp are writable. Plain HTTP on 9000 inside the proxy network only; its HTTPS (9443) and
+# Edge tunnel (8000) listeners are bound to the container's loopback, so nothing else is reachable. The local Docker environment is
+# registered at start (--host), the admin password is read once from the secret file on the first start (--admin-password-file), and
+# only https://portainer.<domain> is a trusted origin for its CSRF check.
+services:
+  portainer:
+    image: portainer/portainer-ce:2.45.3@sha256:3609c307943bca8e5c492f69ddd6965df177208b50678a4cff28391c8dd4e96e
+    container_name: portainer
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
+    networks:
+      - proxy
+    command:
+      - --http-enabled
+      - --bind
+      - :9000
+      - --bind-https
+      - 127.0.0.1:9443
+      - --tunnel-addr
+      - 127.0.0.1
+      - --host
+      - unix:///var/run/docker.sock
+      - --admin-password-file
+      - /run/secrets/portainer_admin_password
+      - --trusted-origins
+      - https://portainer.${DOMAIN:?set DOMAIN (runtime.env)}
+      - --log-mode
+      - NOCOLOR
+    secrets:
+      - portainer_admin_password
+    volumes:
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/portainer/data:/data
+      # ADR-017: Portainer's whole purpose.
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  proxy:
+    external: true
+
+secrets:
+  portainer_admin_password:
+    file: ${APPS_ROOT}/secrets/portainer/admin-password

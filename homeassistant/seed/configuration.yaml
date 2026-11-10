@@ -1,0 +1,19 @@
+# Home Assistant starting configuration (R17, milestone M12). scripts/bootstrap.sh copies it to APPS_ROOT/homeassistant/config/ ONCE,
+# only when no configuration.yaml exists there yet; after that the file belongs to Home Assistant and the owner (it is never overwritten).
+#
+# There is deliberately NO http: block. Since Home Assistant 2026.8 the HTTP server settings live in .storage/http, and an http: block in
+# YAML is imported as a PENDING change that reverts after 5 minutes unless an admin confirms it in the UI. Unconfirmed, it fell back to
+# listening on every address, IPv6 included (seen on 2026.10.4, 2026-11-10). The settings are seeded as STABLE instead: seed/.storage/http.
+
+default_config:
+
+# Login hardening: Home Assistant's own users (the Companion app needs them; no forward auth on ha.<domain>). Each user enables TOTP in
+# their profile (Profile, Security, Multi-factor authentication modules).
+homeassistant:
+  auth_mfa_modules:
+    - type: totp
+
+# SD-card wear: 10 days of history, written every 30 seconds instead of every second.
+recorder:
+  purge_keep_days: 10
+  commit_interval: 30

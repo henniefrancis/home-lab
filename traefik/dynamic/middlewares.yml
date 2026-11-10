@@ -30,6 +30,15 @@ http:
           - 10.0.0.0/24
           - 100.64.0.0/10
 
+    # oidc-allowlist (M9): the Authentik router only. Same LAN and tailnet ranges, plus OIDC_SUBNET (config/lab.env): the Docker network
+    # that OIDC clients such as Linkwarden use to reach https://auth.<domain> from inside the Pi (preflight checks it matches lab.env).
+    oidc-allowlist:
+      ipAllowList:
+        sourceRange:
+          - 10.0.0.0/24
+          - 100.64.0.0/10
+          - 172.30.2.0/24
+
     security-headers:
       headers:
         stsSeconds: 86400

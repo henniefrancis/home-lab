@@ -14,7 +14,7 @@
 #      No docker socket proxy exists any more (SEC-H2).
 #   5. Loads and persists the tun kernel module and sets net.ipv4.conf.all.src_valid_mark=1 on the host (Tailscale; the
 #      container cannot write /proc/sys, so this is done here instead of adding capabilities). Host hardening (scripts/lib/host.sh):
-#      key-only SSH (A4), daily Debian security updates with no automatic reboot (H1), avahi and bluetooth masked (H2), and a cloud-init
+#      key-only SSH (A4), daily Debian security updates with no automatic reboot (H1), avahi masked (H2; Bluetooth stays on for Home Assistant, M12), and a cloud-init
 #      drop-in that only turns SSH passwords on is removed (H3).
 #   6. Installs AWS CLI v2 (aarch64): official installer, GPG signature verified against the AWS CLI team key.
 #   7. Installs aws_signing_helper at the pinned version: SHA256 verified against the AWS user guide value
@@ -51,6 +51,7 @@ require_root "$@"
 APPS_ROOT="$(lab_env_get "$LAB_ENV" APPS_ROOT /apps)"
 PROXY_SUBNET="$(lab_env_get "$LAB_ENV" PROXY_SUBNET 172.30.0.0/24)"
 AUTH_SUBNET="$(lab_env_get "$LAB_ENV" AUTHENTIK_AUTH_SUBNET 172.30.1.0/24)"
+OIDC_SUBNET="$(lab_env_get "$LAB_ENV" OIDC_SUBNET 172.30.2.0/24)"
 ETC_DIR=/etc/home-lab
 
 TMP="$(mktemp -d)"
@@ -79,7 +80,7 @@ step "3/7 Directory layout"
 # 0700 like fetch-secrets.sh sets it on every deploy: only root (and the Docker daemon) traverses $APPS_ROOT. Containers reach their
 # directories through bind mounts, never through this path, so nothing needs to cross it as another user.
 install -d -m 0700 -o root -g root "$APPS_ROOT"
-for d in traefik authentik homepage tailscale pihole; do
+for d in traefik authentik homepage tailscale pihole linkwarden netdata portainer; do
   install -d -m 0755 -o root -g root "$APPS_ROOT/$d"
 done
 install -d -m 0700 -o root -g root "$APPS_ROOT/tailscale/state"
@@ -100,7 +101,10 @@ HP_GID="$(lab_env_get "$LAB_ENV" HOMEPAGE_GID 10003)"
 # Pi-hole (M8): FTL runs as PIHOLE_UID and owns its configuration and databases (the image default 1000 is overridden).
 PH_UID="$(lab_env_get "$LAB_ENV" PIHOLE_UID 10006)"
 PH_GID="$(lab_env_get "$LAB_ENV" PIHOLE_GID 10006)"
-for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID" "$HP_UID" "$HP_GID" "$TR_UID" "$TR_GID" "$PH_UID" "$PH_GID"; do
+# Linkwarden (M9): the app and its Meilisearch run as LINKWARDEN_UID; its PostgreSQL as the postgres image user (AUTHENTIK_PG_UID, 70).
+LW_UID="$(lab_env_get "$LAB_ENV" LINKWARDEN_UID 10007)"
+LW_GID="$(lab_env_get "$LAB_ENV" LINKWARDEN_GID 10007)"
+for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID" "$HP_UID" "$HP_GID" "$TR_UID" "$TR_GID" "$PH_UID" "$PH_GID" "$LW_UID" "$LW_GID"; do
   [[ "$id" =~ ^[0-9]+$ ]] && [ "$id" -ne 0 ] && [ "$id" -ne 1000 ] || die "service uid/gid '$id' in $LAB_ENV must be numeric, not 0 and not 1000 (the login user)"
 done
 # Traefik's watched dynamic-configuration directory: root-owned copy of traefik/dynamic, filled by deploy.sh.
@@ -112,6 +116,12 @@ install -d -m 0700 -o "$PG_UID" -g "$PG_GID" "$APPS_ROOT/authentik/postgres"
 # 0755, not 0700: the image's pihole-FTL-prestart.sh resets every directory under /etc/pihole to 0755 (files 0640) on each start.
 # Nothing below is reachable by other users anyway: $APPS_ROOT itself is root 0700.
 install -d -m 0755 -o "$PH_UID" -g "$PH_GID" "$APPS_ROOT/pihole/etc-pihole"
+install -d -m 0700 -o "$LW_UID" -g "$LW_GID" "$APPS_ROOT/linkwarden/data" "$APPS_ROOT/linkwarden/meili"
+install -d -m 0700 -o "$PG_UID" -g "$PG_GID" "$APPS_ROOT/linkwarden/postgres"
+# Netdata (M10) starts as root and hands these to its own netdata user itself (the official image does not support `user:`).
+install -d -m 0755 -o root -g root "$APPS_ROOT/netdata/lib" "$APPS_ROOT/netdata/cache"
+# Portainer (M11) runs as root inside its container (ADR-017) and keeps its database here.
+install -d -m 0700 -o root -g root "$APPS_ROOT/portainer/data"
 # fetch-secrets.sh publishes releases under .secrets.d and points $APPS_ROOT/secrets at the current one (atomic swap).
 install -d -m 0700 -o root -g root "$APPS_ROOT/.secrets.d"
 if [ ! -L "$APPS_ROOT/secrets" ]; then
@@ -142,6 +152,10 @@ if docker network inspect socket-proxy > /dev/null 2>&1; then
   warn "the old docker network socket-proxy still exists; nothing uses it any more (SEC-H2): docker network rm socket-proxy"
 fi
 ensure_network authentik-internal --internal
+# M9: the OIDC back-channel (Traefik answers as auth.<domain> there; only the Authentik router allows the subnet), and Linkwarden's
+# own internal network (the app, its PostgreSQL and Meilisearch; no route out).
+ensure_network oidc --subnet "$OIDC_SUBNET"
+ensure_network linkwarden-internal --internal
 
 step "5/7 tun kernel module and Tailscale sysctl"
 if modprobe tun 2> /dev/null; then
@@ -206,7 +220,7 @@ else
   warn "could not enable apt-daily.timer and apt-daily-upgrade.timer: security updates will not install on their own"
 fi
 
-# H2: no mDNS or Bluetooth on a server: fewer listeners on the LAN. Masked because both are D-Bus activatable (lib/host.sh).
+# H2: no mDNS on a server: fewer listeners on the LAN. Masked because avahi is D-Bus activatable (lib/host.sh).
 masked=()
 for u in "${LAN_SERVICE_UNITS[@]}"; do
   systemctl cat "$u" > /dev/null 2>&1 || continue
@@ -218,6 +232,18 @@ for u in "${LAN_SERVICE_UNITS[@]}"; do
   fi
 done
 [ "${#masked[@]}" -eq 0 ] || info "stopped and masked: ${masked[*]} (undo: systemctl unmask <unit> && systemctl enable --now <unit>)"
+# M12: Home Assistant needs the Pi's Bluetooth (BlueZ on the host, reached over D-Bus). An earlier bootstrap masked it (H2 before M12):
+# unmask and start it again. A unit that does not exist (no Bluetooth hardware or package) is skipped.
+for u in "${BLUETOOTH_UNITS[@]}"; do
+  systemctl cat "$u" > /dev/null 2>&1 || [ "$(systemctl is-enabled "$u" 2> /dev/null || true)" = masked ] || continue
+  if [ "$(systemctl is-enabled "$u" 2> /dev/null || true)" = masked ]; then
+    if systemctl unmask "$u" > /dev/null 2>&1 && systemctl enable --now "$u" > /dev/null 2>&1; then
+      info "unmasked and started $u (Home Assistant Bluetooth, M12)"
+    else
+      warn "could not unmask and start $u: Home Assistant will not see the Pi's Bluetooth"
+    fi
+  fi
+done
 
 # Daily certificate expiry check (QA-M-4) and nightly Authentik backup (K5): systemd timers; a failing run shows in `systemctl --failed`,
 # the journal and an alert mail. The backup timer is enabled even before the owner has configured the recipient: the first nightly run then

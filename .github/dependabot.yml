@@ -34,7 +34,7 @@ updates:
       terraform:
         patterns: ["*"]
 
-  # Image bumps for Traefik, Authentik, PostgreSQL, Tailscale, Homepage, IT Tools and Pi-hole arrive as one weekly PR; every reference is tag@sha256
+  # Image bumps for Traefik, Authentik, PostgreSQL, Tailscale, Homepage, IT Tools, Pi-hole, Linkwarden, Netdata and Portainer arrive as one weekly PR; every reference is tag@sha256
   # and Dependabot rewrites tag and digest together. The pinned aws_signing_helper release in traefik/ra-helper/Dockerfile and
   # scripts/lib/pins.sh is NOT tracked here; bump it by hand from the AWS user guide (CI fails if the two files disagree).
   # QA-M-2: home-lab/ra-helper is built locally from /traefik/ra-helper and does not exist in any registry. Dependabot tried to
@@ -47,6 +47,9 @@ updates:
       - /homepage
       - /it-tools
       - /pihole
+      - /linkwarden
+      - /netdata
+      - /portainer
     schedule:
       interval: weekly
     cooldown:
@@ -61,6 +64,10 @@ updates:
       # PostgreSQL stays on 16 (the major Authentik documents and tests); a major upgrade is a planned dump/restore, not a bot PR.
       - dependency-name: postgres
         update-types: ["version-update:semver-major"]
+      # Meilisearch stays on the line Linkwarden pins (v1.13 for Linkwarden v2.16): a newer Meilisearch cannot open the old index without
+      # a dump and import. Bump it together with Linkwarden, by hand, from Linkwarden's own docker-compose.yml.
+      - dependency-name: getmeili/meilisearch
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: docker
     directory: /traefik/ra-helper

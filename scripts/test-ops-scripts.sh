@@ -206,7 +206,8 @@ else
 fi
 check "bootstrap.sh applies H1-H3 from lib/host.sh and installs unattended-upgrades" bash -c 'grep -q "lib/host.sh" scripts/bootstrap.sh && grep -q "unattended-upgrade:unattended-upgrades" scripts/bootstrap.sh && grep -q "auto_updates_conf" scripts/bootstrap.sh && grep -q "LAN_SERVICE_UNITS" scripts/bootstrap.sh && grep -q "systemctl mask" scripts/bootstrap.sh && grep -q "cloud_init_pw_only" scripts/bootstrap.sh'
 check "bootstrap.sh --help prints the whole header (up to the Plan line)" bash -c 'sed -n "$(grep -o "sed -n .[0-9]*,[0-9]*p" scripts/bootstrap.sh | grep -o "[0-9]*,[0-9]*")p" scripts/bootstrap.sh | tail -n 1 | grep -q "^# Plan:"'
-check "H2: avahi and bluetooth are in the masked list" bash -c '. scripts/lib/host.sh && [[ " ${LAN_SERVICE_UNITS[*]} " == *" avahi-daemon.socket avahi-daemon.service bluetooth.service "* ]]'
+check "H2: avahi is masked, Bluetooth is NOT (Home Assistant uses it, M12)" bash -c '. scripts/lib/host.sh && [ "${LAN_SERVICE_UNITS[*]}" = "avahi-daemon.socket avahi-daemon.service" ] && [ "${BLUETOOTH_UNITS[*]}" = "hciuart.service bluetooth.service" ]'
+check "M12: bootstrap.sh unmasks and starts Bluetooth if an earlier H2 masked it" bash -c 'grep -q "BLUETOOTH_UNITS" scripts/bootstrap.sh && grep -q "systemctl unmask" scripts/bootstrap.sh'
 sed -n '/^check_host_services() {/,/^}/p' scripts/preflight.sh > "$T/check_host_services.sh"
 check "preflight.sh has a check_host_services function to test" test -s "$T/check_host_services.sh"
 mkdir -p "$T/hs-bin" "$T/hs-run"
@@ -215,7 +216,7 @@ chmod +x "$T/hs-bin/unattended-upgrade"
 hs() { # hs <unattended bin> <periodic value> <timer enabled 0|1> <active units...> : the verdict lines of check_host_services (stubbed)
   local bin="$1" per="$2" timer="$3"
   shift 3
-  env HOME_LAB_RUN_DIR="$T/hs-run" HOME_LAB_UNATTENDED_BIN="$bin" PER="$per" TIMER="$timer" ACTIVE="$*" bash -c '
+  env HOME_LAB_RUN_DIR="$T/hs-run" HOME_LAB_UNATTENDED_BIN="$bin" BTMASK="${BTMASK:-0}" PER="$per" TIMER="$timer" ACTIVE="$*" bash -c '
     . scripts/lib/host.sh
     pass() { printf "[PASS] %s %s\n" "$1" "${2:-}"; }
     warnx() { printf "[WARN] %s %s\n" "$1" "${2:-}"; }
@@ -223,7 +224,10 @@ hs() { # hs <unattended bin> <periodic value> <timer enabled 0|1> <active units.
     apt-config() { printf "APT::Periodic::Unattended-Upgrade \"%s\";\n" "$PER"; }
     systemctl() {
       case "$1" in
-        is-enabled) [ "$TIMER" = 1 ] ;;
+        is-enabled)
+          if [ "${BTMASK:-0}" = 1 ] && [ "${!#}" = bluetooth.service ]; then echo masked; return 1; fi
+          [ "$TIMER" = 1 ]
+          ;;
         is-active) [[ " $ACTIVE " == *" ${!#} "* ]] ;;
         *) return 1 ;;
       esac
@@ -245,8 +249,10 @@ printf 'linux-image-rpi-v8\nlinux-image-rpi-v8\n' > "$T/hs-run/reboot-required.p
 out="$(hs "$T/hs-bin/unattended-upgrade" 1 1)"
 check "preflight H1: /run/reboot-required -> WARN reboot-required naming the package once" bash -c 'grep -q "^\[WARN\] reboot-required .*(linux-image-rpi-v8)" <<< "$1"' _ "$out"
 rm -f "$T/hs-run/reboot-required" "$T/hs-run/reboot-required.pkgs"
-out="$(hs "$T/hs-bin/unattended-upgrade" 1 1 avahi-daemon.service bluetooth.service)"
-check "preflight H2: avahi and bluetooth running -> WARN lan-services naming both" bash -c 'grep -q "^\[WARN\] lan-services .*avahi-daemon.service bluetooth.service" <<< "$1" && ! grep -q "^\[FAIL\]" <<< "$1"' _ "$out"
+out="$(hs "$T/hs-bin/unattended-upgrade" 1 1 avahi-daemon.service)"
+check "preflight H2: avahi running -> WARN lan-services naming it" bash -c 'grep -q "^\[WARN\] lan-services .*avahi-daemon.service" <<< "$1" && ! grep -q "^\[FAIL\]" <<< "$1"' _ "$out"
+out="$(BTMASK=1 hs "$T/hs-bin/unattended-upgrade" 1 1)"
+check "preflight M12: bluetooth.service masked (old H2) -> WARN bluetooth with the bootstrap hint" bash -c 'grep -q "^\[WARN\] bluetooth .*masked.*bootstrap.sh" <<< "$1"' _ "$out"
 
 # ---------------------------------------------------------------- breakglass.sh (SEC-L3)
 export BREAKGLASS_DIR="$T/bg" BREAKGLASS_NO_ROOT_CHECK=1 BREAKGLASS_NO_TIMER=1

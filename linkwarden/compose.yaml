@@ -1,0 +1,180 @@
+---
+# Linkwarden (R17, milestone M9): bookmarks with saved page copies at https://links.${DOMAIN}, for the owner and the household.
+# Login only through Authentik OIDC (application "linkwarden", groups homelab-admins and homelab-users); Linkwarden's own password
+# login and self-registration are off. Behind the LAN/tailnet allowlist; no forward auth (the browser extension and the app use
+# Linkwarden's own API tokens).
+#
+# Start (Pi):  sudo scripts/deploy.sh --only linkwarden      (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       config/lab.env (LINKWARDEN_UID, AUTHENTIK_PG_UID) + ${APPS_ROOT}/secrets/runtime.env (DOMAIN); the secret files
+#              linkwarden/postgres-password, linkwarden/nextauth-secret, linkwarden/meili-key and authentik/linkwarden-oidc-client-secret
+#              (scripts/set-secret.sh --generate); the networks proxy, oidc and linkwarden-internal and the data directories from
+#              scripts/bootstrap.sh; Traefik (router links) and Authentik (OAuth2 provider in authentik/blueprints/homelab-apps.yaml).
+# Runbook:     docs/runbooks/m9-linkwarden.md        Self-test: scripts/test-linkwarden-config.sh
+#
+# Secrets are files. Linkwarden and Meilisearch only read environment variables, so a small wrapper exports them from the files and
+# then starts the image's own entrypoint and command (the command below is the image's CMD for v2.16.3, unchanged; the self-test
+# compares them, so an image bump that changes it fails CI).
+# Identity: Linkwarden and Meilisearch run as LINKWARDEN_UID (10007), PostgreSQL as the image's postgres user (70) like Authentik's.
+# Never root, never 1000. All three drop every capability and set no-new-privileges; Meilisearch and PostgreSQL have a read-only root.
+# Linkwarden's root stays read-only too: only /tmp (HOME, Chromium profile) and its data directory are writable.
+x-linkwarden-secrets-env: &lw-env
+  DATABASE_URL_HOST: linkwarden-postgresql
+  NEXTAUTH_URL: https://links.${DOMAIN:?set DOMAIN (runtime.env)}/api/v1/auth
+  MEILI_HOST: http://linkwarden-meilisearch:7700
+  NEXT_PUBLIC_CREDENTIALS_ENABLED: "false"
+  NEXT_PUBLIC_DISABLE_REGISTRATION: "true"
+  DISABLE_NEW_SSO_USERS: "false"
+  NEXT_PUBLIC_AUTHENTIK_ENABLED: "true"
+  AUTHENTIK_CUSTOM_NAME: Home lab login
+  AUTHENTIK_ISSUER: https://auth.${DOMAIN}/application/o/linkwarden
+  AUTHENTIK_CLIENT_ID: linkwarden
+  HOME: /tmp
+  TZ: ${TZ:-UTC}
+
+services:
+  linkwarden-postgresql:
+    image: postgres:16.15-alpine3.24@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    container_name: linkwarden-postgresql
+    restart: unless-stopped
+    user: "${AUTHENTIK_PG_UID:?set AUTHENTIK_PG_UID in config/lab.env}:${AUTHENTIK_PG_GID:?set AUTHENTIK_PG_GID in config/lab.env}"
+    # The password file is 10007:10007 0440: the group lets uid 70 read it without owning it.
+    group_add:
+      - "${LINKWARDEN_GID:?set LINKWARDEN_GID in config/lab.env}"
+    read_only: true
+    tmpfs:
+      - /var/run/postgresql:uid=${AUTHENTIK_PG_UID},gid=${AUTHENTIK_PG_GID},mode=0700
+      - /tmp:uid=${AUTHENTIK_PG_UID},gid=${AUTHENTIK_PG_GID},mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
+    networks:
+      - linkwarden-internal
+    environment:
+      POSTGRES_DB: linkwarden
+      POSTGRES_USER: linkwarden
+      POSTGRES_PASSWORD_FILE: /run/secrets/lw_pg_password
+    secrets:
+      - lw_pg_password
+    volumes:
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/linkwarden/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  linkwarden-meilisearch:
+    image: getmeili/meilisearch:v1.13.3@sha256:bed3fb650e62da53145777204891159242f6ea4ce69e215b36223af4aa64a0ae
+    container_name: linkwarden-meilisearch
+    restart: unless-stopped
+    user: "${LINKWARDEN_UID:?set LINKWARDEN_UID in config/lab.env}:${LINKWARDEN_GID}"
+    read_only: true
+    tmpfs:
+      - /tmp:uid=${LINKWARDEN_UID},gid=${LINKWARDEN_GID},mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    networks:
+      - linkwarden-internal
+    # MEILI_MASTER_KEY from the secret file, then the image's own entrypoint and command (tini -- /bin/meilisearch).
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        MEILI_MASTER_KEY="$$(cat /run/secrets/lw_meili_key)"
+        export MEILI_MASTER_KEY
+        exec tini -- /bin/meilisearch
+    environment:
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_DB_PATH: /meili_data/data.ms
+    secrets:
+      - lw_meili_key
+    volumes:
+      - ${APPS_ROOT}/linkwarden/meili:/meili_data
+    logging: *logging
+
+  linkwarden:
+    image: ghcr.io/linkwarden/linkwarden:v2.16.3@sha256:0664c28a039bda8ffa6663389e8536b2fc717219e329f85b83faca7efed3b144
+    container_name: linkwarden
+    restart: unless-stopped
+    user: "${LINKWARDEN_UID}:${LINKWARDEN_GID}"
+    read_only: true
+    tmpfs:
+      # HOME, Chromium's profile and Next.js scratch files. Chromium (page archiving) needs room here and in /dev/shm.
+      - /tmp:uid=${LINKWARDEN_UID},gid=${LINKWARDEN_GID},mode=0700,size=512m
+    shm_size: 256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    pids_limit: 512
+    depends_on:
+      linkwarden-postgresql:
+        condition: service_healthy
+      linkwarden-meilisearch:
+        condition: service_started
+    networks:
+      - proxy
+      - oidc
+      - linkwarden-internal
+    # The secrets from their files into the environment Linkwarden reads, then the image's entrypoint and its CMD (below, unchanged).
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        DATABASE_URL="postgresql://linkwarden:$$(cat /run/secrets/lw_pg_password)@$${DATABASE_URL_HOST}:5432/linkwarden"
+        NEXTAUTH_SECRET="$$(cat /run/secrets/lw_nextauth_secret)"
+        MEILI_MASTER_KEY="$$(cat /run/secrets/lw_meili_key)"
+        AUTHENTIK_CLIENT_SECRET="$$(cat /run/secrets/lw_oidc_client_secret)"
+        export DATABASE_URL NEXTAUTH_SECRET MEILI_MASTER_KEY AUTHENTIK_CLIENT_SECRET
+        exec docker-entrypoint.sh "$$@"
+      - linkwarden
+    command:
+      - sh
+      - -c
+      - export PATH=/data/node_modules/.bin:$$PATH && prisma migrate deploy --schema=/data/packages/prisma/schema.prisma && exec concurrently -k -n web,worker "cd /data/apps/web && exec next start" "cd /data/apps/worker && exec tsx worker.ts"
+    environment: *lw-env
+    secrets:
+      - lw_pg_password
+      - lw_nextauth_secret
+      - lw_meili_key
+      - lw_oidc_client_secret
+    volumes:
+      - ${APPS_ROOT}/linkwarden/data:/data/data
+    healthcheck:
+      test: ["CMD", "/usr/bin/curl", "--silent", "--fail", "-o", "/dev/null", "http://127.0.0.1:3000/login"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    logging: *logging
+
+networks:
+  proxy:
+    external: true
+  oidc:
+    external: true
+  linkwarden-internal:
+    external: true
+
+secrets:
+  lw_pg_password:
+    file: ${APPS_ROOT}/secrets/linkwarden/postgres-password
+  lw_nextauth_secret:
+    file: ${APPS_ROOT}/secrets/linkwarden/nextauth-secret
+  lw_meili_key:
+    file: ${APPS_ROOT}/secrets/linkwarden/meili-key
+  lw_oidc_client_secret:
+    file: ${APPS_ROOT}/secrets/authentik/linkwarden-oidc-client-secret

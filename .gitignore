@@ -47,6 +47,9 @@ Thumbs.db
 .homepage-test.*/
 .it-tools-test.*/
 .pihole-test.*/
+.linkwarden-test.*/
+.netdata-test.*/
+.portainer-test.*/
 .traefik-test.*/
 .traefik-test-apps.*/
 

@@ -24,21 +24,21 @@
         icon: pi-hole.png
         href: https://pihole.{{HOMEPAGE_VAR_DOMAIN}}/admin/
         description: DNS filtering for the house
+    - Linkwarden:
+        icon: linkwarden.png
+        href: https://links.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Bookmarks and saved pages
+    - Netdata:
+        icon: netdata.png
+        href: https://netdata.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Host and container monitoring
+    - Portainer:
+        icon: portainer.png
+        href: https://portainer.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Container overview (view, logs, restart)
 
 - Coming soon:
     - Home Assistant:
         icon: home-assistant.png
         href: https://ha.{{HOMEPAGE_VAR_DOMAIN}}/
         description: Home automation
-    - Linkwarden:
-        icon: linkwarden.png
-        href: https://links.{{HOMEPAGE_VAR_DOMAIN}}/
-        description: Bookmarks and archive
-    - Netdata:
-        icon: netdata.png
-        href: https://netdata.{{HOMEPAGE_VAR_DOMAIN}}/
-        description: Host monitoring
-    - Portainer:
-        icon: portainer.png
-        href: https://portainer.{{HOMEPAGE_VAR_DOMAIN}}/
-        description: Container management

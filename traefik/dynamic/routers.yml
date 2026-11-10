@@ -40,7 +40,8 @@ http:
         - websecure
       service: authentik
       middlewares:
-        - lan-allowlist
+        # The LAN and tailnet like every host, plus the OIDC back-channel network (Linkwarden's server-side token exchange).
+        - oidc-allowlist
 
     # Homepage dashboard (M5), same pattern as the Traefik dashboard.
     homepage:
@@ -96,6 +97,52 @@ http:
       middlewares:
         - lan-allowlist
 
+    # Linkwarden (M9): its own Authentik OIDC login, so the allowlist only (no forward auth: the app and the browser extension use
+    # Linkwarden's API tokens).
+    linkwarden:
+      rule: Host(`links.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: linkwarden
+      middlewares:
+        - lan-allowlist
+
+    # Netdata (M10): forward auth like the dashboard. Netdata uses the host network and listens only on the proxy network's gateway.
+    netdata:
+      rule: Host(`netdata.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: netdata
+      middlewares:
+        - lan-allowlist
+        - authentik
+    netdata-outpost:
+      rule: Host(`netdata.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # Portainer (M11): forward auth like the dashboard, then Portainer's own login.
+    portainer:
+      rule: Host(`portainer.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: portainer
+      middlewares:
+        - lan-allowlist
+        - authentik
+    portainer-outpost:
+      rule: Host(`portainer.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
   services:
     # authentik-server on the dedicated authentik-auth network (shared with Traefik only). Also the target of the forward-auth
     # middleware in middlewares.yml.
@@ -115,3 +162,16 @@ http:
       loadBalancer:
         servers:
           - url: http://pihole:80
+    linkwarden:
+      loadBalancer:
+        servers:
+          - url: http://linkwarden:3000
+    # Netdata runs with the host network and binds only to the proxy network's gateway (PROXY_SUBNET .1, netdata/netdata.conf).
+    netdata:
+      loadBalancer:
+        servers:
+          - url: http://172.30.0.1:19999
+    portainer:
+      loadBalancer:
+        servers:
+          - url: http://portainer:9000
