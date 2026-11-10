@@ -153,6 +153,25 @@ else
   warn "could not apply $SYSCTL_FILE; Tailscale may log 'failed to enable src_valid_mark' (harmless once the value is 1)"
 fi
 
+# A4: key-only SSH, even while SSH is off (Raspberry Pi Connect is the access path), so turning SSH on later never opens password logins.
+# sshd keeps the FIRST value it reads and reads sshd_config.d/*.conf in name order, so the 00- prefix wins over the distribution's files.
+if [ -f /etc/ssh/sshd_config ]; then
+  SSHD_FILE=/etc/ssh/sshd_config.d/00-home-lab-keys-only.conf
+  SSHD_WANT=$'# Managed by home-lab scripts/bootstrap.sh (A4): key-only SSH.\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin no\n'
+  if [ "$(cat "$SSHD_FILE" 2> /dev/null || true)" != "${SSHD_WANT%$'\n'}" ]; then
+    install -d -m 0755 /etc/ssh/sshd_config.d
+    printf '%s' "$SSHD_WANT" > "$SSHD_FILE"
+    chmod 0644 "$SSHD_FILE"
+    if command -v sshd > /dev/null 2>&1 && ! sshd -t > /dev/null 2>&1; then
+      rm -f "$SSHD_FILE"
+      warn "sshd rejected $SSHD_FILE, so it was removed and SSH is unchanged"
+    else
+      info "wrote $SSHD_FILE (key-only SSH)"
+      if systemctl is-active --quiet ssh 2> /dev/null; then systemctl reload ssh 2> /dev/null || warn "could not reload ssh"; fi
+    fi
+  fi
+fi
+
 # Daily certificate expiry check (QA-M-4) and nightly Authentik backup (K5): systemd timers; a failing run shows in `systemctl --failed`,
 # the journal and an alert mail. The backup timer is enabled even before the owner has configured the recipient: the first nightly run then
 # fails loudly (one mail a day) instead of the gap being silent (docs/runbooks/authentik-backup.md, owner setup).
