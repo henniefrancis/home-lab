@@ -38,6 +38,7 @@ case " ${args[*]} " in
   *" sts get-caller-identity "*)
     if [ "${MOCK_AUTH:-ok}" = ok ]; then echo "MOCK-ACCOUNT"; exit 0; else exit 255; fi ;;
   *" ssm get-parameter "*)
+    if [ "${MOCK_TYPE:-SecureString}" = MISSING ]; then echo "An error occurred (ParameterNotFound)" >&2; exit 254; fi
     echo "${MOCK_TYPE:-SecureString}"; exit 0 ;;
   *" ssm describe-parameters "*)
     printf '%s' "${MOCK_PARAMS:-[]}"; exit 0 ;;
@@ -48,6 +49,7 @@ case " ${args[*]} " in
       if [ "${args[$i]}" = "--cli-input-json" ]; then src="${args[$((i + 1))]#file://}"; fi
     done
     if [ "$src" = /dev/stdin ]; then cat > "$out/req.json"; else cat "$src" > "$out/req.json"; fi
+    jq -c . < "$out/req.json" >> "$out/reqs.log" # stdin: jq.exe under Git Bash gets no path conversion here
     echo 7 ;;
   *" --mock-marker "*) echo "MOCK-AWS-MARKER" ;;
   *) echo "mock: unexpected call: ${args[*]}" >&2; exit 99 ;;
@@ -77,7 +79,7 @@ rm -f "$MOCK_OUT/calls.log"
 run() { # run <stdin text> <args...>; prints the exit code in $rc, output in $work/o
   local input="$1"
   shift
-  rm -f "$MOCK_OUT/req.json"
+  rm -f "$MOCK_OUT/req.json" "$MOCK_OUT/reqs.log"
   set +e
   printf '%b' "$input" | bash scripts/set-secret.sh "$@" > "$work/o" 2>&1
   rc=$?
@@ -126,6 +128,22 @@ run '' --create not-in/manifest
 check "--create refuses a name that is not a SecureString row of the manifest (exit 2, nothing sent)" bash -c 'test "$1" -eq 2 && test ! -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
 run 'x\nx\n' tailscale/auth-key
 check "a normal set never sends Tags (they are only valid with Overwrite false)" bash -c '! jq -e "has(\"Tags\")" "$1"' _ "$MOCK_OUT/req.json"
+
+# --generate (machine-only secrets): random, never shown, never overwrites
+MOCK_TYPE=MISSING run '' --generate authentik/secret-key pihole/admin-password
+check "--generate creates every named secret (exit 0, one write each)" bash -c 'test "$1" -eq 0 && test "$(wc -l < "$2/reqs.log")" -eq 2' _ "$rc" "$MOCK_OUT"
+check "--generate: each value is 64 hex characters, and the two differ" bash -c 'v="$(jq -r .Value "$1/reqs.log")"; [ "$(grep -cE "^[0-9a-f]{64}$" <<< "$v")" = 2 ] && [ "$(sort -u <<< "$v" | wc -l)" = 2 ]' _ "$MOCK_OUT"
+check "--generate writes SecureString, Overwrite false, the key alias and the tags" bash -c 'jq -se "all(.[]; .Type == \"SecureString\" and .Overwrite == false and .KeyId == \"alias/home-lab-ssm\" and ([.Tags[] | .Key] | sort == [\"ManagedBy\",\"Project\"]))" "$1/reqs.log"' _ "$MOCK_OUT"
+check "--generate never shows a value (not in the output, not in any command line)" bash -c 'for v in $(jq -r .Value "$1/reqs.log"); do grep -qF "$v" "$2" "$1/calls.log" && exit 1; done; exit 0' _ "$MOCK_OUT" "$work/o"
+check "--generate names each parameter and says the value was not shown" bash -c 'grep -q "Generated /home-lab/authentik/secret-key" "$1" && grep -q "value never shown" "$1"' _ "$work/o"
+run '' --generate authentik/secret-key
+check "--generate refuses an existing parameter (exit 1, nothing written: a value may be in use)" bash -c 'test "$1" -eq 1 && test ! -f "$2/reqs.log" && grep -q "already exists" "$3"' _ "$rc" "$MOCK_OUT" "$work/o"
+MOCK_TYPE=MISSING run '' --generate not-in/manifest
+check "--generate refuses a name that is not in the manifest (exit 2, nothing sent)" bash -c 'test "$1" -eq 2 && test ! -f "$2/reqs.log"' _ "$rc" "$MOCK_OUT"
+MOCK_TYPE=MISSING run '' --generate config/domain
+check "--generate refuses config/* (Terraform owns it)" bash -c 'test "$1" -eq 2 && test ! -f "$2/reqs.log"' _ "$rc" "$MOCK_OUT"
+run '' --generate
+check "--generate with no name is a usage error (exit 2)" test "$rc" -eq 2
 
 good='[{"n":"/home-lab/authentik/secret-key","t":"SecureString","k":"alias/home-lab-ssm","v":3},{"n":"/home-lab/authentik/postgres-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/authentik/bootstrap-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/traefik/breakglass-htpasswd","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/tailscale/auth-key","t":"SecureString","k":"alias/home-lab-ssm","v":4},{"n":"/home-lab/homepage/authentik-token","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/pihole/admin-password","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/config/domain","t":"String","k":null,"v":1}]'
 MOCK_PARAMS="$good" run '' --check

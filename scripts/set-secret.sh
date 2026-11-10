@@ -6,6 +6,10 @@
 #   scripts/set-secret.sh --unset <name>    put the UNSET placeholder back (e.g. after Tailscale has joined)
 #   scripts/set-secret.sh --create <name>   create the SecureString (with the UNSET placeholder, key alias/home-lab-ssm, Standard tier,
 #                                           tags Project=home-lab and ManagedBy=set-secret.sh); refuses if it already exists; then set it
+#   scripts/set-secret.sh --generate <name>...  for MACHINE-ONLY secrets nobody needs to know (database passwords, signing keys): create each
+#                                           SecureString with a random value (64 hex characters from openssl rand). Refuses a name that
+#                                           already exists (it may hold a value something already uses) or is not in the manifest. The
+#                                           value is never shown, logged or placed in argv. Human passwords: use <name> (the prompt).
 #   scripts/set-secret.sh --check           list every expected SecureString with its key and version (never a value); exit 1 when one is
 #                                           missing, is not a SecureString or is not on the home-lab key
 #
@@ -34,7 +38,7 @@ PLACEHOLDER="UNSET-set-via-set-secret"
 MAX_LEN=4096
 MODE="set"
 
-usage() { sed -n '2,23p' "$0"; }
+usage() { sed -n '2,27p' "$0"; }
 
 MANIFEST="${SECRETS_MANIFEST:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/secrets-manifest.tsv}"
 expected_names() { grep -vE '^(#|$)' "$MANIFEST" | cut -f1 | tr -d '\r' | grep -v '^config/'; }
@@ -63,6 +67,10 @@ while [ $# -gt 0 ]; do
       MODE="check"
       shift
       ;;
+    --generate)
+      MODE="generate"
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -80,6 +88,11 @@ if [ "$MODE" = check ]; then
     usage >&2
     exit 2
   }
+elif [ "$MODE" = generate ]; then
+  [ $# -ge 1 ] || {
+    usage >&2
+    exit 2
+  }
 else
   [ $# -eq 1 ] || {
     usage >&2
@@ -87,16 +100,26 @@ else
   }
 fi
 NAME="${1:-}"
+NAMES=("$@")
+[ "$MODE" = generate ] || NAMES=("$NAME")
 
 # Only secret parameters of the form <service>/<name>; config/* is owned by Terraform.
-if [ "$MODE" != check ] && { ! [[ "$NAME" =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]] || [[ "$NAME" == config/* ]]; }; then
-  echo "Refusing '$NAME': expected <service>/<name> (lowercase letters, digits, hyphen), never config/*." >&2
-  exit 2
+if [ "$MODE" != check ]; then
+  for n in "${NAMES[@]}"; do
+    if ! [[ "$n" =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]] || [[ "$n" == config/* ]]; then
+      echo "Refusing '$n': expected <service>/<name> (lowercase letters, digits, hyphen), never config/*." >&2
+      exit 2
+    fi
+  done
 fi
-if [ "$MODE" = create ]; then load_expected; fi
-if [ "$MODE" = create ] && ! grep -qxF -- "$NAME" <<< "$EXPECTED"; then
-  echo "Refusing to create '$NAME': it is not a SecureString row of config/secrets-manifest.tsv (add it there first)." >&2
-  exit 2
+if [ "$MODE" = create ] || [ "$MODE" = generate ]; then
+  load_expected
+  for n in "${NAMES[@]}"; do
+    if ! grep -qxF -- "$n" <<< "$EXPECTED"; then
+      echo "Refusing to create '$n': it is not a SecureString row of config/secrets-manifest.tsv (add it there first)." >&2
+      exit 2
+    fi
+  done
 fi
 [[ "$KEY_ID" =~ ^alias/[A-Za-z0-9/_-]{1,250}$ ]] || {
   echo "SSM_KEY_ALIAS must look like alias/<name>." >&2
@@ -167,7 +190,7 @@ if [ "$MODE" = check ]; then
   exit 0
 fi
 
-if [ "$MODE" != create ]; then
+if [ "$MODE" != create ] && [ "$MODE" != generate ]; then
   # Type only: no --with-decryption and no Value in the output.
   ptype="$(aws_ ssm get-parameter --name "$PARAM" --query Parameter.Type --output text 2> /dev/null || true)"
   if [ "$ptype" != SecureString ]; then
@@ -179,6 +202,9 @@ fi
 case "$MODE" in
   unset | create)
     v="$PLACEHOLDER"
+    ;;
+  generate)
+    : # the values are created one by one below; nothing is read from the terminal
     ;;
   *)
     printf 'Value for %s (no echo): ' "$PARAM" >&2
@@ -218,6 +244,7 @@ esac
 
 overwrite=true
 [ "$MODE" = create ] && overwrite=false
+[ "$MODE" = generate ] && overwrite=false
 
 # Build the request body from stdin (value never in argv); only the parameter name and key alias go to jq as arguments.
 build_body() {
@@ -227,23 +254,55 @@ build_body() {
      + (if $m == "create" then {Tags:[{Key:"Project",Value:"home-lab"},{Key:"ManagedBy",Value:"set-secret.sh"}]} else {} end)'
 }
 
-case "$(uname -s)" in
-  MINGW* | MSYS* | CYGWIN*)
-    TMPDIR_PRIV="$(mktemp -d)"
-    chmod 700 "$TMPDIR_PRIV"
-    # chmod is a no-op on NTFS: restrict the directory to the current user with an ACL instead.
-    win_dir="$(cygpath -w "$TMPDIR_PRIV")"
-    if command -v icacls > /dev/null 2>&1 && [ -n "${USERNAME:-}" ]; then
-      icacls "$win_dir" /inheritance:r /grant:r "${USERNAME}:(OI)(CI)F" > /dev/null 2>&1 ||
-        echo "WARN: could not restrict the temp directory ACL; prefer WSL for secrets." >&2
-    fi
-    build_body > "$TMPDIR_PRIV/req.json"
-    win_path="$(cygpath -m "$TMPDIR_PRIV/req.json")"
-    out="$(aws_ ssm put-parameter --cli-input-json "file://$win_path" --query Version --output text)"
-    ;;
-  *)
-    out="$(build_body | aws_ ssm put-parameter --cli-input-json file:///dev/stdin --query Version --output text)"
-    ;;
-esac
+put_value() { # sends $v to $PARAM; sets $out to the new version
+  case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*)
+      if [ -z "$TMPDIR_PRIV" ]; then
+        TMPDIR_PRIV="$(mktemp -d)"
+        chmod 700 "$TMPDIR_PRIV"
+        # chmod is a no-op on NTFS: restrict the directory to the current user with an ACL instead.
+        win_dir="$(cygpath -w "$TMPDIR_PRIV")"
+        if command -v icacls > /dev/null 2>&1 && [ -n "${USERNAME:-}" ]; then
+          icacls "$win_dir" /inheritance:r /grant:r "${USERNAME}:(OI)(CI)F" > /dev/null 2>&1 ||
+            echo "WARN: could not restrict the temp directory ACL; prefer WSL for secrets." >&2
+        fi
+      fi
+      build_body > "$TMPDIR_PRIV/req.json"
+      win_path="$(cygpath -m "$TMPDIR_PRIV/req.json")"
+      out="$(aws_ ssm put-parameter --cli-input-json "file://$win_path" --query Version --output text)"
+      # Overwrite the request body (it held the value) before the next one; the EXIT trap removes the directory.
+      size="$(wc -c < "$TMPDIR_PRIV/req.json" | tr -d ' ')"
+      head -c "${size:-0}" /dev/urandom > "$TMPDIR_PRIV/req.json" 2> /dev/null || true
+      ;;
+    *)
+      out="$(build_body | aws_ ssm put-parameter --cli-input-json file:///dev/stdin --query Version --output text)"
+      ;;
+  esac
+}
 
+if [ "$MODE" = generate ]; then
+  rc_all=0
+  for n in "${NAMES[@]}"; do
+    PARAM="/home-lab/$n"
+    # Existence only (type, no value): never overwrite something that may already be in use.
+    if aws_ ssm get-parameter --name "$PARAM" --query Parameter.Type --output text > /dev/null 2>&1; then
+      echo "Skipped $PARAM: it already exists (a value may be in use). To replace it on purpose: scripts/set-secret.sh $n" >&2
+      rc_all=1
+      continue
+    fi
+    v="$(openssl rand -hex 32 2> /dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    [[ "$v" =~ ^[0-9a-f]{64}$ ]] || {
+      echo "Could not generate a random value for $PARAM; nothing written." >&2
+      exit 1
+    }
+    MODE=create # build_body adds the Project and ManagedBy tags on a create
+    put_value
+    MODE=generate
+    v=""
+    echo "Generated $PARAM (version $out, key $KEY_ID, value never shown)."
+  done
+  exit "$rc_all"
+fi
+
+put_value
 echo "Stored $PARAM (version $out, key $KEY_ID)."
