@@ -166,7 +166,7 @@ jobs:
           age --version
           bash scripts/test-backup-authentik.sh
 
-      - name: Self-test - app backups (mock docker, aws, age and setpriv placed first on PATH and proven; real tar and sqlite3 with a live WAL database; the units)
+      - name: Self-test - app backups (mocks proven first; real tar and sqlite3 with a live WAL database; the units)
         env:
           REQUIRE_SQLITE: "1"
         run: bash scripts/test-backup-apps.sh
@@ -206,7 +206,7 @@ jobs:
           set -eu
           sock_re='docker[.]sock|providers[.]docker|docker-socket-proxy|tecnativa'
           # ADR-017: only netdata/ and portainer/ may mount the socket (and nothing anywhere may use a Docker provider or a socket proxy).
-          no_sock='traefik authentik homepage tailscale it-tools pihole linkwarden homeassistant compose.yaml'
+          no_sock='traefik authentik homepage tailscale it-tools pihole linkwarden homeassistant koffan compose.yaml'
           # shellcheck disable=SC2086
           if git grep -nE "$sock_re" -- $no_sock | grep -v ':[0-9]*:[[:space:]]*#'; then
             echo "No Docker socket or Docker provider outside the stacks ADR-017 names."; exit 1
@@ -215,7 +215,7 @@ jobs:
             echo "No Docker provider or socket proxy, even in the ADR-017 stacks."; exit 1
           fi
           files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml
-            pihole/compose.yaml linkwarden/compose.yaml netdata/compose.yaml portainer/compose.yaml homeassistant/compose.yaml'
+            pihole/compose.yaml linkwarden/compose.yaml netdata/compose.yaml portainer/compose.yaml homeassistant/compose.yaml koffan/compose.yaml'
           # shellcheck disable=SC2086
           bad="$(git grep -hE '^[[:space:]]+image:[[:space:]]' -- $files | grep -Ev 'home-lab/(ra-helper|it-tools)' | grep -Ev '@sha256:[0-9a-f]{64}' || true)"
           if [ -n "$bad" ]; then echo "Images must be pinned tag@sha256:"; echo "$bad"; exit 1; fi
@@ -278,6 +278,9 @@ jobs:
 
       - name: Self-test - Netdata stack (static checks; on the Linux runner the real image with the host network, the bind and allow lists)
         run: bash scripts/test-netdata-config.sh
+
+      - name: Self-test - Koffan stack (static checks; the real image, the PWA bypass router and forward auth through the real Traefik routers)
+        run: bash scripts/test-koffan-config.sh
 
       - name: Self-test - Portainer stack (static checks; the real image without capabilities, the password file, the local environment, forward auth)
         run: bash scripts/test-portainer-config.sh

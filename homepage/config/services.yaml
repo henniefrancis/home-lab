@@ -1,7 +1,7 @@
 ---
 # Tiles (plan 6.6). Plain links: there is no Docker integration, so no container-status dots (SEC-H2: reading the Docker API, even
 # through a filtering proxy, exposes container files and logs; docs/runbooks/m5-homepage.md explains the decision).
-# Every R17 app is live (M7-M12); there are no placeholder tiles left. {{HOMEPAGE_VAR_DOMAIN}} is the lab domain, injected from compose.
+# Every R17 and R19 app is live (M7-M12, M14-M17); CouchDB has no web UI, so no tile. {{HOMEPAGE_VAR_DOMAIN}} is the lab domain, from compose.
 #
 # Optional Authentik widget (needs the SSM parameter homepage/authentik-token): see docs/runbooks/m5-homepage.md.
 - Platform:
@@ -13,6 +13,12 @@
         icon: authentik.png
         href: https://auth.{{HOMEPAGE_VAR_DOMAIN}}/
         description: Single sign-on and MFA
+
+- Household:
+    - Shopping list:
+        icon: mdi-cart
+        href: https://shopping.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: One shared list for the house
 
 - Tools:
     - IT Tools:

@@ -294,6 +294,38 @@ entries:
       group: !KeyOf group-users
       order: 1
 
+  # Koffan (M14, R19): forward auth, the household list. Koffan's own login is off (DISABLE_AUTH), so this binding is the whole door: open to
+  # homelab-admins and homelab-users, everyone else is denied.
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-koffan
+    identifiers:
+      name: homelab-koffan
+    attrs:
+      mode: forward_single
+      external_host: !Format ["https://shopping.%s", !Env DOMAIN]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      access_token_validity: hours=12
+  - model: authentik_core.application
+    id: app-koffan
+    identifiers:
+      slug: koffan
+    attrs:
+      name: Shopping list
+      provider: !KeyOf provider-koffan
+      policy_engine_mode: any
+      meta_launch_url: !Format ["https://shopping.%s/", !Env DOMAIN]
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-koffan
+      group: !KeyOf group-admins
+      order: 0
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-koffan
+      group: !KeyOf group-users
+      order: 1
+
   # --- 4. Embedded outpost ---------------------------------------------------------------------------------------------
   - model: authentik_outposts.outpost
     id: embedded-outpost
@@ -309,5 +341,6 @@ entries:
         - !KeyOf provider-pihole
         - !KeyOf provider-netdata
         - !KeyOf provider-portainer
+        - !KeyOf provider-koffan
       config:
         authentik_host: !Format ["https://auth.%s", !Env DOMAIN]

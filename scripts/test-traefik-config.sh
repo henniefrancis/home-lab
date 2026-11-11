@@ -81,7 +81,7 @@ check "the break-glass service and the whoami image are gone (it is a drop-in fi
 check "every third-party image in the stacks is pinned by digest (SEC-M5)" bash -c 'allj | jq -r ".services[] | select(.build == null) | .image" | grep -vq "@sha256:[0-9a-f]\{64\}$" && exit 1; exit 0'
 check "only ONE TLS option set exists and no entrypoint selects another (421 regression, M5)" bash -c 'test "$(grep -c "^    [a-z]*:$" traefik/dynamic/tls.yml)" = 1 && grep -q "^    default:" traefik/dynamic/tls.yml && ! printf "%s\n" "$@" | grep -q "tls.options"' _ "${flags[@]}"
 check "the dynamic directory has no hard-coded domain, only the DOMAIN template" bash -c '! grep -rEq "[a-z0-9-]+\.(com|net|org|co\.za)\b" traefik/dynamic traefik/breakglass'
-check "every host rule uses the DOMAIN env template" bash -c '! grep -rh "rule:" traefik/dynamic traefik/breakglass | grep -v "env \"DOMAIN\""'
+check "every host rule uses the DOMAIN env template (a rule may continue on following lines, so every Host( is checked, comments aside)" bash -c '! grep -rhE "Host\(" traefik/dynamic traefik/breakglass | grep -v "^[[:space:]]*#" | grep -v "env \"DOMAIN\""'
 check "breakglass_users secret file is owned for the traefik uid (manifest 10004)" bash -c 'grep -q "^traefik/breakglass-htpasswd.*10004:10004.*0400" config/secrets-manifest.tsv'
 check "traefik key is mounted only into ra-helper" test "$(jq -c '[.services | to_entries[] | select((.value.secrets // []) | map(.source) | index("ra_acme_key")) | .key]' <<< "$json")" = '["ra-helper"]'
 check "no host key reference anywhere" bash -c '! printf "%s" "$1" | grep -q "host\.key"' _ "$json"

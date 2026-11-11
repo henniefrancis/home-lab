@@ -34,8 +34,9 @@ updates:
       terraform:
         patterns: ["*"]
 
-  # Image bumps for Traefik, Authentik, PostgreSQL, Tailscale, Homepage, IT Tools, Pi-hole, Linkwarden, Netdata, Portainer and
-  # Home Assistant arrive as one weekly PR; every reference is tag@sha256 and Dependabot rewrites tag and digest together.
+  # Image bumps for Traefik, Authentik, PostgreSQL, Tailscale, Homepage, IT Tools, Pi-hole, Linkwarden, Netdata, Portainer, Home Assistant
+  # and the R19 apps (Koffan, Speedtest Tracker, CouchDB, n8n) arrive as one weekly PR; every reference is tag@sha256 and Dependabot
+  # rewrites tag and digest together.
   # The pinned aws_signing_helper release in traefik/ra-helper/Dockerfile and scripts/lib/pins.sh is NOT tracked here; bump it by
   # hand from the AWS user guide (CI fails if the two files disagree).
   # QA-M-2: home-lab/ra-helper is built locally from /traefik/ra-helper and does not exist in any registry. Dependabot tried to
@@ -52,6 +53,7 @@ updates:
       - /netdata
       - /portainer
       - /homeassistant
+      - /koffan
     schedule:
       interval: weekly
     cooldown:

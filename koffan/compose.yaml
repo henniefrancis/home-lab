@@ -1,0 +1,51 @@
+---
+# Koffan (R19, milestone M14): the household shopping list at https://shopping.${DOMAIN}, one shared list for homelab-users and
+# homelab-admins. Behind the LAN/tailnet allowlist and Authentik forward auth (MFA kept); Koffan's own login is OFF (DISABLE_AUTH), so
+# Authentik is the only door. A progressive web app: the few static files a browser fetches WITHOUT cookies (web app manifest, icons)
+# and the service worker are served by a second router without forward auth (traefik/dynamic/routers.yml, koffan-pwa); everything else,
+# including every data and API path, stays behind Authentik.
+#
+# Start (Pi):  sudo scripts/deploy.sh --only koffan      (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       config/lab.env (KOFFAN_UID, KOFFAN_GID), the proxy network and APPS_ROOT/koffan/data (10008, 0700) from scripts/bootstrap.sh,
+#              Traefik (routers koffan, koffan-outpost, koffan-pwa) and Authentik (provider homelab-koffan in the blueprint).
+# Runbook:     docs/runbooks/r19-apps.md        Self-test: scripts/test-koffan-config.sh
+#
+# Image: ghcr.io/pansalut/koffan (Go, one binary, SQLite at /data/shopping.db, port 8080; amd64 and arm64). No secrets: API_TOKEN, WEBHOOK_URL
+# and MULTI_USER are deliberately NOT set (no API, no outbound webhooks, one shared list). The image's own health check (wget /login)
+# answers 200 with DISABLE_AUTH, so it is kept.
+# Hardening: non-root KOFFAN_UID (10008), read-only root, no capability, no-new-privileges; only /data and /tmp are writable. Accepted: any
+# container on the proxy network can reach koffan:8080 without a login (like IT Tools); the data is a shopping list.
+services:
+  koffan:
+    image: ghcr.io/pansalut/koffan:v2.17.0@sha256:a566e1efcdf1a7ca92e045d81a152e607dfe5db7df4f44c26cfe2ea59cc4b6c4
+    container_name: koffan
+    restart: unless-stopped
+    user: "${KOFFAN_UID:?set KOFFAN_UID in config/lab.env}:${KOFFAN_GID:?set KOFFAN_GID in config/lab.env}"
+    read_only: true
+    tmpfs:
+      - /tmp:uid=${KOFFAN_UID},gid=${KOFFAN_GID},mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    pids_limit: 128
+    networks:
+      - proxy
+    environment:
+      APP_ENV: production
+      DISABLE_AUTH: "true"
+      DB_PATH: /data/shopping.db
+      DEFAULT_LANG: en
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/koffan/data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  proxy:
+    external: true

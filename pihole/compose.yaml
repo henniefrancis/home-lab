@@ -68,6 +68,7 @@ services:
         ${PI_LAN_IP:?set PI_LAN_IP (runtime.env, SSM config/pi-lan-ip)}
         auth.${DOMAIN:?set DOMAIN (runtime.env)} dashboard.${DOMAIN} traefik.${DOMAIN} bg-traefik.${DOMAIN} tools.${DOMAIN}
         pihole.${DOMAIN} links.${DOMAIN} netdata.${DOMAIN} portainer.${DOMAIN} ha.${DOMAIN}
+        shopping.${DOMAIN}
       FTLCONF_webserver_port: "80"
       FTLCONF_webserver_domain: pihole.${DOMAIN}
       FTLCONF_database_maxDBdays: "7"

@@ -153,6 +153,40 @@ http:
       middlewares:
         - lan-allowlist
 
+    # Koffan (R19, M14): forward auth like the dashboard (Koffan's own login is off), plus koffan-pwa: the few STATIC files a browser fetches
+    # without cookies (the web app manifest and its icons, which a forward-auth redirect would break: "install app" fails) and the service
+    # worker script. Exact paths only (read from Koffan's page and manifest at build time); no data, API or page path may ever be added here.
+    # scripts/test-koffan-config.sh proves that "/" and the API paths still go to Authentik. The explicit priority 10 keeps the main router below
+    # koffan-pwa (50) and koffan-outpost (100) whatever the length of the domain is (Traefik's default priority is the rule length).
+    koffan:
+      rule: Host(`shopping.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      priority: 10
+      service: koffan
+      middlewares:
+        - lan-allowlist
+        - authentik
+    koffan-outpost:
+      rule: Host(`shopping.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+    koffan-pwa:
+      rule: >-
+        Host(`shopping.{{ env "DOMAIN" }}`) && (Path(`/static/manifest.json`) || Path(`/static/sw.js`) ||
+        Path(`/static/icon-192.png`) || Path(`/static/icon-512.png`) || Path(`/static/apple-touch-icon.png`) ||
+        Path(`/static/favicon.ico`) || Path(`/static/favicon-96.png`))
+      entryPoints:
+        - websecure
+      priority: 50
+      service: koffan
+      middlewares:
+        - lan-allowlist
+
   services:
     # authentik-server on the dedicated authentik-auth network (shared with Traefik only). Also the target of the forward-auth
     # middleware in middlewares.yml.
@@ -189,3 +223,7 @@ http:
       loadBalancer:
         servers:
           - url: http://172.30.0.1:8123
+    koffan:
+      loadBalancer:
+        servers:
+          - url: http://koffan:8080
