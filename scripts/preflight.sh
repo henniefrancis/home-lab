@@ -372,6 +372,9 @@ check_installed_tools() {
   if command -v jq > /dev/null 2>&1; then pass jq "$(jq --version)"; else fail jq "jq missing (run bootstrap.sh)"; fi
   # K5: the Authentik backup is encrypted on the Pi with age before it leaves (scripts/backup-authentik.sh).
   if command -v age > /dev/null 2>&1; then pass age "$(age --version 2> /dev/null | head -n 1)"; else fail age "age missing (run bootstrap.sh): the nightly Authentik backup cannot run"; fi
+  # R19: the SQLite backups (Koffan, n8n) take a consistent copy with the host sqlite3, run as the app's uid with setpriv.
+  if command -v sqlite3 > /dev/null 2>&1; then pass sqlite3 "$(sqlite3 --version 2> /dev/null | cut -d' ' -f1)"; else fail sqlite3 "sqlite3 missing (run bootstrap.sh): the Koffan and n8n backups cannot run"; fi
+  if command -v setpriv > /dev/null 2>&1; then pass setpriv "present (util-linux)"; else fail setpriv "setpriv missing (run bootstrap.sh): the SQLite backups cannot drop to the app uid"; fi
 }
 
 check_dir() { # check_dir <path> <owner uid:gid> <mode> <label>
@@ -390,7 +393,7 @@ check_layout() {
   check_dir "$PKI_DIR" 0:0 700 pki-dir
   check_dir "$APPS_ROOT" 0:0 700 apps-root
   check_dir "$APPS_ROOT/secrets" 0:0 700 secrets-dir
-  for d in traefik authentik homepage tailscale pihole linkwarden netdata portainer homeassistant; do
+  for d in traefik authentik homepage tailscale pihole linkwarden netdata portainer homeassistant koffan speedtest couchdb n8n; do
     if [ -d "$APPS_ROOT/$d" ]; then pass "apps-$d" "$APPS_ROOT/$d"; else fail "apps-$d" "$APPS_ROOT/$d missing (run bootstrap.sh)"; fi
   done
   for d in proxy authentik-internal authentik-auth oidc linkwarden-internal; do
@@ -398,7 +401,7 @@ check_layout() {
   done
   # F02: the service uids must not be real host users (a file owned by the login user is readable by whoever logs in).
   local k id
-  for k in AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID ITTOOLS_UID ITTOOLS_GID PIHOLE_UID PIHOLE_GID LINKWARDEN_UID LINKWARDEN_GID; do
+  for k in AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID ITTOOLS_UID ITTOOLS_GID PIHOLE_UID PIHOLE_GID LINKWARDEN_UID LINKWARDEN_GID KOFFAN_UID KOFFAN_GID SPEEDTEST_UID SPEEDTEST_GID N8N_UID N8N_GID COUCHDB_UID COUCHDB_GID; do
     id="$(lab_env_get "$LAB_ENV" "$k")"
     if ! [[ "$id" =~ ^[0-9]+$ ]]; then
       fail "svc-id:$k" "$k missing or not numeric in $LAB_ENV"
@@ -429,6 +432,15 @@ check_layout() {
   else
     fail linkwarden-data "$APPS_ROOT/linkwarden/data missing (re-run bootstrap.sh)"
   fi
+  # R19 apps: the data directories and their owners (created by bootstrap.sh; a missing one means bootstrap.sh was not re-run).
+  local app dirs spec uid_key
+  for spec in koffan:KOFFAN:data speedtest:SPEEDTEST:config n8n:N8N:data couchdb:COUCHDB:data couchdb:COUCHDB:etc; do
+    app="${spec%%:*}"
+    uid_key="${spec#*:}"
+    uid_key="${uid_key%%:*}"
+    dirs="${spec##*:}"
+    check_dir "$APPS_ROOT/$app/$dirs" "$(lab_env_get "$LAB_ENV" "${uid_key}_UID"):$(lab_env_get "$LAB_ENV" "${uid_key}_GID")" 700 "$app-$dirs"
+  done
   # Under pipefail, `lsmod | grep -q` reported a loaded module as missing: grep -q exits at the first match, lsmod dies of SIGPIPE on its next
   # write and the pipeline fails (seen live 2026-11-10). What Tailscale needs is the device, whether tun is a module or built in.
   if [ -c /dev/net/tun ]; then pass tun "/dev/net/tun present (kernel TUN for Tailscale)"; else warnx tun "/dev/net/tun missing (Tailscale needs it: sudo modprobe tun)"; fi

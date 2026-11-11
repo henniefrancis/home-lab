@@ -65,7 +65,7 @@ step "1/7 Preflight (system checks)"
 
 step "2/7 Required packages"
 missing=()
-for pair in curl:curl unzip:unzip gpg:gnupg jq:jq openssl:openssl git:git ssh-keygen:openssh-client flock:util-linux age:age unattended-upgrade:unattended-upgrades; do
+for pair in curl:curl unzip:unzip gpg:gnupg jq:jq openssl:openssl git:git ssh-keygen:openssh-client flock:util-linux age:age sqlite3:sqlite3 setpriv:util-linux unattended-upgrade:unattended-upgrades; do
   command -v "${pair%%:*}" > /dev/null 2>&1 || missing+=("${pair##*:}")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -80,7 +80,7 @@ step "3/7 Directory layout"
 # 0700 like fetch-secrets.sh sets it on every deploy: only root (and the Docker daemon) traverses $APPS_ROOT. Containers reach their
 # directories through bind mounts, never through this path, so nothing needs to cross it as another user.
 install -d -m 0700 -o root -g root "$APPS_ROOT"
-for d in traefik authentik homepage tailscale pihole linkwarden netdata portainer homeassistant; do
+for d in traefik authentik homepage tailscale pihole linkwarden netdata portainer homeassistant koffan speedtest couchdb n8n; do
   install -d -m 0755 -o root -g root "$APPS_ROOT/$d"
 done
 install -d -m 0700 -o root -g root "$APPS_ROOT/tailscale/state"
@@ -104,7 +104,17 @@ PH_GID="$(lab_env_get "$LAB_ENV" PIHOLE_GID 10006)"
 # Linkwarden (M9): the app and its Meilisearch run as LINKWARDEN_UID; its PostgreSQL as the postgres image user (AUTHENTIK_PG_UID, 70).
 LW_UID="$(lab_env_get "$LAB_ENV" LINKWARDEN_UID 10007)"
 LW_GID="$(lab_env_get "$LAB_ENV" LINKWARDEN_GID 10007)"
-for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID" "$HP_UID" "$HP_GID" "$TR_UID" "$TR_GID" "$PH_UID" "$PH_GID" "$LW_UID" "$LW_GID"; do
+# R19 apps: Koffan (SQLite), Speedtest Tracker (PUID after its root init, ADR-018), n8n (SQLite) and CouchDB each own their data directory.
+KF_UID="$(lab_env_get "$LAB_ENV" KOFFAN_UID 10008)"
+KF_GID="$(lab_env_get "$LAB_ENV" KOFFAN_GID 10008)"
+ST_UID="$(lab_env_get "$LAB_ENV" SPEEDTEST_UID 10009)"
+ST_GID="$(lab_env_get "$LAB_ENV" SPEEDTEST_GID 10009)"
+N8_UID="$(lab_env_get "$LAB_ENV" N8N_UID 10010)"
+N8_GID="$(lab_env_get "$LAB_ENV" N8N_GID 10010)"
+CD_UID="$(lab_env_get "$LAB_ENV" COUCHDB_UID 10011)"
+CD_GID="$(lab_env_get "$LAB_ENV" COUCHDB_GID 10011)"
+for id in "$AK_UID" "$AK_GID" "$PG_UID" "$PG_GID" "$HP_UID" "$HP_GID" "$TR_UID" "$TR_GID" "$PH_UID" "$PH_GID" "$LW_UID" "$LW_GID" \
+  "$KF_UID" "$KF_GID" "$ST_UID" "$ST_GID" "$N8_UID" "$N8_GID" "$CD_UID" "$CD_GID"; do
   [[ "$id" =~ ^[0-9]+$ ]] && [ "$id" -ne 0 ] && [ "$id" -ne 1000 ] || die "service uid/gid '$id' in $LAB_ENV must be numeric, not 0 and not 1000 (the login user)"
 done
 # Traefik's watched dynamic-configuration directory: root-owned copy of traefik/dynamic, filled by deploy.sh.
@@ -118,6 +128,12 @@ install -d -m 0700 -o "$PG_UID" -g "$PG_GID" "$APPS_ROOT/authentik/postgres"
 install -d -m 0755 -o "$PH_UID" -g "$PH_GID" "$APPS_ROOT/pihole/etc-pihole"
 install -d -m 0700 -o "$LW_UID" -g "$LW_GID" "$APPS_ROOT/linkwarden/data" "$APPS_ROOT/linkwarden/meili"
 install -d -m 0700 -o "$PG_UID" -g "$PG_GID" "$APPS_ROOT/linkwarden/postgres"
+# R19 apps, all 0700 and owned by the service uid: Koffan's database, Speedtest Tracker's /config, n8n's user folder (its database, and the
+# key it generates when none is given) and CouchDB's data and runtime configuration (local.d: the hashed admin password is written there).
+install -d -m 0700 -o "$KF_UID" -g "$KF_GID" "$APPS_ROOT/koffan/data"
+install -d -m 0700 -o "$ST_UID" -g "$ST_GID" "$APPS_ROOT/speedtest/config"
+install -d -m 0700 -o "$N8_UID" -g "$N8_GID" "$APPS_ROOT/n8n/data"
+install -d -m 0700 -o "$CD_UID" -g "$CD_GID" "$APPS_ROOT/couchdb/data" "$APPS_ROOT/couchdb/etc"
 # Netdata (M10) starts as root and hands these to its own netdata user itself (the official image does not support `user:`).
 install -d -m 0755 -o root -g root "$APPS_ROOT/netdata/lib" "$APPS_ROOT/netdata/cache"
 # Portainer (M11) runs as root inside its container (ADR-017) and keeps its database here.

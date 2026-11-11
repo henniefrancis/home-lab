@@ -166,7 +166,9 @@ jobs:
           age --version
           bash scripts/test-backup-authentik.sh
 
-      - name: Self-test - app backups (R17; mock docker, aws and age placed first on PATH and proven, real tar, the units)
+      - name: Self-test - app backups (mock docker, aws, age and setpriv placed first on PATH and proven; real tar and sqlite3 with a live WAL database; the units)
+        env:
+          REQUIRE_SQLITE: "1"
         run: bash scripts/test-backup-apps.sh
 
       - name: Self-test - Authentik restore from the laptop (real age, a throwaway PostgreSQL with no network, mock aws; the mock is proven before use)

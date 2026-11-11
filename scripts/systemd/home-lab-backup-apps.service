@@ -1,6 +1,6 @@
 [Unit]
-Description=home-lab app backups (Linkwarden, Home Assistant, Pi-hole, Portainer; encrypted with age, uploaded to S3)
-Documentation=file:@REPO_DIR@/docs/runbooks/r17-apps.md
+Description=home-lab app backups (Linkwarden, Home Assistant, Pi-hole, Portainer, Koffan, n8n, CouchDB; encrypted with age, uploaded to S3)
+Documentation=file:@REPO_DIR@/docs/runbooks/r17-apps.md file:@REPO_DIR@/docs/runbooks/r19-apps.md
 After=network-online.target docker.service home-lab-backup-authentik.service
 Wants=network-online.target
 Requires=docker.service
@@ -15,7 +15,9 @@ Environment=DOCKER_CONFIG=/nonexistent
 StateDirectory=home-lab
 StateDirectoryMode=0700
 # Same hardening as home-lab-backup-authentik.service. The app directories are only read (ProtectSystem=strict keeps them read-only);
-# CAP_DAC_READ_SEARCH lets root read files the service users own (10006, 10007, ...) without any other power.
+# CAP_DAC_READ_SEARCH lets root read files the service users own (10006, 10007, ...) without any other power. R19 adds CAP_SETUID and
+# CAP_SETGID, and ONLY those two: the SQLite jobs run sqlite3 as the app's uid through setpriv (a root sqlite3 would leave root-owned -wal files
+# next to a live database). The copy lives in /dev/shm, which PrivateDevices keeps as a tmpfs; the job fails closed if it is not one.
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
@@ -38,7 +40,7 @@ UMask=0077
 ProtectProc=invisible
 ProcSubset=pid
 ProtectHostname=true
-CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
 MemoryMax=512M
 TasksMax=128
 CPUQuota=50%
