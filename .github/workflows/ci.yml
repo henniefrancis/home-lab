@@ -153,8 +153,17 @@ jobs:
       - name: Self-test - Authentik backup (mock docker, aws and age, real age round trip, preflight check, units; the mocks are proven first)
         run: |
           set -eu
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends age > /dev/null
+          # age from its pinned official release, checked against the asset's
+          # SHA-256 (GitHub release digest), not apt: the Ubuntu mirror failed R18 CI.
+          # Bump AGE_VERSION and AGE_SHA256 together.
+          AGE_VERSION=v1.3.2
+          AGE_SHA256=cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+          t="$RUNNER_TEMP/age.tar.gz"
+          u="https://github.com/FiloSottile/age/releases/download/$AGE_VERSION"
+          curl -fsSL --retry 5 --retry-all-errors -o "$t" "$u/age-$AGE_VERSION-linux-amd64.tar.gz"
+          echo "$AGE_SHA256  $t" | sha256sum -c --quiet -
+          sudo tar -xzf "$t" -C /usr/local/bin --strip-components=1 age/age age/age-keygen
+          age --version
           bash scripts/test-backup-authentik.sh
 
       - name: Self-test - app backups (R17; mock docker, aws and age placed first on PATH and proven, real tar, the units)
