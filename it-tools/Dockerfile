@@ -10,7 +10,7 @@
 # Self-test: scripts/test-it-tools-config.sh. Runbook: docs/runbooks/m7-it-tools.md.
 FROM ghcr.io/corentinth/it-tools:2024.10.22-7ca5933@sha256:8b8128748339583ca951af03dfe02a9a4d7363f61a216226fc28030731a5a61f AS app
 
-FROM nginxinc/nginx-unprivileged:1.30.6-alpine-slim@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
+FROM nginxinc/nginx-unprivileged:1.31.7-alpine-slim@sha256:a8cb0f33d51fa107c96fd2bd3a71aaf564ec131e9d2bdf8700944f0ed8b170d7
 # Root-owned and read-only for the service uid: the web server can read the site but never change it.
 COPY --from=app --chown=0:0 --chmod=0755 /usr/share/nginx/html /usr/share/nginx/html
 COPY --chown=0:0 --chmod=0644 nginx.conf /etc/nginx/conf.d/default.conf
