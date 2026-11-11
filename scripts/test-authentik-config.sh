@@ -290,7 +290,7 @@ state="$(printf '%s\n' \
   'print("STATE providers", sorted((p.name, p.mode, p.external_host, p.cookie_domain) for p in P.objects.all()))' \
   'print("STATE outpost", [(o.managed, sorted(p.name for p in o.providers.all()), o.config.authentik_host) for o in O.objects.all()])' \
   'o2 = O2.objects.get(name="homelab-linkwarden")' \
-  'print("STATE oauth2", o2.client_id, o2.client_type, [(r.url, r.matching_mode) for r in o2.redirect_uris], o2.client_secret == open("/run/secrets/linkwarden_oidc_client_secret").read().strip())' \
+  'print("STATE oauth2", o2.client_id, o2.client_type, [(r.url, str(getattr(r.matching_mode, "value", r.matching_mode))) for r in o2.redirect_uris], o2.client_secret == open("/run/secrets/linkwarden_oidc_client_secret").read().strip())' \
   'print("STATE lwgroups", sorted(b.group.name for b in A.objects.get(slug="linkwarden").bindings.all()))' \
   'print("STATE usersgroup", G.objects.filter(name="homelab-users").count(), G.objects.get(name="homelab-users").users.count())' \
   's = S.objects.get(name="default-authentication-mfa-validation")' \
@@ -300,7 +300,7 @@ check "akadmin is a member of homelab-admins (seeded by the blueprint)" grep -q 
 check "all six forward-auth providers with the right external host and an EMPTY cookie domain" grep -q "^providers \[('homelab-dashboard', 'forward_single', 'https://dashboard.${DOMAIN_T}', ''), ('homelab-it-tools', 'forward_single', 'https://tools.${DOMAIN_T}', ''), ('homelab-netdata', 'forward_single', 'https://netdata.${DOMAIN_T}', ''), ('homelab-pihole', 'forward_single', 'https://pihole.${DOMAIN_T}', ''), ('homelab-portainer', 'forward_single', 'https://portainer.${DOMAIN_T}', ''), ('homelab-traefik', 'forward_single', 'https://traefik.${DOMAIN_T}', '')\]" <<< "$state"
 check "the embedded outpost carries the six forward-auth providers and points at https://auth.<domain>" grep -q "^outpost \[('goauthentik.io/outposts/embedded', \['homelab-dashboard', 'homelab-it-tools', 'homelab-netdata', 'homelab-pihole', 'homelab-portainer', 'homelab-traefik'\], 'https://auth.${DOMAIN_T}')\]" <<< "$state"
 check "MFA validation stage: configure, totp + webauthn" grep -q "^mfa configure \['totp', 'webauthn'\]" <<< "$state"
-check "M9: the Linkwarden OAuth2 provider is confidential, client id linkwarden, one strict redirect, and its secret is the SSM file (exported by the worker)" grep -q "^oauth2 linkwarden confidential \[('https://links.${DOMAIN_T}/api/v1/auth/callback/authentik', 'strict')\] True" <<< "$state"
+check "M9: the Linkwarden OAuth2 provider is confidential, client id linkwarden, one strict redirect, and its secret is the SSM file (exported by the worker) [$(grep '^oauth2 ' <<< "$state")]" grep -q "^oauth2 linkwarden confidential \[('https://links.${DOMAIN_T}/api/v1/auth/callback/authentik', 'strict')\] True" <<< "$state"
 check "M9: Linkwarden is bound to homelab-admins and homelab-users; homelab-users exists and the blueprint gave it no members" bash -c 'grep -q "^lwgroups \[.homelab-admins., .homelab-users.\]" <<< "$1" && grep -q "^usersgroup 1 0" <<< "$1"' _ "$state"
 
 echo "--- recovery path"

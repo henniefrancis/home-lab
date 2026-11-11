@@ -70,13 +70,13 @@ check "traefik root file system is read-only" test "$(jq -r '.services.traefik.r
 check "no Docker provider flag and no docker endpoint (SEC-H2)" bash -c '! printf "%s\n" "$@" | grep -Eiq "providers\.docker|docker\.sock|socket-proxy"' _ "${flags[@]}"
 check "the file provider watches /etc/traefik/dynamic (routers, services and middlewares are all files)" bash -c 'printf "%s\n" "$@" | grep -qx -- "--providers.file.directory=/etc/traefik/dynamic" && printf "%s\n" "$@" | grep -qx -- "--providers.file.watch=true"' _ "${flags[@]}"
 export -f allj; export all
-check "no service mounts docker.sock anywhere in the traefik, authentik, homepage or tailscale stacks (SEC-H2)" bash -c '! allj | jq -r ".services[] | .volumes[]? | .source" | grep -q "docker.sock"'
+check "only netdata and portainer mount docker.sock (SEC-H2, ADR-017): none in the traefik, authentik, homepage or tailscale stacks" bash -c '! allj | jq -r ".services | to_entries[] | select(.key != \"netdata\" and .key != \"portainer\") | .value.volumes[]? | .source" | grep -q "docker.sock"'
 check "no socket-proxy service and no socket-proxy network remain" bash -c '! allj | jq -e "(.services | has(\"socket-proxy\")) or (.networks | has(\"socket-proxy\"))"'
 check "no Traefik labels remain on any service (routers are files)" bash -c '! allj | jq -r ".services[] | .labels // {} | keys[]" | grep -q "^traefik\."'
 check "published ports bind IPv4 only (no [::] listener, SEC-L2)" test "$(jq -c '[.services.traefik.ports[].host_ip] | unique' <<< "$json")" = '["0.0.0.0"]'
 check "traefik runs as a non-root uid:gid from lab.env (SEC-L9)" test "$(jq -r '.services.traefik.user' <<< "$json")" = "10004:10004"
 check "traefik lowers the unprivileged port start instead of holding NET_BIND_SERVICE" test "$(jq -r '.services.traefik.sysctls["net.ipv4.ip_unprivileged_port_start"]' <<< "$json")" = "80" -a "$(jq -c '.services.traefik.cap_add // []' <<< "$json")" = "[]" -a "$(jq -c '.services.traefik.cap_drop' <<< "$json")" = '["ALL"]'
-check "traefik is on proxy and authentik-auth only" test "$(jq -c '[.services.traefik.networks | keys[]] | sort' <<< "$json")" = '["authentik-auth","proxy"]'
+check "traefik is on proxy, authentik-auth and oidc (the R17 OIDC back-channel) only" test "$(jq -c '[.services.traefik.networks | keys[]] | sort' <<< "$json" | tr -d '')" = '["authentik-auth","oidc","proxy"]'
 check "the break-glass service and the whoami image are gone (it is a drop-in file now)" bash -c '! jq -e ".services | has(\"breakglass\")" <<< "$1" > /dev/null && ! grep -rq "traefik/whoami" traefik authentik homepage tailscale compose.yaml' _ "$json"
 check "every third-party image in the stacks is pinned by digest (SEC-M5)" bash -c 'allj | jq -r ".services[] | select(.build == null) | .image" | grep -vq "@sha256:[0-9a-f]\{64\}$" && exit 1; exit 0'
 check "only ONE TLS option set exists and no entrypoint selects another (421 regression, M5)" bash -c 'test "$(grep -c "^    [a-z]*:$" traefik/dynamic/tls.yml)" = 1 && grep -q "^    default:" traefik/dynamic/tls.yml && ! printf "%s\n" "$@" | grep -q "tls.options"' _ "${flags[@]}"

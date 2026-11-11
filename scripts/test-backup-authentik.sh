@@ -343,7 +343,7 @@ out="$(pf "$GOOD_ENV" "banana")"
 check "preflight: a garbage state file counts as never (WARN)" bash -c 'printf "%s" "$1" | grep -q "^\[WARN\] backup-last.*never"' _ "$out"
 out="$(pf "BACKUP_AGE_RECIPIENT=age1short\nBACKUP_S3_BUCKET=$BUCKET\n" "$((NOW - 3600))")"
 check "preflight: a malformed recipient is a WARN" bash -c 'printf "%s" "$1" | grep -q "^\[WARN\] backup-recipient"' _ "$out"
-check "preflight: the timer is in the timer list and age is in the installed-tools check" bash -c 'grep -q "home-lab-backup-authentik.timer; do" scripts/preflight.sh && grep -q "command -v age" scripts/preflight.sh'
+check "preflight: the timer is in the timer list and age is in the installed-tools check" bash -c 'grep -qE "home-lab-backup-authentik[.]timer.*; do" scripts/preflight.sh && grep -q "command -v age" scripts/preflight.sh'
 
 mkdir -p "$T/pf-etc"
 touch "$T/pf-etc/restore-pending"

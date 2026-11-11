@@ -26,8 +26,8 @@ check() { # check <name> <command...>
 manifest_secrets="$(grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv" | cut -f1 | grep -v '^config/' | sort)"
 manifest_config="$(grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv" | cut -f1 | grep '^config/' | sort)"
 tf_config="$(grep -oE '"config/[a-z0-9-]+"' "$REPO/terraform/edge/ssm.tf" | tr -d '"' | sort -u)"
-check "the seven SecureStrings are owner-managed (ADR-013): the manifest lists seven, ssm.tf has no SecureString resource and forgets the old ones" bash -c 'test "$(printf "%s
-" "$1" | wc -l)" -eq 7 && ! grep -Eq "^resource \"aws_ssm_parameter\" \"secret\"" "$2" && grep -q "from = aws_ssm_parameter.secret" "$2"' _ "$manifest_secrets" "$REPO/terraform/edge/ssm.tf"
+check "the twelve SecureStrings are owner-managed (ADR-013): the manifest lists twelve, ssm.tf has no SecureString resource and forgets the old ones" bash -c 'test "$(printf "%s
+" "$1" | wc -l)" -eq 12 && ! grep -Eq "^resource \"aws_ssm_parameter\" \"secret\"" "$2" && grep -q "from = aws_ssm_parameter.secret" "$2"' _ "$manifest_secrets" "$REPO/terraform/edge/ssm.tf"
 check "manifest config rows == ssm.tf config_params" test "$manifest_config" = "$tf_config"
 check "manifest has a tab-separated row per parameter" test "$(grep -vcE '^(#|$)' "$REPO/config/secrets-manifest.tsv")" -ge 11
 
@@ -77,6 +77,8 @@ V_DOM="lab.example.test"
 V_ZONE="ZFIXTURE5555"
 V_PH="fixture-pihole-admin-EEEE6666"
 V_LAN="10.0.0.77"
+V_LW="fixture-linkwarden-FFFF7777"
+V_PT="fixture-portainer-GGGG8888"
 PH="UNSET-set-via-set-secret"
 
 # mkjson <out> [name=value ...]: overrides per name; type String for config/*, SecureString otherwise.
@@ -86,6 +88,8 @@ mkjson() {
   local -A val=(
     [authentik/secret-key]="$V_SK" [authentik/postgres-password]="$V_PG" [authentik/bootstrap-password]="$PH"
     [traefik/breakglass-htpasswd]="$V_HT" [tailscale/auth-key]="$PH" [homepage/authentik-token]="$PH" [pihole/admin-password]="$V_PH"
+    [linkwarden/postgres-password]="$V_LW-pg" [linkwarden/nextauth-secret]="$V_LW-na" [linkwarden/meili-key]="$V_LW-mk"
+    [linkwarden/oidc-client-secret]="$V_LW-oc" [portainer/admin-password]="$V_PT"
     [config/domain]="$V_DOM" [config/route53-zone-id]="$V_ZONE" [config/ra-trust-anchor-arn]="$ta"
     [config/ra-acme-profile-arn]="$pr" [config/ra-acme-role-arn]="$ro" [config/pi-lan-ip]="$V_LAN"
   )
@@ -112,7 +116,7 @@ run() { # run <extra args...>; sets rc, output in $T/out.log
 }
 no_values_in_output() {
   local v
-  for v in "$V_SK" "$V_PG" "$V_HT" "$V_TS" "$V_DOM" "$V_ZONE" "$V_PH" "$V_LAN" "$ta" "$pr" "$ro" "$acct"; do
+  for v in "$V_SK" "$V_PG" "$V_HT" "$V_TS" "$V_DOM" "$V_ZONE" "$V_PH" "$V_LAN" "$V_LW" "$V_PT" "$ta" "$pr" "$ro" "$acct"; do
     grep -qF -- "$v" "$T/out.log" && return 1
   done
   return 0
@@ -139,6 +143,9 @@ check "tailscale.env is an empty 0:0 0600 file while UNSET" test "$(attrs tailsc
 check "runtime.env 0:0 0600" test "$(attrs runtime.env)" = "0:0 600"
 check "runtime.env has the 6 variables" test "$(grep -cE '^(DOMAIN|ROUTE53_ZONE_ID|RA_TRUST_ANCHOR_ARN|RA_ACME_PROFILE_ARN|RA_ACME_ROLE_ARN|PI_LAN_IP)=' "$AR/secrets/runtime.env")" -eq 6
 check "pihole/admin-password 10006:10006 0400 (read by the Pi-hole entrypoint, M8)" test "$(attrs pihole/admin-password)" = "10006:10006 400"
+check "linkwarden/postgres-password 10007:10007 0440 and nextauth-secret, meili-key 0400 (M9)" test "$(attrs linkwarden/postgres-password) $(attrs linkwarden/nextauth-secret) $(attrs linkwarden/meili-key)" = "10007:10007 440 10007:10007 400 10007:10007 400"
+check "the Linkwarden OIDC client secret lands at authentik/linkwarden-oidc-client-secret 10002:10007 0440 (Authentik and Linkwarden both read it)" test "$(attrs authentik/linkwarden-oidc-client-secret)" = "10002:10007 440" -a "$(cat "$AR/secrets/authentik/linkwarden-oidc-client-secret")" = "$V_LW-oc"
+check "portainer/admin-password 0:0 0400 (M11, Portainer runs as root)" test "$(attrs portainer/admin-password)" = "0:0 400"
 check "no secret value or ARN in the script output" no_values_in_output
 check "no staging dir left behind" no_staging
 check "aws-config is root 0600 and has no key material" test "$(stat -c '%u %a' "$T/etc/aws-config")" = "0 600"
