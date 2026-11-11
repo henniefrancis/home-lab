@@ -259,6 +259,11 @@ entries:
       client_type: confidential
       client_id: linkwarden
       client_secret: !Env LINKWARDEN_OIDC_CLIENT_SECRET
+      # Since Authentik 2026.x a provider allows only the grant types listed here, and a new provider starts with NONE: without this
+      # every login fails with "Invalid grant_type for provider" (invalid_request; R17 deploy, 2026-11-11). Code flow and refresh only.
+      grant_types:
+        - authorization_code
+        - refresh_token
       redirect_uris:
         - matching_mode: strict
           url: !Format ["https://links.%s/api/v1/auth/callback/authentik", !Env DOMAIN]
