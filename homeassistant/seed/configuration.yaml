@@ -5,6 +5,7 @@
 # YAML is imported as a PENDING change that reverts after 5 minutes unless an admin confirms it in the UI. Unconfirmed, it fell back to
 # listening on every address, IPv6 included (seen on 2026.10.4, 2026-11-10). The settings are seeded as STABLE instead: seed/.storage/http.
 
+---
 default_config:
 
 # Login hardening: Home Assistant's own users (the Companion app needs them; no forward auth on ha.<domain>). Each user enables TOTP in

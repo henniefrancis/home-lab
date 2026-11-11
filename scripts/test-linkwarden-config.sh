@@ -180,8 +180,8 @@ run_svc() {
   while IFS= read -r l; do args+=(-e "$l"); done < <(jq -r '.environment // {} | to_entries[] | "\(.key)=\(.value)"' <<< "$j" | tr -d '\r')
   while IFS=$'\t' read -r k src; do
     args+=(--mount "type=bind,source=$here/secrets/${src#*/secrets/},target=/run/secrets/$k,readonly")
-  done < <(jq -r --argjson top "$(jq -c '.secrets' <<< "$alone")" '.secrets // [] | .[] | [.source, $top[.source].file] | @tsv' <<< "$j" | tr -d '\r' | tr '\\' '/')
-  local ep cmd=()
+  done < <(jq -r --argjson top "$(jq -c '.secrets' <<< "$alone")" '.secrets // [] | .[] | [.source, $top[.source].file] | @tsv' <<< "$j" | tr -d '\r' | tr '\134' '/')
+  local ep rest=()
   ep="$(jq -r '.entrypoint[0] // empty' <<< "$j")"
   [ -z "$ep" ] || args+=(--entrypoint "$ep")
   # compose config keeps "$$" escaped; compose itself turns it into "$" at run time, so the test does the same.
@@ -190,7 +190,8 @@ run_svc() {
   mapfile -d '' -t rest < <(jq -j '(.entrypoint // [])[1:][], (.command // [])[] | gsub("[$][$]"; "$") + "\u0000"' <<< "$j" | tr -d '\r')
   docker create "${args[@]}" "$(jq -r '.image' <<< "$j")" "${rest[@]}" > /dev/null
   shift
-  for n in "$@"; do docker network connect "$n" "$name"; done
+  # The alias on EVERY network: Traefik (proxy) reaches the app as linkwarden:3000, like container_name does on the Pi.
+  for n in "$@"; do docker network connect --alias "$alias" "$n" "$name"; done
   docker start "$name" > /dev/null
 }
 run_svc lwtest-pg "$pg" linkwarden-postgresql lwtest-pg /var/lib/postgresql/data "$NET_INT"
@@ -241,8 +242,12 @@ check "the container command equals the image's CMD (the wrapper changes only th
 check "the password files never reach the environment (docker inspect has no secret value)" bash -c 'e="$(docker inspect lwtest-app lwtest-meili lwtest-pg -f "{{json .Config.Env}}")"; for f in "$1"/secrets/linkwarden/* "$1"/secrets/authentik/linkwarden-oidc-client-secret; do grep -qF "$(cat "$f")" <<< "$e" && exit 1; done; exit 0' _ "$stage"
 prov="$(docker exec lwtest-app curl -s http://127.0.0.1:3000/api/v1/auth/providers 2> /dev/null || true)"
 check "only the Authentik login is offered (no password login) [$(jq -c 'keys' <<< "$prov" 2> /dev/null)]" test "$(jq -c 'keys' <<< "$prov" 2> /dev/null)" = '["authentik"]'
-lb="$(jq -r '.authentik.name + " " + .authentik.signinUrl' <<< "$prov" 2> /dev/null | tr -d '\r' || true)"
-check "the login button is named Home lab login and points at the Authentik signin [$lb]" test "$lb" = "Home lab login https://links.$DOMAIN_T/api/v1/auth/signin/authentik"
+si="$(jq -r '.authentik.signinUrl' <<< "$prov" 2> /dev/null | tr -d '\r' || true)"
+check "the Authentik sign-in goes through links.<domain> [$si]" test "$si" = "https://links.$DOMAIN_T/api/v1/auth/signin/authentik"
+# The login page takes its buttons from /api/v1/logins (AUTHENTIK_CUSTOM_NAME); next-auth's own provider list always says "Authentik".
+lg="$(docker exec lwtest-app curl -s http://127.0.0.1:3000/api/v1/logins 2> /dev/null || true)"
+lb="$(jq -c '[.buttonAuths[]? | .name] , .credentialsEnabled, .registrationDisabled' <<< "$lg" 2> /dev/null | tr -d '\r' | paste -sd' ' - || true)"
+check "the login page offers one button, Home lab login, no password form and no sign-up [$lb]" test "$lb" = '["Home lab login"] "false" "true"'
 check "Chromium (page archiving) runs inside the hardened container" docker exec lwtest-app sh -c 'b=$(ls -d /ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64)/chrome-headless-shell; timeout 40 "$b" --no-sandbox --headless --disable-gpu --user-data-dir=/tmp/chr --dump-dom about:blank 2>/dev/null | grep -q "<html"'
 
 echo "--- through Traefik and the OIDC back-channel"

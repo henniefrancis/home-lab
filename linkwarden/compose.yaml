@@ -144,7 +144,9 @@ services:
     command:
       - sh
       - -c
-      - export PATH=/data/node_modules/.bin:$$PATH && prisma migrate deploy --schema=/data/packages/prisma/schema.prisma && exec concurrently -k -n web,worker "cd /data/apps/web && exec next start" "cd /data/apps/worker && exec tsx worker.ts"
+      - >-
+        export PATH=/data/node_modules/.bin:$$PATH && prisma migrate deploy --schema=/data/packages/prisma/schema.prisma &&
+        exec concurrently -k -n web,worker "cd /data/apps/web && exec next start" "cd /data/apps/worker && exec tsx worker.ts"
     environment: *lw-env
     secrets:
       - lw_pg_password

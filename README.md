@@ -11,11 +11,11 @@ This repository is a reference you can read, copy and adapt. It is a personal pr
 
 | Layer | Component |
 |-------|-----------|
-| Reverse proxy | Traefik v3 on ports 80 and 443 only, non-root. Routes come from the **file provider** (`traefik/dynamic/`); there is no Docker provider and no Docker socket anywhere |
+| Reverse proxy | Traefik v3 on ports 80 and 443 only, non-root. Routes come from the **file provider** (`traefik/dynamic/`); there is no Docker provider. Only Netdata and Portainer mount the Docker socket, behind Authentik (ADR-017) |
 | TLS | Let's Encrypt wildcard certificate for `*.<domain>` by DNS-01 on Route 53. A small helper (`ra-helper`) gives Traefik short-lived AWS credentials through **IAM Roles Anywhere**, so no AWS key is stored on the Pi |
 | Identity | **Authentik** SSO with enforced MFA. Traefik does **forward auth** to Authentik for every app; the Traefik dashboard and Homepage both use it. A rate-limited break-glass login exists for the Traefik dashboard only and never survives a reboot |
 | Dashboard | **Homepage** at `https://dashboard.<domain>` |
-| Apps | **IT Tools** at `https://tools.<domain>` (static, built locally on a current NGINX base). **Pi-hole**: DNS for the LAN on IPv4 port 53 (Quad9 upstream, DNSSEC; the lab names answer the Pi's LAN address), web UI at `https://pihole.<domain>/admin/`. More apps follow one milestone at a time (R17: Linkwarden, Netdata, Portainer, Home Assistant) |
+| Apps | **IT Tools** at `https://tools.<domain>` (static, built locally on a current NGINX base). **Pi-hole**: DNS for the LAN on IPv4 port 53 (Quad9 upstream, DNSSEC; the lab names answer the Pi's LAN address), web UI at `https://pihole.<domain>/admin/`. **Linkwarden** (bookmarks and saved pages, Authentik OIDC login for the household) at `https://links.<domain>`, **Netdata** and **Portainer** (admins, behind Authentik) and **Home Assistant** (its own users with TOTP, for the Companion app) at `https://ha.<domain>` (`docs/runbooks/r17-apps.md`) |
 | Remote access | **Tailscale** (no router port-forwards). Services are allowed from the LAN and tailnet ranges only |
 | Secrets | AWS **SSM Parameter Store** SecureStrings encrypted with a customer-managed key; only the Pi's role can decrypt. Set by the owner with `scripts/set-secret.sh`, fetched at deploy time into `/apps/secrets`, never in git, CI or Terraform state |
 | Deploys | **Signed deploys**: `scripts/deploy.sh` merges and runs only a commit whose SSH signature verifies against a root-owned trust file on the Pi |
@@ -97,7 +97,8 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 7. **Alerts.** Set `alert_email` in the bootstrap `terraform.tfvars`, confirm the SNS subscription mail, and run `sudo scripts/alert.sh test` (`docs/runbooks/alerting.md`).
 8. **Accounts and secrets.** Create the SecureStrings with `scripts/set-secret.sh --create`, then set them (`docs/runbooks/secrets-ssm.md`). Replace the Authentik blueprint users and groups to match your household.
 9. **Pi-hole (optional).** Set the HCP workspace variable `pi_lan_ipv4` to the Pi's reserved LAN address (stored as `/home-lab/config/pi-lan-ip`), pick the upstreams in `PIHOLE_UPSTREAMS` (`config/lab.env`), set `pihole/admin-password`, then point your router's DHCP DNS at the Pi (`docs/runbooks/m8-pihole.md`).
-10. **Repository settings.** Follow `docs/runbooks/m6-go-live.md` before making your fork public: private denylist, ruleset, secret scanning, push protection.
+10. **R17 apps.** `scripts/set-secret.sh --generate` the four Linkwarden secrets, set `portainer/admin-password`, deploy, then create the Home Assistant owner account straight away (`docs/runbooks/r17-apps.md`).
+11. **Repository settings.** Follow `docs/runbooks/m6-go-live.md` before making your fork public: private denylist, ruleset, secret scanning, push protection.
 
 ## Security model in short
 
@@ -105,7 +106,7 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 - No long-lived AWS keys anywhere: the Pi uses Roles Anywhere sessions, CI has no AWS access, HCP uses OIDC with separate plan and apply roles.
 - The HCP apply role cannot change any IAM role, trust policy or Roles Anywhere object; the lab roles are owner-applied.
 - SecureStrings are encrypted with a customer-managed key whose policy lets only the Pi decrypt; they are not Terraform-managed and never in state.
-- Signed deploys, a root-owned checkout, no Docker socket exposure, no Docker group for the login user, containers run non-root with their own service IDs.
+- Signed deploys, a root-owned checkout, the Docker socket only for Netdata (read-only) and Portainer behind Authentik (ADR-017), no Docker group for the login user, containers run non-root with their own service IDs.
 - Findings and reporting: [`SECURITY.md`](SECURITY.md). Report vulnerabilities privately through GitHub's private vulnerability reporting.
 
 ## Status
@@ -120,9 +121,10 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 | M5 | Homepage dashboard | Done |
 | M6 | Production certificate, alerting, hardening, repository made public | In progress (`docs/runbooks/m6-go-live.md`) |
 | M7 | IT Tools (first R17 app) | Done (`docs/runbooks/m7-it-tools.md`) |
-| M8 | Pi-hole for the LAN | In progress (`docs/runbooks/m8-pihole.md`) |
+| M8 | Pi-hole for the LAN | Live; router DNS change pending (`docs/runbooks/m8-pihole.md`) |
+| M9-M12 | Linkwarden, Netdata, Portainer, Home Assistant and app backups, one release | In progress (`docs/runbooks/r17-apps.md`) |
 
-Backups (K5): a nightly age-encrypted `pg_dump` of the Authentik database goes to a write-only, versioned S3 bucket (`docs/runbooks/authentik-backup.md`), and the offline CA has a documented, testable backup (`docs/runbooks/ca-backup.md`). The recovery drill (`docs/runbooks/pi-recovery.md`) is the owner's to run.
+Backups (K5): a nightly age-encrypted `pg_dump` of the Authentik database goes to a write-only, versioned S3 bucket (`docs/runbooks/authentik-backup.md`), and the offline CA has a documented, testable backup (`docs/runbooks/ca-backup.md`). The app data (Linkwarden, Home Assistant, Pi-hole, Portainer) goes the same way every night under `apps/` (`docs/runbooks/r17-apps.md`). The recovery drill (`docs/runbooks/pi-recovery.md`) is the owner's to run.
 
 Later phases (not scheduled): DNSSEC for the zone, more services behind the same pattern.
 
