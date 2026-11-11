@@ -25,7 +25,7 @@ case "${1:-}" in
     exit 2
     ;;
 esac
-for t in docker jq; do
+for t in docker jq curl openssl; do
   command -v "$t" > /dev/null || {
     echo "$t is required" >&2
     exit 2
@@ -50,8 +50,9 @@ stage=""
 cleanup() {
   [ "${KEEP:-0}" = 1 ] && return 0
   if [ "$STATIC_ONLY" -eq 0 ]; then
-    docker rm -f hatest-ha hatest-probe > /dev/null 2>&1 || true
-    docker volume rm hatest-config > /dev/null 2>&1 || true
+    docker rm -f hatest-ha hatest-ha2 hatest-traefik hatest-probe > /dev/null 2>&1 || true
+    docker network rm hatest-proxy > /dev/null 2>&1 || true
+    docker volume rm hatest-config hatest-config2 > /dev/null 2>&1 || true
   fi
   [ -z "$stage" ] || rm -rf "$stage"
 }
@@ -116,7 +117,7 @@ echo "--- the seed across the 5-minute window (real image)"
 jq '.data.stable.server_host = ["127.0.0.1"]' "$seed/.storage/http" > "$stage/http"
 cp "$seed/configuration.yaml" "$stage/configuration.yaml"
 chmod 644 "$stage/http" "$stage/configuration.yaml"
-docker volume rm hatest-config > /dev/null 2>&1 || true
+docker volume rm hatest-config hatest-config2 > /dev/null 2>&1 || true
 docker volume create hatest-config > /dev/null
 docker run --rm -v hatest-config:/config -v "$here:/seed:ro" --entrypoint sh "$IMAGE" -c 'mkdir -p /config/.storage && cp /seed/configuration.yaml /config/ && cp /seed/http /config/.storage/http'
 docker run -d --name hatest-ha --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW --memory "$(jq -r '.mem_limit' <<< "$ha")" -v hatest-config:/config "$IMAGE" > /dev/null
@@ -132,6 +133,51 @@ check "after start it listens ONLY on the seeded address (127.0.0.1 here, the pr
 ip="$(docker inspect hatest-ha -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"
 docker run -d --name hatest-probe --entrypoint sleep "$(jq -r '.services.pihole.image' <<< "$all")" 600 > /dev/null
 check "another container cannot reach it on the container's own address" bash -c '! docker exec hatest-probe wget -q -T 4 -O /dev/null "http://$1:8123/manifest.json" 2>/dev/null' _ "$ip"
+# R19 (Home Assistant 2026.11): a non-local login fails with "Invalid client id" unless the scheme, host and port of the client_id match what
+# Home Assistant sees. A SECOND container runs the committed seed behind the REAL Traefik router (only the listen address becomes 0.0.0.0,
+# and the service URL points at the container instead of the Pi's proxy gateway); Traefik sits on a network with the committed PROXY_SUBNET,
+# so the seed's trusted_proxies (use_x_forwarded_for) are exercised exactly as on the Pi. It starts BEFORE the 5-minute wait and is read after it.
+echo "--- login flow through the real Traefik router (Home Assistant 2026.11 client_id check)"
+jq '.data.stable.server_host = ["0.0.0.0"]' "$seed/.storage/http" > "$stage/http2"
+chmod 644 "$stage/http2"
+docker volume rm hatest-config2 > /dev/null 2>&1 || true
+docker volume create hatest-config2 > /dev/null
+docker run --rm -v hatest-config2:/config -v "$here:/seed:ro" --entrypoint sh "$IMAGE" -c 'mkdir -p /config/.storage && cp /seed/configuration.yaml /config/ && cp /seed/http2 /config/.storage/http'
+docker network rm hatest-proxy > /dev/null 2>&1 || true
+docker network create --subnet "$(lab_get PROXY_SUBNET)" hatest-proxy > /dev/null
+docker run -d --name hatest-ha2 --network hatest-proxy --network-alias hatest-ha2 --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW \
+  --memory "$(jq -r '.mem_limit' <<< "$ha")" -v hatest-config2:/config "$IMAGE" > /dev/null
+timage="$(jq -r '.services.traefik.image' <<< "$all")"
+mapfile -t flags < <(jq -r '.services.traefik.command[]' <<< "$all" | tr -d '\r' |
+  grep -Ev '^--(certificatesresolvers\.|entrypoints\.websecure\.http\.tls\.(certResolver|domains))')
+flags+=(--entrypoints.websecure.http.tls=true)
+mkdir -p "$stage/tr/dynamic"
+cp traefik/dynamic/*.yml "$stage/tr/dynamic/"
+sed -i '0,/- 10.0.0.0\/24/s//- 0.0.0.0\/0/' "$stage/tr/dynamic/middlewares.yml"
+sed -i "s#url: http://$gw:8123#url: http://hatest-ha2:8123#" "$stage/tr/dynamic/routers.yml"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$here/tr/dynamic/test-k.pem" \
+  -out "$here/tr/dynamic/test-c.pem" -days 2 -subj "/CN=*.${DOMAIN}" -addext "subjectAltName=DNS:*.${DOMAIN}" 2> /dev/null
+printf 'tls:\n  certificates:\n    - certFile: /etc/traefik/dynamic/test-c.pem\n      keyFile: /etc/traefik/dynamic/test-k.pem\n' > "$stage/tr/dynamic/test-cert.yml"
+chmod 644 "$stage/tr/dynamic/test-k.pem"
+cid="$(docker create --name hatest-traefik --network hatest-proxy -p 127.0.0.1::443 -e DOMAIN="$DOMAIN" --tmpfs /letsencrypt "$timage" "${flags[@]}")"
+docker cp "$here/tr/." "$cid:/etc/traefik"
+docker start "$cid" > /dev/null
+hostport="$(docker port "$cid" 443/tcp | head -n 1 | sed 's/.*://')"
+via() { curl -sk --connect-to "ha.$DOMAIN:443:127.0.0.1:$hostport" "$@"; }
+code=
+for _ in $(seq 1 60); do
+  code="$(via -o /dev/null -w '%{http_code}' "https://ha.$DOMAIN/manifest.json" || true)"
+  [ "$code" = 200 ] && break
+  sleep 3
+done
+check "ha.<domain> is served through the real Traefik router (200) [$code]" test "$code" = 200
+body="$(printf '{"client_id":"https://ha.%s/","handler":["homeassistant",null],"redirect_uri":"https://ha.%s/?auth_callback=1"}' "$DOMAIN" "$DOMAIN")"
+lf="$(via -X POST -H 'Content-Type: application/json' -d "$body" "https://ha.$DOMAIN/auth/login_flow" | tr -d '\r' || true)"
+check "login flow with client_id https://ha.<domain>/ starts (a login form, no 'invalid client id') [$(printf '%s' "$lf" | head -c 120)]" bash -c '! grep -qi "invalid client id" <<< "$1" && [ "$(jq -r .type <<< "$1")" = form ] && [ "$(jq -r .step_id <<< "$1")" = init ]' _ "$lf"
+bad_body="$(printf '{"client_id":"not-a-url","handler":["homeassistant",null],"redirect_uri":"https://ha.%s/?auth_callback=1"}' "$DOMAIN")"
+lf2="$(via -X POST -H 'Content-Type: application/json' -d "$bad_body" "https://ha.$DOMAIN/auth/login_flow" | tr -d '\r' || true)"
+check "the check is live: a malformed client_id IS refused with 'invalid client id' (so the case above proves something) [$(printf '%s' "$lf2" | head -c 80)]" bash -c 'grep -qi "invalid client id" <<< "$1"' _ "$lf2"
+
 echo "      (waiting through Home Assistant's 5-minute window for unconfirmed HTTP settings)"
 sleep 330
 after="$(listeners || true)"

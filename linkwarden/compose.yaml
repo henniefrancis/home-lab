@@ -12,7 +12,7 @@
 # Runbook:     docs/runbooks/r17-apps.md        Self-test: scripts/test-linkwarden-config.sh
 #
 # Secrets are files. Linkwarden and Meilisearch only read environment variables, so a small wrapper exports them from the files and
-# then starts the image's own entrypoint and command (the command below is the image's CMD for v2.16.3, unchanged; the self-test
+# then starts the image's own entrypoint and command (the command below is the image's CMD for v2.16.3 and v2.17.0, unchanged; the self-test
 # compares them, so an image bump that changes it fails CI).
 # Identity: Linkwarden and Meilisearch run as LINKWARDEN_UID (10007), PostgreSQL as the image's postgres user (70) like Authentik's.
 # Never root, never 1000. All three drop every capability and set no-new-privileges; Meilisearch and PostgreSQL have a read-only root.
@@ -105,7 +105,7 @@ services:
     logging: *logging
 
   linkwarden:
-    image: ghcr.io/linkwarden/linkwarden:v2.16.3@sha256:0664c28a039bda8ffa6663389e8536b2fc717219e329f85b83faca7efed3b144
+    image: ghcr.io/linkwarden/linkwarden:v2.17.0@sha256:7c11fde57d1a0c819b6de0079966eba3a33584d718464af7dacde22bd470ae46
     container_name: linkwarden
     restart: unless-stopped
     user: "${LINKWARDEN_UID}:${LINKWARDEN_GID}"

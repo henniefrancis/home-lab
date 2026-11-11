@@ -91,6 +91,11 @@ updates:
     groups:
       it-tools-images:
         patterns: ["*"]
+    ignore:
+      # R19: stay on nginx's even-numbered stable line (1.30.x). 1.31 is the mainline branch and 1.30.6 already carries the same security
+      # fixes. Patch bumps still arrive; move to the next even line (1.32, normally in April) by hand, with a signed commit.
+      - dependency-name: nginxinc/nginx-unprivileged
+        update-types: ["version-update:semver-minor"]
 
   # N2: the images CI runs with `docker run` (gitleaks, terraform, tflint, trivy) each have their own one-line Dockerfile under
   # ci/images/<tool>/ (see the header there), so a registry problem fails only that tool's job.

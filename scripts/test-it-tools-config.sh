@@ -127,6 +127,7 @@ check "blueprint: forward_single provider homelab-it-tools for https://tools.<do
 check "blueprint: the application is bound to homelab-admins (fail closed) and the outpost serves the provider" bash -c 'awk "/target: !KeyOf app-it-tools/{f=1} f&&/group:/{print; exit}" "$1" | grep -q "group-admins" && awk "/managed: goauthentik.io\/outposts\/embedded/{f=1} f" "$1" | grep -q -- "- !KeyOf provider-it-tools"' _ $bp
 check "Homepage: the IT Tools tile is live (Tools group), not in Coming soon" bash -c 'f=homepage/config/services.yaml; awk "/^- Tools:/{f=1;next} /^- /{f=0} f" $f | grep -q "href: https://tools.{{HOMEPAGE_VAR_DOMAIN}}/" && ! awk "/^- Coming soon:/{f=1} f" $f | grep -q "tools\."'
 check "Dependabot: docker ecosystem on /it-tools (both FROM digests) and the local image ignored by docker-compose" bash -c 'f=.github/dependabot.yml; grep -q "directory: /it-tools$" $f && grep -q -- "- /it-tools$" $f && grep -q "dependency-name: home-lab/it-tools" $f'
+check "Dependabot: the /it-tools docker entry ignores minor bumps of nginxinc/nginx-unprivileged (stay on the even stable line, R19)" bash -c 'grep -A1 "dependency-name: nginxinc/nginx-unprivileged" .github/dependabot.yml | grep -q "version-update:semver-minor"'
 
 if [ "$STATIC_ONLY" -eq 1 ]; then
   if [ "$fails" -gt 0 ]; then
