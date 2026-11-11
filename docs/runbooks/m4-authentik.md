@@ -161,8 +161,15 @@ checks 2 and 3, not by check 1.
 ```bash
 sudo docker exec authentik-worker ak apply_blueprint default/flow-default-authentication-flow.yaml
 sudo docker exec authentik-worker ak apply_blueprint system/providers-oauth2.yaml
-sudo docker exec authentik-worker ak apply_blueprint custom/homelab-apps.yaml
+sudo docker exec authentik-worker sh -c 'LINKWARDEN_OIDC_CLIENT_SECRET="$(cat /run/secrets/linkwarden_oidc_client_secret)" ak apply_blueprint custom/homelab-apps.yaml'
 ```
+
+Ours must run through `sh -c` as shown: the blueprint reads `LINKWARDEN_OIDC_CLIENT_SECRET` (`!Env`), which only the worker's start wrapper exports. A plain
+`docker exec ... ak apply_blueprint` does not see it and would give the Linkwarden provider the wrong client secret (R17, 2026-11-11).
+
+**Time limit** (R17, 2026-11-11): background tasks were killed after 10 minutes by default, and with seven apps the apply took longer on the Pi, so every attempt was
+rolled back (`Time limit exceeded` on `tasks.apply_blueprint` in the worker log). `AUTHENTIK_WORKER__TASK_DEFAULT_TIME_LIMIT` is now 60 minutes. A manual
+`ak apply_blueprint` has no time limit.
 
 Then repeat checks 1 to 3. If one fails with a message about a missing flow or stage, a prerequisite from the list is not applied yet: apply that one first. `apply_blueprint` runs in the
 foreground and may itself take several minutes on the Pi. A real `error` (not `unknown`) is a content problem: open the instance in the UI (Customization, Blueprints) for the message.

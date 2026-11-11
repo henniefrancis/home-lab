@@ -42,6 +42,10 @@ x-authentik-env: &authentik-env
   USER: authentik
   # Read by the blueprint (blueprints/homelab-apps.yaml) to build https://auth.${DOMAIN} and the per-app hosts.
   DOMAIN: ${DOMAIN:?set DOMAIN (runtime.env)}
+  # Background tasks are killed after 10 minutes by default. On the Pi (SD card) applying homelab-apps.yaml with seven apps takes longer,
+  # so every attempt was killed and rolled back (R17 deploy, 2026-11-11: "Time limit exceeded" on tasks.apply_blueprint, 5 retries).
+  # Only the worker runs tasks; the server ignores it.
+  AUTHENTIK_WORKER__TASK_DEFAULT_TIME_LIMIT: "minutes=60"
 
 x-authentik-common: &authentik-common
   image: ghcr.io/goauthentik/server:2026.8.5@sha256:602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5
