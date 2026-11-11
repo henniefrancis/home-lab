@@ -250,6 +250,12 @@ jobs:
           } > "$d/ci.env"
           docker compose --env-file config/lab.env --env-file "$d/ci.env" config -q
 
+      - name: Guard - non-root unless ADR-018 lists it (user, cap_drop ALL, cap_add, no-new-privileges on the rendered project)
+        run: |
+          set -eu
+          bash scripts/check-container-rules.sh
+          bash scripts/test-container-rules.sh
+
       - name: Self-test - Traefik stack (flags, dynamic files, redirect, TLS options, hardening; dummy values, no ACME)
         run: bash scripts/test-traefik-config.sh
 

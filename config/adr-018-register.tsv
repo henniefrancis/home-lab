@@ -1,0 +1,13 @@
+# ADR-018 register: the ONLY services of the lab that may start without a numeric non-root `user:` (public file, no values).
+# Read by scripts/check-container-rules.sh (CI step "Guard - non-root unless ADR-018 lists it"). Adding a service here needs an
+# amendment of ADR-018 first. Tab-separated:
+#   service   : the compose service name
+#   cap_add   : comma-separated capabilities the service may add back after `cap_drop: [ALL]` ("-" = none)
+#   nnp       : required = security_opt must hold no-new-privileges:true; exempt = it may not (the image's entrypoint or the host-network
+#               agent needs setuid and file capabilities)
+#   why       : one line, for the reader
+tailscale	NET_ADMIN	required	Joins the tailnet from the host network namespace (tun device, routes)
+pihole	CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID,SETFCAP,NET_BIND_SERVICE	exempt	Root entrypoint sets up, then FTL drops to PIHOLE_UID; binds port 53
+netdata	SYS_PTRACE,SYS_ADMIN,SETUID,SETGID,CHOWN,DAC_OVERRIDE,DAC_READ_SEARCH,FOWNER	exempt	Host network and process monitoring (ADR-017)
+portainer	-	required	Root inside the container to use the Docker socket (ADR-017); no capability is added back
+homeassistant	NET_ADMIN,NET_RAW	exempt	Host network, discovery and Bluetooth
