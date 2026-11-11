@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly home-lab app backups (after the Authentik backup window)
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

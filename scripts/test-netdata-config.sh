@@ -139,6 +139,7 @@ fi
 echo "--- containers (Linux host network)"
 docker network create --subnet "$(lab_get PROXY_SUBNET)" "$NET_PROXY" > /dev/null
 docker network create "$NET_OTHER" > /dev/null
+docker volume rm ndtest-lib ndtest-cache > /dev/null 2>&1 || true # never reuse an interrupted run's data
 docker volume create ndtest-lib > /dev/null
 docker volume create ndtest-cache > /dev/null
 args=(--name ndtest-netdata --network host --pid host --hostname homelab-pi --cap-drop ALL --memory "$(jq -r '.mem_limit' <<< "$nd")" --pids-limit 512

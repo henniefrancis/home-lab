@@ -390,7 +390,7 @@ check_layout() {
   check_dir "$PKI_DIR" 0:0 700 pki-dir
   check_dir "$APPS_ROOT" 0:0 700 apps-root
   check_dir "$APPS_ROOT/secrets" 0:0 700 secrets-dir
-  for d in traefik authentik homepage tailscale pihole linkwarden netdata portainer; do
+  for d in traefik authentik homepage tailscale pihole linkwarden netdata portainer homeassistant; do
     if [ -d "$APPS_ROOT/$d" ]; then pass "apps-$d" "$APPS_ROOT/$d"; else fail "apps-$d" "$APPS_ROOT/$d missing (run bootstrap.sh)"; fi
   done
   for d in proxy authentik-internal authentik-auth oidc linkwarden-internal; do
@@ -543,6 +543,15 @@ check_hardening() {
     else
       pass dns-ipv6 "no IPv6 DNS listener on port 53"
     fi
+    # M12: Home Assistant uses the host network and must listen ONLY on the proxy gateway (Traefik). Anything else on 8123 (0.0.0.0, [::],
+    # the LAN address) would let the LAN, or the internet over IPv6, skip Traefik: the HTTP settings fell back to that once in a test.
+    local ha8123
+    ha8123="$(ss -H -tln 2> /dev/null | awk '{print $4}' | grep -E ':8123$' | grep -vxF "$(lab_env_get "$LAB_ENV" PROXY_SUBNET 172.30.0.0/24 | sed -E 's#\.0/24$#.1#'):8123" || true)"
+    if [ -n "$ha8123" ]; then
+      fail ha-listen "Home Assistant listens on $(printf '%s' "$ha8123" | paste -sd' ' -) as well: fix Settings, System, Network, HTTP server (listen only on the proxy gateway) or restore .storage/http (docs/runbooks/m12-homeassistant.md)"
+    else
+      pass ha-listen "nothing but the proxy gateway listens on port 8123"
+    fi
   fi
   check_units
   check_host_services
@@ -596,7 +605,7 @@ check_units() {
   else
     fail systemd-units "stale or missing systemd units (run: sudo scripts/bootstrap.sh): $(printf '%s' "$drift" | paste -sd";" -)"
   fi
-  for t in home-lab-cert-expiry.timer home-lab-alert-test.timer home-lab-backup-authentik.timer; do
+  for t in home-lab-cert-expiry.timer home-lab-alert-test.timer home-lab-backup-authentik.timer home-lab-backup-apps.timer; do
     if systemctl is-enabled "$t" > /dev/null 2>&1; then
       pass "timer-${t%.timer}" "$t is enabled"
     else

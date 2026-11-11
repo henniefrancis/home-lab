@@ -219,6 +219,14 @@ data "aws_iam_policy_document" "pi_host" {
     resources = ["${aws_s3_bucket.backup.arn}/${local.backup_prefix}*"]
   }
 
+  # R17 app backups (scripts/backup-apps.sh): the same write-only right, under apps/ only. Age-encrypted on the Pi first.
+  statement {
+    sid       = "WriteAppBackups"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.backup.arn}/${local.apps_prefix}*"]
+  }
+
   # Migration window only (allow_legacy_ssm_key): secrets not yet re-set still sit under the AWS-managed key.
   dynamic "statement" {
     for_each = var.allow_legacy_ssm_key ? [1] : []

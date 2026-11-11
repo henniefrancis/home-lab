@@ -14,6 +14,8 @@ LAB_UNITS=(
   home-lab-breakglass-reset.service
   home-lab-backup-authentik.service
   home-lab-backup-authentik.timer
+  home-lab-backup-apps.service
+  home-lab-backup-apps.timer
 )
 SYSTEMD_DIR="${HOME_LAB_SYSTEMD_DIR:-/etc/systemd/system}"
 

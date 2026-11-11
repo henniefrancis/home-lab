@@ -9,7 +9,7 @@
 #              linkwarden/postgres-password, linkwarden/nextauth-secret, linkwarden/meili-key and authentik/linkwarden-oidc-client-secret
 #              (scripts/set-secret.sh --generate); the networks proxy, oidc and linkwarden-internal and the data directories from
 #              scripts/bootstrap.sh; Traefik (router links) and Authentik (OAuth2 provider in authentik/blueprints/homelab-apps.yaml).
-# Runbook:     docs/runbooks/m9-linkwarden.md        Self-test: scripts/test-linkwarden-config.sh
+# Runbook:     docs/runbooks/r17-apps.md        Self-test: scripts/test-linkwarden-config.sh
 #
 # Secrets are files. Linkwarden and Meilisearch only read environment variables, so a small wrapper exports them from the files and
 # then starts the image's own entrypoint and command (the command below is the image's CMD for v2.16.3, unchanged; the self-test

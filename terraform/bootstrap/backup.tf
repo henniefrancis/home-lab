@@ -14,6 +14,7 @@
 locals {
   backup_bucket_name = "home-lab-backup-${local.account_id}-af-south-1"
   backup_prefix      = "authentik/"
+  apps_prefix        = "apps/"
   restore_prefix     = "restore/"
 }
 
@@ -87,6 +88,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "backup" {
 
     filter {
       prefix = local.backup_prefix
+    }
+
+    expiration {
+      days = 400
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 90
+    }
+  }
+
+  # R17 app backups (scripts/backup-apps.sh): the same retention as the Authentik dumps, for the same reasons.
+  rule {
+    id     = "expire-app-backups"
+    status = "Enabled"
+
+    filter {
+      prefix = local.apps_prefix
     }
 
     expiration {

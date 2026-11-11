@@ -14,3 +14,4 @@ include:
   - path: linkwarden/compose.yaml
   - path: netdata/compose.yaml
   - path: portainer/compose.yaml
+  - path: homeassistant/compose.yaml

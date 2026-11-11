@@ -1,0 +1,47 @@
+---
+# Home Assistant (R17, milestone M12) at https://ha.${DOMAIN}, behind the LAN/tailnet allowlist. No forward auth: the Companion app on
+# phones must reach it directly, so Home Assistant's own users (with TOTP) are the login (owner decision 2026-11-10).
+#
+# Start (Pi):  sudo scripts/deploy.sh --only homeassistant      (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       APPS_ROOT/homeassistant/config, seeded by scripts/bootstrap.sh from homeassistant/seed/ on the first run only (the HTTP server
+#              settings in .storage/http and a starting configuration.yaml); Bluetooth on the host (bootstrap.sh unmasks it); Traefik (router ha).
+# Runbook:     docs/runbooks/r17-apps.md        Self-test: scripts/test-homeassistant-config.sh
+#
+# Host network (owner decision): device discovery (mDNS, SSDP) and Bluetooth need the Pi's own network. Home Assistant would then listen on
+# every address of the Pi, LAN and public IPv6 included. It does not, because seed/.storage/http makes it listen ONLY on the proxy network's
+# gateway 172.30.0.1:8123 (where Traefik reaches it) and trust X-Forwarded-For only from the proxy subnet. That file is seeded as the STABLE
+# setting: an http: block in configuration.yaml is a PENDING change since Home Assistant 2026.8 and reverted to 0.0.0.0 and [::] after
+# five unconfirmed minutes (tested 2026-11-10). preflight.sh FAILs if anything else listens on 8123.
+# Bluetooth (owner decision): the host's BlueZ over D-Bus (/run/dbus read-only) plus NET_ADMIN and NET_RAW, as the Home Assistant
+# Bluetooth documentation requires for a container. Not privileged; every other capability is dropped. Zigbee (M12b): a devices: entry
+# with the stick's /dev/serial/by-id/ path is added in its own commit once the stick is plugged in.
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:2026.10.4@sha256:23f4dfbb69ce76315dbc4de7915504f1c2dcecd7ca2648113a493a385972e133
+    container_name: homeassistant
+    restart: unless-stopped
+    network_mode: host
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    mem_limit: 1g
+    pids_limit: 512
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/homeassistant/config:/config
+      - /etc/localtime:/etc/localtime:ro
+      - /run/dbus:/run/dbus:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://172.30.0.1:8123/manifest.json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

@@ -80,7 +80,7 @@ step "3/7 Directory layout"
 # 0700 like fetch-secrets.sh sets it on every deploy: only root (and the Docker daemon) traverses $APPS_ROOT. Containers reach their
 # directories through bind mounts, never through this path, so nothing needs to cross it as another user.
 install -d -m 0700 -o root -g root "$APPS_ROOT"
-for d in traefik authentik homepage tailscale pihole linkwarden netdata portainer; do
+for d in traefik authentik homepage tailscale pihole linkwarden netdata portainer homeassistant; do
   install -d -m 0755 -o root -g root "$APPS_ROOT/$d"
 done
 install -d -m 0700 -o root -g root "$APPS_ROOT/tailscale/state"
@@ -122,6 +122,16 @@ install -d -m 0700 -o "$PG_UID" -g "$PG_GID" "$APPS_ROOT/linkwarden/postgres"
 install -d -m 0755 -o root -g root "$APPS_ROOT/netdata/lib" "$APPS_ROOT/netdata/cache"
 # Portainer (M11) runs as root inside its container (ADR-017) and keeps its database here.
 install -d -m 0700 -o root -g root "$APPS_ROOT/portainer/data"
+# Home Assistant (M12) runs as root inside its container. Its starting configuration is copied ONCE, only into an empty config directory:
+# afterwards the files belong to Home Assistant and the owner and are never overwritten. .storage/http holds the HTTP server settings as
+# the STABLE setting (listen only on the proxy gateway): see homeassistant/compose.yaml for why it is not an http: block in YAML.
+install -d -m 0700 -o root -g root "$APPS_ROOT/homeassistant/config"
+if [ ! -e "$APPS_ROOT/homeassistant/config/configuration.yaml" ] && [ ! -e "$APPS_ROOT/homeassistant/config/.storage/http" ]; then
+  install -d -m 0700 -o root -g root "$APPS_ROOT/homeassistant/config/.storage"
+  install -m 0644 -o root -g root "$REPO_DIR/homeassistant/seed/configuration.yaml" "$APPS_ROOT/homeassistant/config/configuration.yaml"
+  install -m 0600 -o root -g root "$REPO_DIR/homeassistant/seed/.storage/http" "$APPS_ROOT/homeassistant/config/.storage/http"
+  info "seeded $APPS_ROOT/homeassistant/config (first run: configuration.yaml and the HTTP server settings)"
+fi
 # fetch-secrets.sh publishes releases under .secrets.d and points $APPS_ROOT/secrets at the current one (atomic swap).
 install -d -m 0700 -o root -g root "$APPS_ROOT/.secrets.d"
 if [ ! -L "$APPS_ROOT/secrets" ]; then
@@ -252,8 +262,8 @@ for u in "${LAB_UNITS[@]}"; do
   render_unit "$REPO_DIR" "$APPS_ROOT" "$u" > "/etc/systemd/system/$u"
   chmod 0644 "/etc/systemd/system/$u"
 done
-if systemctl daemon-reload 2> /dev/null && systemctl enable --now home-lab-cert-expiry.timer home-lab-alert-test.timer home-lab-backup-authentik.timer > /dev/null 2>&1 && systemctl enable home-lab-breakglass-reset.service > /dev/null 2>&1; then
-  info "home-lab-cert-expiry.timer enabled (daily); home-lab-alert-test.timer enabled (monthly test mail); home-lab-backup-authentik.timer enabled (nightly Authentik backup); home-lab-breakglass-reset.service enabled (boot)"
+if systemctl daemon-reload 2> /dev/null && systemctl enable --now home-lab-cert-expiry.timer home-lab-alert-test.timer home-lab-backup-authentik.timer home-lab-backup-apps.timer > /dev/null 2>&1 && systemctl enable home-lab-breakglass-reset.service > /dev/null 2>&1; then
+  info "home-lab-cert-expiry.timer enabled (daily); home-lab-alert-test.timer enabled (monthly test mail); home-lab-backup-authentik.timer enabled (nightly Authentik backup); home-lab-backup-apps.timer enabled (nightly app backups); home-lab-breakglass-reset.service enabled (boot)"
 else
   warn "could not enable the home-lab timers (no systemd?)"
 fi

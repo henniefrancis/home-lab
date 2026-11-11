@@ -136,7 +136,7 @@ check "tiles are plain links: no docker server or container key anywhere in serv
 for h in traefik auth ha tools links netdata pihole portainer; do
   check "tile href https://$h.{{HOMEPAGE_VAR_DOMAIN}}/" grep -q "href: https://$h\.{{HOMEPAGE_VAR_DOMAIN}}/" "$(cfgfile services.yaml)"
 done
-check "the four services still to come are in the Coming soon group; IT Tools (M7) and Pi-hole (M8) are live in Tools" bash -c 'awk "/^- Coming soon:/{f=1} f" "$1" | grep -c "href:" | grep -qx 4 && t="$(awk "/^- Tools:/{f=1;next} /^- /{f=0} f" "$1")" && grep -q "href: https://tools\." <<< "$t" && grep -q "href: https://pihole\." <<< "$t"' _ "$(cfgfile services.yaml)"
+check "every R17 app is live in Tools (IT Tools, Pi-hole, Linkwarden, Netdata, Portainer, Home Assistant) and no placeholder group is left" bash -c '! grep -q "^- Coming soon:" "$1" && t="$(awk "/^- Tools:/{f=1;next} /^- /{f=0} f" "$1")" && for h in tools pihole links netdata portainer ha; do grep -q "href: https://$h\." <<< "$t" || exit 1; done' _ "$(cfgfile services.yaml)"
 check "settings: update check off, version hidden" bash -c 'grep -qx "disableUpdateCheck: true" "$1" && grep -qx "hideVersion: true" "$1"' _ "$(cfgfile settings.yaml)"
 check "widgets make no external request (no search, weather or API widget)" bash -c '! grep -Eq "^- (search|openmeteo|openweathermap|weatherapi|glances|unifi)" "$1"' _ "$(cfgfile widgets.yaml)"
 check "no HOMEPAGE_FILE_/key placeholder in committed config (the Authentik widget is opt-in: runbook)" bash -c '! grep -rq "HOMEPAGE_FILE_\|HOMEPAGE_VAR_.*KEY" homepage/config' _

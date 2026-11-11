@@ -5,7 +5,7 @@
 # Start (Pi):  sudo scripts/deploy.sh --only portainer      (or the whole lab: sudo scripts/deploy.sh)
 # Needs:       the secret file portainer/admin-password (SSM SecureString, scripts/set-secret.sh: the owner's password), the proxy network
 #              and APPS_ROOT/portainer/data from scripts/bootstrap.sh, Traefik (router portainer) and Authentik (provider homelab-portainer).
-# Runbook:     docs/runbooks/m11-portainer.md        Self-test: scripts/test-portainer-config.sh
+# Runbook:     docs/runbooks/r17-apps.md        Self-test: scripts/test-portainer-config.sh
 #
 # ADR-017: Portainer mounts the Docker socket read-write (it acts on containers), which is root-equivalent; the risk is accepted there.
 # Working rule: view, logs and restart only. The repository and scripts/deploy.sh stay the source of truth: a stack changed in Portainer

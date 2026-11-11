@@ -330,8 +330,8 @@ run "backup_bucket_is_write_only_for_the_pi" {
   }
 
   assert {
-    condition     = length(regexall("\"s3:", data.aws_iam_policy_document.pi_host.json)) == 1 && length(regexall("home-lab-backup-111111111111-af-south-1", data.aws_iam_policy_document.pi_host.json)) == 1
-    error_message = "the Pi host role has exactly one S3 action (PutObject) and exactly one bucket resource"
+    condition     = length(regexall("\"s3:", data.aws_iam_policy_document.pi_host.json)) == 2 && length(regexall("home-lab-backup-111111111111-af-south-1", data.aws_iam_policy_document.pi_host.json)) == 2
+    error_message = "the Pi host role has exactly two S3 actions (PutObject under authentik/ and under apps/) and two bucket resources"
   }
 
   assert {
@@ -370,13 +370,18 @@ run "backup_bucket_is_write_only_for_the_pi" {
   }
 
   assert {
-    condition     = length(aws_s3_bucket_lifecycle_configuration.backup.rule) == 3 && alltrue([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r.status == "Enabled"])
-    error_message = "three enabled lifecycle rules (dumps, restore copies, housekeeping)"
+    condition     = length(aws_s3_bucket_lifecycle_configuration.backup.rule) == 4 && alltrue([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r.status == "Enabled"])
+    error_message = "four enabled lifecycle rules (Authentik dumps, app backups, restore copies, housekeeping)"
   }
 
   assert {
     condition     = one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-authentik-dumps"][0].noncurrent_version_expiration).noncurrent_days == 90 && one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-authentik-dumps"][0].expiration).days == 400 && one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-authentik-dumps"][0].filter).prefix == "authentik/"
     error_message = "authentik/: noncurrent versions expire after 90 days (SEC M-2) and current dumps after 400 days"
+  }
+
+  assert {
+    condition     = one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-app-backups"][0].noncurrent_version_expiration).noncurrent_days == 90 && one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-app-backups"][0].expiration).days == 400 && one([for r in aws_s3_bucket_lifecycle_configuration.backup.rule : r if r.id == "expire-app-backups"][0].filter).prefix == "apps/"
+    error_message = "apps/: the R17 app backups keep the Authentik retention (400 days current, 90 days noncurrent)"
   }
 
   assert {
@@ -393,6 +398,16 @@ run "backup_bucket_is_write_only_for_the_pi" {
   assert {
     condition     = [for s in jsondecode(data.aws_iam_policy_document.pi_host.json).Statement : s if s.Sid == "WriteAuthentikBackups"][0].Effect == "Allow" && flatten([[for s in jsondecode(data.aws_iam_policy_document.pi_host.json).Statement : s if s.Sid == "WriteAuthentikBackups"][0].Action]) == ["s3:PutObject"] && flatten([[for s in jsondecode(data.aws_iam_policy_document.pi_host.json).Statement : s if s.Sid == "WriteAuthentikBackups"][0].Resource]) == ["arn:aws:s3:::home-lab-backup-111111111111-af-south-1/authentik/*"]
     error_message = "WriteAuthentikBackups is exactly Allow s3:PutObject on the authentik/ prefix"
+  }
+
+  assert {
+    condition     = [for s in jsondecode(data.aws_iam_policy_document.pi_host.json).Statement : s if s.Sid == "WriteAppBackups"][0].Effect == "Allow" && flatten([[for s in jsondecode(data.aws_iam_policy_document.pi_host.json).Statement : s if s.Sid == "WriteAppBackups"][0].Action]) == ["s3:PutObject"] && flatten([[for s in jsondecode(data.aws_iam_policy_document.pi_host.json).Statement : s if s.Sid == "WriteAppBackups"][0].Resource]) == ["arn:aws:s3:::home-lab-backup-111111111111-af-south-1/apps/*"]
+    error_message = "WriteAppBackups is exactly Allow s3:PutObject on the apps/ prefix (R17)"
+  }
+
+  assert {
+    condition     = length([for s in jsondecode(data.aws_iam_policy_document.pi_host.json).Statement : s if contains(flatten([s.Action]), "s3:PutObject")]) == 2
+    error_message = "the Pi may write to S3 only through WriteAuthentikBackups and WriteAppBackups"
   }
 
   # ---- the bucket policy, value by value (QA L-4: the earlier substring checks let two mutants survive)

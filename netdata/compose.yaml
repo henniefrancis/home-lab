@@ -5,7 +5,7 @@
 # Start (Pi):  sudo scripts/deploy.sh --only netdata      (or the whole lab: sudo scripts/deploy.sh)
 # Needs:       the data directories from scripts/bootstrap.sh, the proxy network (its gateway 172.30.0.1 is where Netdata listens),
 #              Traefik (router netdata) and Authentik (provider homelab-netdata).
-# Runbook:     docs/runbooks/m10-netdata.md        Self-test: scripts/test-netdata-config.sh
+# Runbook:     docs/runbooks/r17-apps.md        Self-test: scripts/test-netdata-config.sh
 #
 # ADR-017: Netdata mounts the Docker socket (read-only flag, but the API itself is root-equivalent) to name containers in its charts.
 # Like the official image's recommended setup it uses the host's network and PID namespaces and reads /proc, /sys and / read-only, with

@@ -50,6 +50,7 @@ Thumbs.db
 .linkwarden-test.*/
 .netdata-test.*/
 .portainer-test.*/
+.homeassistant-test.*/
 .traefik-test.*/
 .traefik-test-apps.*/
 

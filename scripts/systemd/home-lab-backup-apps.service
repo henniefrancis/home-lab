@@ -1,0 +1,45 @@
+[Unit]
+Description=home-lab app backups (Linkwarden, Home Assistant, Pi-hole, Portainer; encrypted with age, uploaded to S3)
+Documentation=file:@REPO_DIR@/docs/runbooks/r17-apps.md
+After=network-online.target docker.service home-lab-backup-authentik.service
+Wants=network-online.target
+Requires=docker.service
+OnFailure=home-lab-alert-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=@REPO_DIR@/scripts/backup-apps.sh
+SyslogIdentifier=home-lab-backup-apps
+TimeoutStartSec=60min
+Environment=DOCKER_CONFIG=/nonexistent
+StateDirectory=home-lab
+StateDirectoryMode=0700
+# Same hardening as home-lab-backup-authentik.service. The app directories are only read (ProtectSystem=strict keeps them read-only);
+# CAP_DAC_READ_SEARCH lets root read files the service users own (10006, 10007, ...) without any other power.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077
+ProtectProc=invisible
+ProcSubset=pid
+ProtectHostname=true
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+MemoryMax=512M
+TasksMax=128
+CPUQuota=50%
+Nice=10

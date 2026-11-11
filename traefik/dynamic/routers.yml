@@ -143,6 +143,16 @@ http:
       middlewares:
         - lan-allowlist
 
+    # Home Assistant (M12): the allowlist only. Its own login (with TOTP) because the Companion app cannot do forward auth. It runs with the
+    # host network and listens only on the proxy network's gateway (homeassistant/seed/.storage/http).
+    homeassistant:
+      rule: Host(`ha.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: homeassistant
+      middlewares:
+        - lan-allowlist
+
   services:
     # authentik-server on the dedicated authentik-auth network (shared with Traefik only). Also the target of the forward-auth
     # middleware in middlewares.yml.
@@ -175,3 +185,7 @@ http:
       loadBalancer:
         servers:
           - url: http://portainer:9000
+    homeassistant:
+      loadBalancer:
+        servers:
+          - url: http://172.30.0.1:8123

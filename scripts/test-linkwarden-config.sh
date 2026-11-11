@@ -79,7 +79,8 @@ here="$(cd "$stage" && { pwd -W 2> /dev/null || pwd; })"
 mkdir -p "$stage/secrets/tailscale" "$stage/secrets/authentik" "$stage/secrets/traefik" "$stage/secrets/pihole" "$stage/secrets/linkwarden"
 : > "$stage/secrets/tailscale/tailscale.env"
 for s in linkwarden/postgres-password linkwarden/nextauth-secret linkwarden/meili-key authentik/linkwarden-oidc-client-secret; do
-  openssl rand -hex 32 | tr -d '\n' > "$stage/secrets/$s"
+  # \r too: openssl on Git Bash ends its line with CRLF, and a carriage return inside the Meilisearch key breaks the HTTP header.
+  openssl rand -hex 32 | tr -d '\r\n' > "$stage/secrets/$s"
   chmod 644 "$stage/secrets/$s"
 done
 
@@ -157,7 +158,10 @@ echo "--- containers"
 docker network create "$NET_PROXY" > /dev/null
 docker network create --subnet "$(lab_get OIDC_SUBNET)" "$NET_OIDC" > /dev/null
 docker network create --internal "$NET_INT" > /dev/null
-for v in "${VOLS[@]}"; do docker volume create "$v" > /dev/null; done
+for v in "${VOLS[@]}"; do
+  docker volume rm "$v" > /dev/null 2>&1 || true # a volume left by an interrupted run would keep old data (and an old Meilisearch key)
+  docker volume create "$v" > /dev/null
+done
 own() { docker run --rm --user 0 --entrypoint chown --mount "type=volume,src=$2,dst=/v,volume-nocopy" "$IMG_PG" "$1" /v; }
 own 10007:10007 lwtest-data
 own 10007:10007 lwtest-meili
@@ -237,17 +241,20 @@ check "the container command equals the image's CMD (the wrapper changes only th
 check "the password files never reach the environment (docker inspect has no secret value)" bash -c 'e="$(docker inspect lwtest-app lwtest-meili lwtest-pg -f "{{json .Config.Env}}")"; for f in "$1"/secrets/linkwarden/* "$1"/secrets/authentik/linkwarden-oidc-client-secret; do grep -qF "$(cat "$f")" <<< "$e" && exit 1; done; exit 0' _ "$stage"
 prov="$(docker exec lwtest-app curl -s http://127.0.0.1:3000/api/v1/auth/providers 2> /dev/null || true)"
 check "only the Authentik login is offered (no password login) [$(jq -c 'keys' <<< "$prov" 2> /dev/null)]" test "$(jq -c 'keys' <<< "$prov" 2> /dev/null)" = '["authentik"]'
-check "the login button is named Home lab login and points at the Authentik signin" test "$(jq -r '.authentik.name + " " + .authentik.signinUrl' <<< "$prov" 2> /dev/null)" = "Home lab login https://links.$DOMAIN_T/api/v1/auth/signin/authentik"
+lb="$(jq -r '.authentik.name + " " + .authentik.signinUrl' <<< "$prov" 2> /dev/null | tr -d '\r' || true)"
+check "the login button is named Home lab login and points at the Authentik signin [$lb]" test "$lb" = "Home lab login https://links.$DOMAIN_T/api/v1/auth/signin/authentik"
 check "Chromium (page archiving) runs inside the hardened container" docker exec lwtest-app sh -c 'b=$(ls -d /ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64)/chrome-headless-shell; timeout 40 "$b" --no-sandbox --headless --disable-gpu --user-data-dir=/tmp/chr --dump-dom about:blank 2>/dev/null | grep -q "<html"'
 
 echo "--- through Traefik and the OIDC back-channel"
 hostport="$(docker port "$cid" 443/tcp | head -n 1 | sed 's/.*://')"
 ready=0
+code=
 for _ in $(seq 1 30); do
-  [ "$(curl -sk -o /dev/null -w '%{http_code}' --connect-to "links.$DOMAIN_T:443:127.0.0.1:$hostport" "https://links.$DOMAIN_T/login" || true)" = 200 ] && ready=1 && break
+  code="$(curl -sk -o /dev/null -w '%{http_code}' --connect-to "links.$DOMAIN_T:443:127.0.0.1:$hostport" "https://links.$DOMAIN_T/login" || true)"
+  [ "$code" = 200 ] && ready=1 && break
   sleep 2
 done
-check "links.<domain> is served through the real Traefik router (200)" test "$ready" = 1
+check "links.<domain> is served through the real Traefik router (200) [$code]" test "$ready" = 1
 h="$(curl -skI --connect-to "links.$DOMAIN_T:443:127.0.0.1:$hostport" "https://links.$DOMAIN_T/login" | tr -d '\r')"
 check "the shared security headers are on the Linkwarden response" bash -c 'grep -qi "^strict-transport-security: max-age=" <<< "$1" && grep -qi "^x-content-type-options: nosniff" <<< "$1" && grep -qi "^x-frame-options: deny" <<< "$1"' _ "$h"
 bc="$(docker exec lwtest-app curl -sk -m 10 "https://auth.$DOMAIN_T/application/o/linkwarden/.well-known/openid-configuration" 2> /dev/null || true)"

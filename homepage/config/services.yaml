@@ -1,8 +1,7 @@
 ---
 # Tiles (plan 6.6). Plain links: there is no Docker integration, so no container-status dots (SEC-H2: reading the Docker API, even
 # through a filtering proxy, exposes container files and logs; docs/runbooks/m5-homepage.md explains the decision).
-# "Coming soon" tiles are placeholders for the planned hosts: no container, no status; the link works once
-# the service exists. {{HOMEPAGE_VAR_DOMAIN}} is the lab domain, injected from compose.
+# Every R17 app is live (M7-M12); there are no placeholder tiles left. {{HOMEPAGE_VAR_DOMAIN}} is the lab domain, injected from compose.
 #
 # Optional Authentik widget (needs the SSM parameter homepage/authentik-token): see docs/runbooks/m5-homepage.md.
 - Platform:
@@ -36,8 +35,6 @@
         icon: portainer.png
         href: https://portainer.{{HOMEPAGE_VAR_DOMAIN}}/
         description: Container overview (view, logs, restart)
-
-- Coming soon:
     - Home Assistant:
         icon: home-assistant.png
         href: https://ha.{{HOMEPAGE_VAR_DOMAIN}}/

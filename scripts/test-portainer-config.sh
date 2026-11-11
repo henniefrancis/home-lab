@@ -111,6 +111,7 @@ fi
 # --------------------------------------------------------------------------------------------------------------------
 echo "--- containers"
 docker network create "$NET_PROXY" > /dev/null
+docker volume rm pttest-data > /dev/null 2>&1 || true # never reuse an interrupted run's data
 docker volume create pttest-data > /dev/null
 args=(--name pttest-portainer --network "$NET_PROXY" --network-alias portainer --read-only --cap-drop ALL --security-opt no-new-privileges:true
   --memory "$(jq -r '.mem_limit' <<< "$pt")" --pids-limit 128 --tmpfs /tmp -v pttest-data:/data -v /var/run/docker.sock:/var/run/docker.sock

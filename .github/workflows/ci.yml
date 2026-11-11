@@ -191,13 +191,13 @@ jobs:
           set -eu
           sock_re='docker[.]sock|providers[.]docker|docker-socket-proxy|tecnativa'
           # ADR-017: only netdata/ and portainer/ may mount the socket (and nothing anywhere may use a Docker provider or a socket proxy).
-          if git grep -nE "$sock_re" -- traefik authentik homepage tailscale it-tools pihole linkwarden compose.yaml | grep -v ':[0-9]*:[[:space:]]*#'; then
+          if git grep -nE "$sock_re" -- traefik authentik homepage tailscale it-tools pihole linkwarden homeassistant compose.yaml | grep -v ':[0-9]*:[[:space:]]*#'; then
             echo "No Docker socket or Docker provider outside the stacks ADR-017 names."; exit 1
           fi
           if git grep -nE 'providers[.]docker|docker-socket-proxy|tecnativa' -- netdata portainer | grep -v ':[0-9]*:[[:space:]]*#'; then
             echo "No Docker provider or socket proxy, even in the ADR-017 stacks."; exit 1
           fi
-          files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml pihole/compose.yaml linkwarden/compose.yaml netdata/compose.yaml portainer/compose.yaml'
+          files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml pihole/compose.yaml linkwarden/compose.yaml netdata/compose.yaml portainer/compose.yaml homeassistant/compose.yaml'
           # shellcheck disable=SC2086
           bad="$(git grep -hE '^[[:space:]]+image:[[:space:]]' -- $files | grep -Ev 'home-lab/(ra-helper|it-tools)' | grep -Ev '@sha256:[0-9a-f]{64}' || true)"
           if [ -n "$bad" ]; then echo "Images must be pinned tag@sha256:"; echo "$bad"; exit 1; fi
@@ -257,6 +257,9 @@ jobs:
 
       - name: Self-test - Portainer stack (static checks; the real image without capabilities, the password file, the local environment, forward auth)
         run: bash scripts/test-portainer-config.sh
+
+      - name: Self-test - Home Assistant stack (static checks; the real image with the seeded HTTP settings across the 5-minute revert window)
+        run: bash scripts/test-homeassistant-config.sh
 
       - name: Terraform fmt and validate (no backend, no credentials)
         run: |
