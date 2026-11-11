@@ -122,7 +122,7 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 | M6 | Production certificate, alerting, hardening, repository made public | In progress (`docs/runbooks/m6-go-live.md`) |
 | M7 | IT Tools (first R17 app) | Done (`docs/runbooks/m7-it-tools.md`) |
 | M8 | Pi-hole for the LAN | Live; router DNS change pending (`docs/runbooks/m8-pihole.md`) |
-| M9-M12 | Linkwarden, Netdata, Portainer, Home Assistant and app backups, one release | In progress (`docs/runbooks/r17-apps.md`) |
+| M9-M12 | Linkwarden, Netdata, Portainer, Home Assistant and app backups, one release | Done (`docs/runbooks/r17-apps.md`) |
 
 Backups (K5): a nightly age-encrypted `pg_dump` of the Authentik database goes to a write-only, versioned S3 bucket (`docs/runbooks/authentik-backup.md`), and the offline CA has a documented, testable backup (`docs/runbooks/ca-backup.md`). The app data (Linkwarden, Home Assistant, Pi-hole, Portainer) goes the same way every night under `apps/` (`docs/runbooks/r17-apps.md`). The recovery drill (`docs/runbooks/pi-recovery.md`) is the owner's to run.
 
