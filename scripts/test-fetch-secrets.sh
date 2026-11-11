@@ -26,8 +26,8 @@ check() { # check <name> <command...>
 manifest_secrets="$(grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv" | cut -f1 | grep -v '^config/' | sort)"
 manifest_config="$(grep -vE '^(#|$)' "$REPO/config/secrets-manifest.tsv" | cut -f1 | grep '^config/' | sort)"
 tf_config="$(grep -oE '"config/[a-z0-9-]+"' "$REPO/terraform/edge/ssm.tf" | tr -d '"' | sort -u)"
-check "the twelve SecureStrings are owner-managed (ADR-013): the manifest lists twelve, ssm.tf has no SecureString resource and forgets the old ones" bash -c 'test "$(printf "%s
-" "$1" | wc -l)" -eq 12 && ! grep -Eq "^resource \"aws_ssm_parameter\" \"secret\"" "$2" && grep -q "from = aws_ssm_parameter.secret" "$2"' _ "$manifest_secrets" "$REPO/terraform/edge/ssm.tf"
+check "the eighteen SecureStrings are owner-managed (ADR-013): the manifest lists eighteen, ssm.tf has no SecureString resource and forgets the old ones" bash -c 'test "$(printf "%s
+" "$1" | wc -l)" -eq 18 && ! grep -Eq "^resource \"aws_ssm_parameter\" \"secret\"" "$2" && grep -q "from = aws_ssm_parameter.secret" "$2"' _ "$manifest_secrets" "$REPO/terraform/edge/ssm.tf"
 check "manifest config rows == ssm.tf config_params" test "$manifest_config" = "$tf_config"
 check "manifest has a tab-separated row per parameter" test "$(grep -vcE '^(#|$)' "$REPO/config/secrets-manifest.tsv")" -ge 11
 
@@ -79,6 +79,9 @@ V_PH="fixture-pihole-admin-EEEE6666"
 V_LAN="10.0.0.77"
 V_LW="fixture-linkwarden-FFFF7777"
 V_PT="fixture-portainer-GGGG8888"
+V_N8="fixture-n8n-key-HHHH9999"
+V_CD="fixture-couchdb-IIII0000"
+V_ST="fixture-speedtest-JJJJ1111"
 PH="UNSET-set-via-set-secret"
 
 # mkjson <out> [name=value ...]: overrides per name; type String for config/*, SecureString otherwise.
@@ -90,6 +93,8 @@ mkjson() {
     [traefik/breakglass-htpasswd]="$V_HT" [tailscale/auth-key]="$PH" [homepage/authentik-token]="$PH" [pihole/admin-password]="$V_PH"
     [linkwarden/postgres-password]="$V_LW-pg" [linkwarden/nextauth-secret]="$V_LW-na" [linkwarden/meili-key]="$V_LW-mk"
     [linkwarden/oidc-client-secret]="$V_LW-oc" [portainer/admin-password]="$V_PT"
+    [n8n/encryption-key]="$V_N8" [couchdb/admin-password]="$V_CD-ad" [couchdb/cookie-secret]="$V_CD-ck" [couchdb/sync-password]="$V_CD-sy"
+    [speedtest/app-key]="$V_ST-ak" [speedtest/admin-password]="$V_ST-ap"
     [config/domain]="$V_DOM" [config/route53-zone-id]="$V_ZONE" [config/ra-trust-anchor-arn]="$ta"
     [config/ra-acme-profile-arn]="$pr" [config/ra-acme-role-arn]="$ro" [config/pi-lan-ip]="$V_LAN"
   )
@@ -116,7 +121,7 @@ run() { # run <extra args...>; sets rc, output in $T/out.log
 }
 no_values_in_output() {
   local v
-  for v in "$V_SK" "$V_PG" "$V_HT" "$V_TS" "$V_DOM" "$V_ZONE" "$V_PH" "$V_LAN" "$V_LW" "$V_PT" "$ta" "$pr" "$ro" "$acct"; do
+  for v in "$V_SK" "$V_PG" "$V_HT" "$V_TS" "$V_DOM" "$V_ZONE" "$V_PH" "$V_LAN" "$V_LW" "$V_PT" "$V_N8" "$V_CD" "$V_ST" "$ta" "$pr" "$ro" "$acct"; do
     grep -qF -- "$v" "$T/out.log" && return 1
   done
   return 0
@@ -146,6 +151,9 @@ check "pihole/admin-password 10006:10006 0400 (read by the Pi-hole entrypoint, M
 check "linkwarden/postgres-password 10007:10007 0440 and nextauth-secret, meili-key 0400 (M9)" test "$(attrs linkwarden/postgres-password) $(attrs linkwarden/nextauth-secret) $(attrs linkwarden/meili-key)" = "10007:10007 440 10007:10007 400 10007:10007 400"
 check "the Linkwarden OIDC client secret lands at authentik/linkwarden-oidc-client-secret 10002:10007 0440 (Authentik and Linkwarden both read it)" test "$(attrs authentik/linkwarden-oidc-client-secret)" = "10002:10007 440" -a "$(cat "$AR/secrets/authentik/linkwarden-oidc-client-secret")" = "$V_LW-oc"
 check "portainer/admin-password 0:0 0400 (M11, Portainer runs as root)" test "$(attrs portainer/admin-password)" = "0:0 400"
+check "n8n/encryption-key 10010:10010 0400 (R19: the n8n uid reads it through N8N_ENCRYPTION_KEY_FILE)" test "$(attrs n8n/encryption-key)" = "10010:10010 400" -a "$(cat "$AR/secrets/n8n/encryption-key")" = "$V_N8"
+check "the three CouchDB secrets are 10011:10011 0400 (R19)" test "$(attrs couchdb/admin-password) $(attrs couchdb/cookie-secret) $(attrs couchdb/sync-password)" = "10011:10011 400 10011:10011 400 10011:10011 400"
+check "the two Speedtest Tracker secrets are 0:0 0400 (R19: read by the root init, the app never sees the file)" test "$(attrs speedtest/app-key) $(attrs speedtest/admin-password)" = "0:0 400 0:0 400"
 check "no secret value or ARN in the script output" no_values_in_output
 check "no staging dir left behind" no_staging
 check "aws-config is root 0600 and has no key material" test "$(stat -c '%u %a' "$T/etc/aws-config")" = "0 600"

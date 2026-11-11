@@ -120,7 +120,13 @@ long72="${long73:1}"
 run "$long72\n$long72\n" portainer/admin-password
 check "a Portainer password of exactly 72 bytes is stored" bash -c 'test "$1" -eq 0 && test -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
 run "$long73\n$long73\n" authentik/secret-key
-check "the 72-byte limit applies to Portainer only" test "$rc" -eq 0
+check "the 72-byte limit applies to the two bcrypt passwords only" test "$rc" -eq 0
+run "$long73\n$long73\n" speedtest/admin-password
+check "a Speedtest Tracker admin password over 72 bytes (bcrypt limit) is refused and nothing is written (R19)" bash -c 'test "$1" -eq 1 && grep -q "bcrypt limit" "$2" && test ! -f "$3/req.json"' _ "$rc" "$work/o" "$MOCK_OUT"
+run "$long72\n$long72\n" speedtest/admin-password
+check "a Speedtest Tracker admin password of exactly 72 bytes is stored" bash -c 'test "$1" -eq 0 && test -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
+run "$long73\n$long73\n" couchdb/sync-password
+check "the CouchDB sync password has no 72-byte limit (it is not bcrypt-hashed by the app)" test "$rc" -eq 0
 run '\n\n' authentik/secret-key
 check "an empty value is refused" bash -c 'test "$1" -eq 1 && test ! -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
 run 'UNSET-fake\nUNSET-fake\n' authentik/secret-key
@@ -150,12 +156,16 @@ MOCK_TYPE=MISSING run '' --generate not-in/manifest
 check "--generate refuses a name that is not in the manifest (exit 2, nothing sent)" bash -c 'test "$1" -eq 2 && test ! -f "$2/reqs.log"' _ "$rc" "$MOCK_OUT"
 MOCK_TYPE=MISSING run '' --generate config/domain
 check "--generate refuses config/* (Terraform owns it)" bash -c 'test "$1" -eq 2 && test ! -f "$2/reqs.log"' _ "$rc" "$MOCK_OUT"
+MOCK_TYPE=MISSING run '' --generate n8n/encryption-key couchdb/admin-password couchdb/cookie-secret speedtest/app-key
+check "--generate creates the four R19 machine-only secrets, 64 hex characters each, none shown (R19)" bash -c 'test "$1" -eq 0 && [ "$(wc -l < "$2/reqs.log")" = 4 ] && [ "$(jq -r .Name "$2/reqs.log" | tr -d "\r" | sort | tr "\n" " ")" = "/home-lab/couchdb/admin-password /home-lab/couchdb/cookie-secret /home-lab/n8n/encryption-key /home-lab/speedtest/app-key " ] && [ "$(jq -r .Value "$2/reqs.log" | tr -d "\r" | grep -cE "^[0-9a-f]{64}$")" = 4 ]' _ "$rc" "$MOCK_OUT"
+MOCK_TYPE=MISSING run '' --create couchdb/sync-password
+check "--create accepts the two R19 human passwords (couchdb/sync-password): placeholder, not a generated value" bash -c 'test "$1" -eq 0 && jq -e ".Value | startswith(\"UNSET-\")" "$2"' _ "$rc" "$MOCK_OUT/req.json"
 run '' --generate
 check "--generate with no name is a usage error (exit 2)" test "$rc" -eq 2
 
-good='[{"n":"/home-lab/authentik/secret-key","t":"SecureString","k":"alias/home-lab-ssm","v":3},{"n":"/home-lab/authentik/postgres-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/authentik/bootstrap-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/traefik/breakglass-htpasswd","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/tailscale/auth-key","t":"SecureString","k":"alias/home-lab-ssm","v":4},{"n":"/home-lab/homepage/authentik-token","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/pihole/admin-password","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/linkwarden/postgres-password","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/linkwarden/nextauth-secret","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/linkwarden/meili-key","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/linkwarden/oidc-client-secret","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/portainer/admin-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/config/domain","t":"String","k":null,"v":1}]'
+good='[{"n":"/home-lab/authentik/secret-key","t":"SecureString","k":"alias/home-lab-ssm","v":3},{"n":"/home-lab/authentik/postgres-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/authentik/bootstrap-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/traefik/breakglass-htpasswd","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/tailscale/auth-key","t":"SecureString","k":"alias/home-lab-ssm","v":4},{"n":"/home-lab/homepage/authentik-token","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/pihole/admin-password","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/linkwarden/postgres-password","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/linkwarden/nextauth-secret","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/linkwarden/meili-key","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/linkwarden/oidc-client-secret","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/portainer/admin-password","t":"SecureString","k":"alias/home-lab-ssm","v":2},{"n":"/home-lab/n8n/encryption-key","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/couchdb/admin-password","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/couchdb/cookie-secret","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/couchdb/sync-password","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/speedtest/app-key","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/speedtest/admin-password","t":"SecureString","k":"alias/home-lab-ssm","v":1},{"n":"/home-lab/config/domain","t":"String","k":null,"v":1}]'
 MOCK_PARAMS="$good" run '' --check
-check "--check passes when all twelve SecureStrings exist on alias/home-lab-ssm (config/* is not required to be a SecureString)" bash -c 'test "$1" -eq 0 && grep -q "check OK" "$2" && grep -q "authentik/secret-key" "$2"' _ "$rc" "$work/o"
+check "--check passes when all eighteen SecureStrings exist on alias/home-lab-ssm (config/* is not required to be a SecureString)" bash -c 'test "$1" -eq 0 && grep -q "check OK" "$2" && grep -q "authentik/secret-key" "$2"' _ "$rc" "$work/o"
 check "--check prints key and version only: no value, nothing was written" bash -c '! grep -qi "value" "$1" && test ! -f "$2/req.json"' _ "$work/o" "$MOCK_OUT"
 bad_missing="$(jq -c 'map(select(.n != "/home-lab/tailscale/auth-key"))' <<< "$good")"
 MOCK_PARAMS="$bad_missing" run '' --check
@@ -168,7 +178,7 @@ MOCK_PARAMS="$bad_type" run '' --check
 check "--check fails when a parameter is a plain String" bash -c 'test "$1" -eq 1 && grep -q "NOT a SecureString" "$2"' _ "$rc" "$work/o"
 run 'x\n' --check authentik/secret-key
 check "--check takes no name (exit 2)" test "$rc" -eq 2
-check "the expected list is the manifest: twelve SecureStrings" test "$(grep -vE '^(#|$)' config/secrets-manifest.tsv | cut -f1 | grep -vc '^config/')" -eq 12
+check "the expected list is the manifest: eighteen SecureStrings" test "$(grep -vE '^(#|$)' config/secrets-manifest.tsv | cut -f1 | grep -vc '^config/')" -eq 18
 
 # NEW-10: --check and --create must not pass vacuously on an unreadable, empty or comment-only manifest, and must survive a huge one
 printf '# only comments\n\n' > "$work/comments.tsv"

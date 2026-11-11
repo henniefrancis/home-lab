@@ -235,10 +235,10 @@ case "$MODE" in
       echo "Values differ; nothing written." >&2
       exit 1
     fi
-    # Portainer hashes its admin password with bcrypt, which takes at most 72 bytes: a longer one stops Portainer from starting
-    # ("failed hashing admin password", seen on the R17 deploy, 2026-11-11).
-    if [ "$NAME" = portainer/admin-password ] && [ "$(printf '%s' "$v" | LC_ALL=C wc -c | tr -d ' ')" -gt 72 ]; then
-      echo "Refusing a Portainer password of more than 72 bytes (bcrypt limit); use 64 characters or fewer. Nothing written." >&2
+    # Portainer and Speedtest Tracker hash their admin password with bcrypt, which takes at most 72 bytes: a longer one stops Portainer from
+    # starting ("failed hashing admin password", seen on the R17 deploy, 2026-11-11) and Laravel's hasher rejects it too (R19).
+    if { [ "$NAME" = portainer/admin-password ] || [ "$NAME" = speedtest/admin-password ]; } && [ "$(printf '%s' "$v" | LC_ALL=C wc -c | tr -d ' ')" -gt 72 ]; then
+      echo "Refusing a password of more than 72 bytes for $NAME (bcrypt limit); use 64 characters or fewer. Nothing written." >&2
       exit 1
     fi
     if [[ "$v" == UNSET-* ]]; then
