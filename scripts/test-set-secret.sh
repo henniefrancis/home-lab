@@ -113,6 +113,14 @@ run 'only-once\n' authentik/secret-key
 check "EOF at the second prompt gives a message and exit 1" bash -c 'test "$1" -eq 1 && grep -qi "end of file" "$2" && test ! -f "$3/req.json"' _ "$rc" "$work/o" "$MOCK_OUT"
 run 'aaa\nbbb\n' authentik/secret-key
 check "mismatching values write nothing" bash -c 'test "$1" -eq 1 && test ! -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
+long73="$(printf 'p%.0s' $(seq 1 73))"
+run "$long73\n$long73\n" portainer/admin-password
+check "a Portainer password over 72 bytes (bcrypt limit) is refused and nothing is written" bash -c 'test "$1" -eq 1 && grep -q "bcrypt limit" "$2" && test ! -f "$3/req.json"' _ "$rc" "$work/o" "$MOCK_OUT"
+long72="${long73:1}"
+run "$long72\n$long72\n" portainer/admin-password
+check "a Portainer password of exactly 72 bytes is stored" bash -c 'test "$1" -eq 0 && test -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
+run "$long73\n$long73\n" authentik/secret-key
+check "the 72-byte limit applies to Portainer only" test "$rc" -eq 0
 run '\n\n' authentik/secret-key
 check "an empty value is refused" bash -c 'test "$1" -eq 1 && test ! -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
 run 'UNSET-fake\nUNSET-fake\n' authentik/secret-key

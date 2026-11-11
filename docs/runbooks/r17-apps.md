@@ -30,7 +30,8 @@ Authentik router's `oidc-allowlist`, H2 narrowed (avahi stays masked; Bluetooth 
    ```bash
    cd /a/henniefrancis/home-lab-new && scripts/set-secret.sh --generate linkwarden/postgres-password linkwarden/nextauth-secret linkwarden/meili-key linkwarden/oidc-client-secret
    ```
-3. **Portainer admin password** (a human password: generate it in your password manager and keep it there):
+3. **Portainer admin password** (a human password: generate it in your password manager and keep it there). **64 characters or fewer**:
+   Portainer hashes it with bcrypt, which stops at 72 bytes, and refuses to start with a longer one (`set-secret.sh` refuses it too):
    ```bash
    scripts/set-secret.sh --create portainer/admin-password && scripts/set-secret.sh portainer/admin-password
    ```
@@ -93,5 +94,6 @@ and mode as `bootstrap.sh` creates them), for `linkwarden-db` stop Linkwarden an
 | Linkwarden's login button returns an error | Authentik has not applied the blueprint yet (wait up to 25 minutes), or the user has no e-mail in Authentik |
 | Linkwarden log: `invalid_api_key` (Meilisearch) | `linkwarden/meili-key` changed after the first start: the search index keeps the old key. Stop both, delete `/apps/linkwarden/meili/*`, start again (the index is rebuilt) |
 | Netdata or Home Assistant: 502 through Traefik | It is not listening on 172.30.0.1 (the proxy network must exist before it starts): `sudo scripts/deploy.sh --recreate netdata` or `homeassistant` |
+| Portainer keeps restarting, log: `failed hashing admin password ... password length exceeds 72 bytes` | The password is too long for bcrypt. Set a shorter one (`scripts/set-secret.sh portainer/admin-password`), then `sudo scripts/deploy.sh --recreate portainer` |
 | Home Assistant does not see Bluetooth devices | `systemctl is-enabled bluetooth` must not say `masked`: `sudo scripts/bootstrap.sh` |
 | `ha-listen` FAIL in preflight | Section 5, last item |
