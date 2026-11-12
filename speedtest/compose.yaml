@@ -1,6 +1,6 @@
 ---
 # Speedtest Tracker (R19, milestone M15): internet speed history at https://speedtest.${DOMAIN}, for the admins. Behind the LAN/tailnet
-# allowlist and Authentik forward auth (homelab-admins); the app's public dashboard is on (so anyone past forward auth sees the results),
+# allowlist and Authentik forward auth (homelab-admins); the app's public dashboard is OFF (results need the app's own login too),
 # while its settings still need the app's own admin login.
 #
 # ROOT START (ADR-018): the only root-start container of this batch, and the sixth entry of the ADR-018 register. The LinuxServer.io image is
@@ -62,7 +62,7 @@ services:
       SPEEDTEST_SCHEDULE: ${SPEEDTEST_SCHEDULE:?set SPEEDTEST_SCHEDULE in config/lab.env}
       SPEEDTEST_SERVERS: ${SPEEDTEST_SERVERS:-}
       PRUNE_RESULTS_OLDER_THAN: "90"
-      PUBLIC_DASHBOARD: "true"
+      PUBLIC_DASHBOARD: "false"
       ADMIN_EMAIL: admin@${DOMAIN}
       FILE__ADMIN_PASSWORD: /run/secrets/speedtest_admin_password
     secrets:

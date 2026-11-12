@@ -1,5 +1,5 @@
 ---
-# Weekly and grouped (one PR per ecosystem) to conserve CI minutes while the repo is private.
+# Weekly and grouped (one PR per ecosystem) to keep the number of bot PRs low.
 #
 # Ecosystems whose manifests do not exist yet are NOT listed (dependabot errors on a directory with no matching manifest).
 # Add each in the milestone that introduces it, using the same shape as below.

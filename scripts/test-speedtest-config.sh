@@ -12,7 +12,7 @@
 # was recorded.
 #
 # Static: pinned LinuxServer image (vX.Y.Z-lsN by digest); the ADR-018 register entry equals cap_add exactly; PUID/PGID 10009 from lab.env and
-#   no `user:`; cap_drop ALL, no-new-privileges, limits; SPEEDTEST_SCHEDULE equal to config/lab.env (the ONE place), prune 90, public
+#   no `user:`; cap_drop ALL, no-new-privileges, limits; SPEEDTEST_SCHEDULE equal to config/lab.env (the ONE place), prune 90, public (OFF)
 #   dashboard, the admin password only as a FILE__ variable, no secret in any environment; the APP_KEY wrapper; the two manifest rows;
 #   routers, blueprint (admins only, outpost), tile, record, bootstrap, preflight, Dependabot, no backup job.
 # Full run: healthy; nginx, php-fpm and the queue worker run as 10009 and only the s6 supervisors, nginx master and php-fpm master as root;
@@ -119,7 +119,7 @@ check "the only volume is the config directory (a bind mount of APPS_ROOT/speedt
 echo "--- static: configuration and secrets"
 check "SPEEDTEST_SCHEDULE in the rendered definition equals config/lab.env exactly (the ONE place) [$sched]" bash -c '[ -n "$2" ] && [ "$(jq -r .environment.SPEEDTEST_SCHEDULE <<< "$1")" = "$2" ] && grep -q "^SPEEDTEST_SCHEDULE=\"" config/lab.env' _ "$st" "$sched"
 check "the cron value is a valid 5-field expression" bash -c '[ "$(wc -w <<< "$1")" = 5 ]' _ "$sched"
-check "environment: prune 90 days, public dashboard on, DB sqlite, APP_URL https://speedtest.<domain>, display time zone = TZ, admin e-mail admin@<domain>" test "$(jq -r '.environment | [.PRUNE_RESULTS_OLDER_THAN, .PUBLIC_DASHBOARD, .DB_CONNECTION, .APP_URL, .DISPLAY_TIMEZONE, .ADMIN_EMAIL] | join(" ")' <<< "$st")" = "90 true sqlite https://speedtest.$DOMAIN_T $(lab_get TZ) admin@$DOMAIN_T"
+check "environment: prune 90 days, public dashboard OFF, DB sqlite, APP_URL https://speedtest.<domain>, display time zone = TZ, admin e-mail admin@<domain>" test "$(jq -r '.environment | [.PRUNE_RESULTS_OLDER_THAN, .PUBLIC_DASHBOARD, .DB_CONNECTION, .APP_URL, .DISPLAY_TIMEZONE, .ADMIN_EMAIL] | join(" ")' <<< "$st")" = "90 false sqlite https://speedtest.$DOMAIN_T $(lab_get TZ) admin@$DOMAIN_T"
 check "SPEEDTEST_SERVERS comes from lab.env (empty = Ookla picks the nearest server)" test "$(jq -r '.environment.SPEEDTEST_SERVERS' <<< "$st")" = "$(lab_get SPEEDTEST_SERVERS)"
 check "secrets: the admin password only as FILE__ADMIN_PASSWORD (a path), APP_KEY and ADMIN_PASSWORD never in the environment" bash -c '[ "$(jq -r .environment.FILE__ADMIN_PASSWORD <<< "$1")" = /run/secrets/speedtest_admin_password ] && ! jq -r ".environment | keys[]" <<< "$1" | grep -Eqx "APP_KEY|ADMIN_PASSWORD|DB_PASSWORD|APP_SECRET"' _ "$st"
 check "the APP_KEY wrapper converts the hex secret with the image's PHP (hex2bin, base64_encode), checks the length, unsets an empty SPEEDTEST_SERVERS and execs /init" bash -c 'e="$(jq -r ".entrypoint | join(\" \")" <<< "$1")"; grep -q "hex2bin" <<< "$e" && grep -q "base64_encode" <<< "$e" && grep -q "/run/secrets/speedtest_app_key" <<< "$e" && grep -qF "unset SPEEDTEST_SERVERS" <<< "$e" && grep -q "exec /init" <<< "$e" && [ "$(jq -r "[.secrets[].source] | sort | join(\" \")" <<< "$1")" = "speedtest_admin_password speedtest_app_key" ]' _ "$st"
@@ -128,7 +128,7 @@ check "manifest: speedtest/app-key and speedtest/admin-password, required, 0:0 0
 check "set-secret.sh applies the 72-byte bcrypt limit to speedtest/admin-password" bash -c 'grep -q "speedtest/admin-password" scripts/set-secret.sh'
 
 echo "--- static: routers, Authentik, tile, record"
-check "speedtest router: allowlist then Authentik forward auth, service speedtest-tracker:80" bash -c 'b="$(router_block speedtest)"; grep -q "Host(\`speedtest.{{ env \"DOMAIN\" }}\`)" <<< "$b" && [ "$(grep -A3 "middlewares:" <<< "$b" | grep -- "- " | tr -d " \n")" = "-lan-allowlist-authentik" ] && grep -q "service: speedtest$" <<< "$b" && awk "/^  services:/{f=1} f" "$1" | grep -q "url: http://speedtest-tracker:80"' _ $rt
+check "speedtest router: allowlist then Authentik forward auth, priority 10, service speedtest-tracker:80" bash -c 'b="$(router_block speedtest)"; grep -q "Host(\`speedtest.{{ env \"DOMAIN\" }}\`)" <<< "$b" && [ "$(grep -A3 "middlewares:" <<< "$b" | grep -- "- " | tr -d " \n")" = "-lan-allowlist-authentik" ] && grep -q "priority: 10$" <<< "$b" && grep -q "service: speedtest$" <<< "$b" && awk "/^  services:/{f=1} f" "$1" | grep -q "url: http://speedtest-tracker:80"' _ $rt
 check "speedtest-outpost: the outpost path on the app host, priority 100, allowlist only, service authentik" bash -c 'b="$(router_block speedtest-outpost)"; grep -q "PathPrefix(\`/outpost.goauthentik.io/\`)" <<< "$b" && grep -q "priority: 100$" <<< "$b" && grep -q "service: authentik$" <<< "$b" && [ "$(grep -A3 "middlewares:" <<< "$b" | grep -c -- "- ")" = 1 ]' _
 check "blueprint: provider homelab-speedtest (forward_single, speedtest.<domain>), application 'Speedtest Tracker' bound to homelab-admins ONLY, on the embedded outpost" bash -c 'b="$(awk "/id: provider-speedtest/{f=1} f&&/id: app-speedtest/{exit} f" "$1")"; grep -q "mode: forward_single" <<< "$b" && grep -q "external_host: !Format \[\"https://speedtest.%s\", !Env DOMAIN\]" <<< "$b" && [ "$(awk "/target: !KeyOf app-speedtest/{getline; print}" "$1" | tr -d " ")" = "group:!KeyOfgroup-admins" ] && awk "/id: embedded-outpost/{f=1} f" "$1" | grep -q -- "- !KeyOf provider-speedtest"' _ $bp
 check "Homepage: the Speedtest Tracker tile is live in Tools" bash -c 'awk "/^- Tools:/{f=1;next} /^- /{f=0} f" homepage/config/services.yaml | grep -q "href: https://speedtest.{{HOMEPAGE_VAR_DOMAIN}}/"'
@@ -195,7 +195,7 @@ check "the admin account exists as admin@<domain> and the password from the FILE
 echo "--- the schedule and no real test"
 cs="$(docker exec sttest-app sh -c 'cd /app/www && s6-setuidgid abc php artisan config:show speedtest --no-ansi 2>/dev/null' | tr -d '\r' || true)"
 check "the application's configured schedule is the lab.env value [$sched]" bash -c 'grep -E "^ *schedule " <<< "$1" | grep -qF -- "$2"' _ "$cs" "$sched"
-check "the application's prune period is 90 days and the public dashboard is on" bash -c 'grep -Eq "^ *prune_results_older_than \.+ 90 *$" <<< "$1" && grep -Eq "^ *public_dashboard \.+ true *$" <<< "$1"' _ "$cs"
+check "the application's prune period is 90 days and the public dashboard is OFF" bash -c 'grep -Eq "^ *prune_results_older_than \.+ 90 *$" <<< "$1" && grep -Eq "^ *public_dashboard \.+ true *$" <<< "$1"' _ "$cs"
 check "the environment value reaches the container unchanged (no quotes, no escaping): [$sched]" test "$(docker inspect sttest-app -f '{{range .Config.Env}}{{println .}}{{end}}' | tr -d '\r' | grep '^SPEEDTEST_SCHEDULE=' | cut -d= -f2-)" = "$sched"
 check "no real speed test ran: no completed result in the database, no Ookla process" bash -c '[ "$(docker exec sttest-app php -r "\$d = new PDO(\"sqlite:/config/database.sqlite\"); echo \$d->query(\"select count(*) from results where status = \x27completed\x27\")->fetchColumn();" | tr -d "\r")" = 0 ] && ! docker exec sttest-app sh -c "ps -eo args | grep -i \"[s]peedtest --\""'
 
@@ -217,7 +217,7 @@ check "the outpost callback path on the app host goes to the outpost, not to the
 login="$(viab "speedtest.$DOMAIN_T" /admin/login "${S[@]}")"
 check "with an accepted session the app's own admin login page is served (its settings need that login) [$(grep -oE '<title>[^<]*' <<< "$login" | head -1 | cut -c1-60)]" bash -c 'grep -qi "sign in\|log in\|login" <<< "$1" && ! grep -qi "forward" <<< "$1"' _ "$login"
 dash="$(viab "speedtest.$DOMAIN_T" / "${S[@]}" -L)"
-check "the public dashboard (PUBLIC_DASHBOARD=true) is served to a session without the app's login" bash -c 'grep -qi "speedtest" <<< "$1"' _ "$dash"
+check "the public dashboard is OFF: even behind forward auth the results need the app's own login (anonymous / ends at the app's login page)" bash -c 'grep -qi "login\|sign in" <<< "$1" && ! grep -qi "latest result\|download" <<< "$1"' _ "$dash"
 links="$(grep -oE '(href|src)="https?://[^"]+"' <<< "$login$dash" | sed -E 's/^(href|src)="//; s/"$//' | sort -u)"
 check "Laravel behind Traefik: the same-host links the pages emit are https://speedtest.<domain>; the ONLY http:// one is the favicon (the app builds it itself; HSTS makes the browser upgrade it) [$(grep -c "^https://speedtest.$DOMAIN_T/" <<< "$links") https links]" bash -c '[ "$(grep -c "^https://speedtest.$2/" <<< "$1")" -ge 5 ] && [ "$(grep -E "^http://" <<< "$1" | grep -vc "^http://speedtest.$2/img/speedtest-tracker-icon.png$")" = 0 ] && ! grep -E "127\.0\.0\.1|localhost" <<< "$1" | grep -q .' _ "$links" "$DOMAIN_T"
 h="$(viah "speedtest.$DOMAIN_T" /admin/login "${S[@]}")"

@@ -241,6 +241,11 @@ case "$MODE" in
       echo "Refusing a password of more than 72 bytes for $NAME (bcrypt limit); use 64 characters or fewer. Nothing written." >&2
       exit 1
     fi
+    # The CouchDB sync password is typed by hand and the CouchDB host is reachable by every device on the LAN and the tailnet: at least 20 characters.
+    if [ "$NAME" = couchdb/sync-password ] && [ "$(printf '%s' "$v" | LC_ALL=C wc -c | tr -d ' ')" -lt 20 ]; then
+      echo "Refusing a CouchDB sync password of fewer than 20 characters (it guards the notes of every device). Nothing written." >&2
+      exit 1
+    fi
     if [[ "$v" == UNSET-* ]]; then
       echo "Refusing a value that looks like the placeholder (use --unset)." >&2
       exit 1

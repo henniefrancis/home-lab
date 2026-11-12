@@ -192,6 +192,7 @@ http:
       rule: Host(`speedtest.{{ env "DOMAIN" }}`)
       entryPoints:
         - websecure
+      priority: 10
       service: speedtest
       middlewares:
         - lan-allowlist

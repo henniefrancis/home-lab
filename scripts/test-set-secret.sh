@@ -127,6 +127,13 @@ run "$long72\n$long72\n" speedtest/admin-password
 check "a Speedtest Tracker admin password of exactly 72 bytes is stored" bash -c 'test "$1" -eq 0 && test -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
 run "$long73\n$long73\n" couchdb/sync-password
 check "the CouchDB sync password has no 72-byte limit (it is not bcrypt-hashed by the app)" test "$rc" -eq 0
+short19="$(printf 'p%.0s' $(seq 1 19))"
+run "$short19\n$short19\n" couchdb/sync-password
+check "a CouchDB sync password of 19 characters is refused and nothing is written (L-2)" bash -c 'test "$1" -eq 1 && grep -q "fewer than 20" "$2" && test ! -f "$3/req.json"' _ "$rc" "$work/o" "$MOCK_OUT"
+run "${short19}p\n${short19}p\n" couchdb/sync-password
+check "a CouchDB sync password of exactly 20 characters is stored" bash -c 'test "$1" -eq 0 && test -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
+run "$short19\n$short19\n" portainer/admin-password
+check "the 20-character minimum applies to the CouchDB sync password only" test "$rc" -eq 0
 run '\n\n' authentik/secret-key
 check "an empty value is refused" bash -c 'test "$1" -eq 1 && test ! -f "$2/req.json"' _ "$rc" "$MOCK_OUT"
 run 'UNSET-fake\nUNSET-fake\n' authentik/secret-key
