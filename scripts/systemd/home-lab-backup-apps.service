@@ -21,7 +21,7 @@ StateDirectoryMode=0700
 ProtectSystem=strict
 # R19: the SQLite jobs run sqlite3 as the app uid, and a live WAL database needs its -shm and -wal files written, so exactly these two data
 # directories are writable (the "-" lets a missing directory pass). Everything else stays read-only. scripts/test-backup-sandbox.sh proves it.
-ReadWritePaths=-/apps/koffan/data -/apps/n8n/data
+ReadWritePaths=-@APPS_ROOT@/koffan/data -@APPS_ROOT@/n8n/data
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true

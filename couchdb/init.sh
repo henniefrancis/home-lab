@@ -16,6 +16,10 @@ SYNC_PW="$(cat /run/secrets/couchdb_sync_password)"
 # control characters would break the JSON body; refuse them (a quote or backslash is escaped below)
 if printf '%s' "$SYNC_PW" | LC_ALL=C grep -q '[[:cntrl:]]'; then echo "the sync password holds a control character" >&2; exit 1; fi
 [ -n "$SYNC_PW" ] || { echo "the sync password is empty" >&2; exit 1; }
+# The JSON bodies that hold a password go through a 0600 file on the /tmp tmpfs (--data-binary @file), never through curl's argv.
+umask 077
+BODY="$(mktemp)"
+trap 'rm -f "$BODY"' EXIT
 esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 # api <user> <password> <curl args...>: prints the body, then the HTTP code on a last line
 api() {
@@ -50,7 +54,8 @@ else
   fi
   doc="{\"name\":\"$USER_NAME\",\"password\":\"$(esc "$SYNC_PW")\",\"roles\":[],\"type\":\"user\""
   [ -z "$rev" ] || doc="$doc,\"_rev\":\"$rev\""
-  c="$(api admin "$ADMIN_PW" -X PUT -H 'Content-Type: application/json' --data-binary "$doc}" "$url" | code_of)"
+  printf "%s}" "$doc" > "$BODY"
+  c="$(api admin "$ADMIN_PW" -X PUT -H 'Content-Type: application/json' --data-binary "@$BODY" "$url" | code_of)"
   case "$c" in 201 | 202) echo "sync user $USER_NAME written" ;; *) echo "writing the sync user failed: HTTP $c" >&2; exit 1 ;; esac
 fi
 c="$(api admin "$ADMIN_PW" -X PUT "$BASE/$DB" | code_of)"

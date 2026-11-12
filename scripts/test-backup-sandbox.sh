@@ -80,7 +80,7 @@ props=()
 while IFS= read -r line; do
   case "$line" in '' | \#*) continue ;; esac
   props+=(-p "$line")
-done < <(sed -n '/^ProtectSystem=/,/^Nice=/p' "$UNIT")
+done < <(sed -n "/^ProtectSystem=/,/^Nice=/p" "$UNIT" | sed "s#@APPS_ROOT@#/apps#g")
 check "the unit's sandbox was parsed from the unit file (at least 20 properties, including ProtectSystem, PrivateDevices, ProcSubset, ProtectProc and the capability bounding set)" bash -c '[ "$1" -ge 40 ] && grep -q ProcSubset=pid <<< "$2" && grep -q PrivateDevices=true <<< "$2" && grep -q ProtectProc=invisible <<< "$2" && grep -q CapabilityBoundingSet= <<< "$2"' _ "${#props[@]}" "${props[*]}"
 
 run_unit() { # run_unit <stage base> <db dir under /apps> <db relative path> [env assignments]: the stream on stdout, errors on stderr

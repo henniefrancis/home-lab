@@ -107,7 +107,7 @@ Deploy path: the owner signs one release commit, the Pi verifies the signature b
 - No long-lived AWS keys anywhere: the Pi uses Roles Anywhere sessions, CI has no AWS access, HCP uses OIDC with separate plan and apply roles.
 - The HCP apply role cannot change any IAM role, trust policy or Roles Anywhere object; the lab roles are owner-applied.
 - SecureStrings are encrypted with a customer-managed key whose policy lets only the Pi decrypt; they are not Terraform-managed and never in state.
-- Signed deploys, a root-owned checkout, the Docker socket only for Netdata (read-only) and Portainer behind Authentik (ADR-017), no Docker group for the login user, containers run non-root with their own service IDs (the one root-start exception, Speedtest Tracker, is recorded in ADR-018 and enforced in CI).
+- Signed deploys, a root-owned checkout, the Docker socket only for Netdata (read-only) and Portainer behind Authentik (ADR-017), no Docker group for the login user, containers run non-root with their own service IDs (the few that start as root are listed in the ADR-018 register, six services including Speedtest Tracker, and enforced in CI).
 - Findings and reporting: [`SECURITY.md`](SECURITY.md). Report vulnerabilities privately through GitHub's private vulnerability reporting.
 
 ## Status

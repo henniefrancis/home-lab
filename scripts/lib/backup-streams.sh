@@ -5,6 +5,8 @@
 # refuse_symlink <path under APPS_ROOT>: fail closed when the path, or any part of it below APPS_ROOT, is a symlink. A compromised app owns its
 # data directory and could swap a database or directory for a link; stat would then report the link's owner (the app uid) while the privileged
 # read follows it to the target (QA/security N-1).
+SQLITE_MAX_COPY_BYTES="${SQLITE_MAX_COPY_BYTES:-402653184}"
+
 refuse_symlink() {
   local p="$1" root real
   root="$(realpath -e "$APPS_ROOT" 2> /dev/null)" || {
@@ -59,8 +61,12 @@ sqlite_stream() {
   # (the tmpfs is RAM, so this also bounds the memory used). It is measured with stat, not from the kernel memory statistics: the unit hides those (ProcSubset=pid).
   size="$(($(stat -c %s "$db") + $(stat -c %s "$db-wal" 2> /dev/null || echo 0)))"
   free="${HOME_LAB_STAGE_FREE_BYTES:-$(($(stat -f -c '%a' "$STAGE_BASE") * $(stat -f -c '%S' "$STAGE_BASE")))}"
-  [[ "$size" =~ ^[0-9]+$ ]] && [[ "$free" =~ ^[0-9]+$ ]] && [ "$size" -lt $((free / 2)) ] || {
-    echo "the database ($size bytes with its WAL) is not smaller than half of the free space of $STAGE_BASE ($free bytes)" >&2
+  # ... and also smaller than a fixed cap of 384 MiB, which is safely below the unit's MemoryMax=512M (the copy sits in RAM on the tmpfs while
+  # sqlite3 and age run). scripts/test-backup-apps.sh pins the cap against MemoryMax.
+  limit="$((free / 2))"
+  [ "$limit" -le "$SQLITE_MAX_COPY_BYTES" ] || limit="$SQLITE_MAX_COPY_BYTES"
+  [[ "$size" =~ ^[0-9]+$ ]] && [[ "$free" =~ ^[0-9]+$ ]] && [ "$size" -lt "$limit" ] || {
+    echo "the database ($size bytes with its WAL) is not smaller than the limit of $limit bytes (half of the free space of $STAGE_BASE, $free bytes, and at most $SQLITE_MAX_COPY_BYTES)" >&2
     return 1
   }
   as_app() { setpriv --reuid="$uid" --regid="$gid" --clear-groups "$@"; }

@@ -399,6 +399,14 @@ check_layout() {
   for d in proxy authentik-internal authentik-auth oidc linkwarden-internal n8n; do
     if docker network inspect "$d" > /dev/null 2>&1; then pass "net-$d" "docker network exists"; else fail "net-$d" "docker network missing (run bootstrap.sh)"; fi
   done
+  # R19: the n8n network keeps the subnet pinned in config/lab.env (it must not overlap the other lab networks).
+  if docker network inspect n8n > /dev/null 2>&1; then
+    if docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' n8n | grep -qF "$(lab_env_get "$LAB_ENV" N8N_SUBNET)"; then
+      pass n8n-subnet "n8n network has the pinned subnet $(lab_env_get "$LAB_ENV" N8N_SUBNET)"
+    else
+      warnx n8n-subnet "n8n network subnet differs from N8N_SUBNET in config/lab.env (recreate the network when n8n is stopped)"
+    fi
+  fi
   # F02: the service uids must not be real host users (a file owned by the login user is readable by whoever logs in).
   local k id
   for k in AUTHENTIK_UID AUTHENTIK_GID AUTHENTIK_PG_UID AUTHENTIK_PG_GID HOMEPAGE_UID HOMEPAGE_GID TRAEFIK_UID TRAEFIK_GID ITTOOLS_UID ITTOOLS_GID PIHOLE_UID PIHOLE_GID LINKWARDEN_UID LINKWARDEN_GID KOFFAN_UID KOFFAN_GID SPEEDTEST_UID SPEEDTEST_GID N8N_UID N8N_GID COUCHDB_UID COUCHDB_GID; do

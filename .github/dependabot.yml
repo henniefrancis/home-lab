@@ -71,10 +71,14 @@ updates:
       # PostgreSQL stays on 16 (the major Authentik documents and tests); a major upgrade is a planned dump/restore, not a bot PR.
       - dependency-name: postgres
         update-types: ["version-update:semver-major"]
-      # Meilisearch stays on the line Linkwarden pins (v1.13 for Linkwarden v2.16): a newer Meilisearch cannot open the old index without
+      # Meilisearch stays on the line Linkwarden pins (v1.13 for Linkwarden v2.16 and v2.17): a newer Meilisearch cannot open the old index without
       # a dump and import. Bump it together with Linkwarden, by hand, from Linkwarden's own docker-compose.yml.
       - dependency-name: getmeili/meilisearch
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # n8n: only patch updates come from the bot. Minor and major versions (the beta line with plain semver tags such as 2.48.x, and 3.x) are never
+      # offered; a minor is bumped BY HAND from the `stable` tag (docs.n8n.io release notes), with a signed commit.
+      - dependency-name: n8nio/n8n
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   - package-ecosystem: docker
     directory: /traefik/ra-helper

@@ -352,6 +352,14 @@ SHIM
   unhold
   check "R19 sqlite: a database larger than half of the free staging space fails the job, and nothing is left in the staging tmpfs" job_refused koffan-db "half of the free space" "$STAGE"
 
+  # the fixed cap: even with plenty of free space a database above SQLITE_MAX_COPY_BYTES is refused
+  fresh
+  mk_r19_apps
+  hold_wal "$APPS/koffan/data/shopping.db"
+  backup MOCK_PG_ABSENT=1 HOME_LAB_STAGE_BASE="$STAGE" HOME_LAB_STAGE_FREE_BYTES=100000000000 SQLITE_MAX_COPY_BYTES=1000
+  unhold
+  check "B1: with lots of free space a database above the fixed cap (SQLITE_MAX_COPY_BYTES) is still refused, and nothing is left in the staging tmpfs" job_refused koffan-db "at most 1000" "$STAGE"
+
   # a file that is not a database
   fresh
   mk_r19_apps
@@ -391,7 +399,8 @@ check "R19: no plaintext canary in any upload, no plaintext copy outside the app
 svc=scripts/systemd/home-lab-backup-apps.service
 check "the service has the Authentik backup's hardening block (same sandbox) except for CapabilityBoundingSet and ReadWritePaths" bash -c 'diff <(sed -n "/^ProtectSystem=/,/^Nice=/p" "$1" | grep -vE "^(CapabilityBoundingSet|ReadWritePaths)=|^#") <(sed -n "/^ProtectSystem=/,/^Nice=/p" scripts/systemd/home-lab-backup-authentik.service | grep -vE "^(CapabilityBoundingSet|ReadWritePaths)=|^#")' _ "$svc"
 check "R19: the bounding set adds exactly CAP_SETUID and CAP_SETGID to the Authentik backup's (setpriv for the SQLite jobs), nothing else" bash -c 'a="$(grep "^CapabilityBoundingSet=" scripts/systemd/home-lab-backup-authentik.service | cut -d= -f2)"; [ "$(grep "^CapabilityBoundingSet=" "$1" | cut -d= -f2)" = "$a CAP_SETUID CAP_SETGID" ]' _ "$svc"
-check "R19: the only extra writable paths are the Koffan and n8n data directories (WAL files), and only those" bash -c 'grep -qxF "ReadWritePaths=-/apps/koffan/data -/apps/n8n/data" "$1" && [ "$(grep -c "^ReadWritePaths=" "$1")" = 1 ]' _ "$svc"
+check "R19: the only extra writable paths are the Koffan and n8n data directories (WAL files), and only those" bash -c 'grep -qxF "ReadWritePaths=-@APPS_ROOT@/koffan/data -@APPS_ROOT@/n8n/data" "$1" && [ "$(grep -c "^ReadWritePaths=" "$1")" = 1 ]' _ "$svc"
+check "B1: the fixed copy cap (384 MiB) is pinned and safely below the unit's MemoryMax (at most 80 percent of it)" bash -c 'cap="$(grep -oE "SQLITE_MAX_COPY_BYTES:-[0-9]+" scripts/lib/backup-streams.sh | head -1 | grep -oE "[0-9]+$")"; mm="$(grep "^MemoryMax=" "$1" | cut -d= -f2)"; case "$mm" in *M) mmb=$(( ${mm%M} * 1048576 )) ;; *G) mmb=$(( ${mm%G} * 1073741824 )) ;; *) exit 1 ;; esac; [ "$cap" = 402653184 ] && [ "$cap" -le $((mmb * 80 / 100)) ]' _ "$svc"
 check "R19: ProcSubset=pid and ProtectProc=invisible are kept (the script must not read /proc/meminfo)" bash -c 'grep -q "^ProcSubset=pid$" "$1" && grep -q "^ProtectProc=invisible$" "$1" && ! grep -q "/proc/meminfo" scripts/lib/backup-streams.sh' _ "$svc"
 check "R19: only the sqlite3 .backup call gets CAP_DAC_READ_SEARCH (ambient), nothing else in the library" bash -c '[ "$(grep -c "ambient-caps=+dac_read_search" scripts/lib/backup-streams.sh)" = 1 ] && grep -q "as_app_db sqlite3 -init" scripts/lib/backup-streams.sh && ! grep -q "as_app_db" <(grep -v "as_app_db()" scripts/lib/backup-streams.sh | grep -v "as_app_db sqlite3 -init /dev/null -cmd")' _
 check "the service runs scripts/backup-apps.sh with OnFailure alerting, after the Authentik backup" bash -c 'grep -q "^ExecStart=@REPO_DIR@/scripts/backup-apps.sh$" "$1" && grep -q "^OnFailure=home-lab-alert-failure@%n.service$" "$1" && grep -q "^After=.*home-lab-backup-authentik.service" "$1"' _ "$svc"

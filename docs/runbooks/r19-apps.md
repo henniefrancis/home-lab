@@ -21,7 +21,7 @@ and the updated `test-authentik-config.sh` (a real Authentik applies all ten app
 
 ## 1. Before the deploy [Owner, laptop]
 
-No Terraform in R19.
+No Terraform and no AWS resource changes in R19, but R19 does add six SSM SecureStrings (n8n, three CouchDB, two Speedtest) through `scripts/set-secret.sh` (ADR-013: owner-managed, not Terraform), so "no AWS resources" is not literally true.
 
 1. **Machine-only secrets, ONE command** (random values straight into SSM; nobody sees them):
    ```bash
@@ -83,6 +83,11 @@ Wait up to about 35 minutes for the Authentik blueprint (ten applications). Do n
 - A Form Trigger page may load static files that forward auth blocks. If a form renders without styling, record the asset path it requests and ask for a test
   before adding ONLY that static path to the `n8n-hooks` router (never `/rest/`).
 - Change the speed test schedule only in `config/lab.env` (`SPEEDTEST_SCHEDULE`): signed release, then `sudo scripts/deploy.sh --recreate speedtest`.
+- **RISK the owner must accept: n8n task runners run in INTERNAL mode** (the 2.x default). docs.n8n.io calls internal mode not recommended for production and deprecates it in
+  3.0, because Code nodes then run inside the n8n process, not in a separate sandboxed runner. R19 does NOT change the mode. Compensating controls: only admins reach n8n (Authentik
+  group `homelab-admins` with MFA, then n8n's own owner login), only the owner writes Code nodes, `NODES_EXCLUDE` removes the Execute Command and Local File Trigger nodes, environment
+  access from Code nodes is off, file access is limited to `/tmp/n8n-files`, and n8n sits on its own network (no path to koffan, couchdb and the rest). R20 moves to external mode
+  (the `n8nio/runners` sidecar) together with the 3.x migration.
 - n8n sits on its OWN network (`n8n`, joined by Traefik and n8n only, with internet egress), so a compromised workflow cannot reach `koffan:8080`, `couchdb:5984` or the other
   apps. Webhook nodes WITHOUT Header Auth or Basic Auth are forbidden. HTTP Request nodes must never take a URL derived from an incoming request (that is server-side request
   forgery from a host on your LAN). The Execute Command and Local File Trigger nodes are removed (`NODES_EXCLUDE`) and file access is limited to `/tmp/n8n-files`.

@@ -52,6 +52,7 @@ APPS_ROOT="$(lab_env_get "$LAB_ENV" APPS_ROOT /apps)"
 PROXY_SUBNET="$(lab_env_get "$LAB_ENV" PROXY_SUBNET 172.30.0.0/24)"
 AUTH_SUBNET="$(lab_env_get "$LAB_ENV" AUTHENTIK_AUTH_SUBNET 172.30.1.0/24)"
 OIDC_SUBNET="$(lab_env_get "$LAB_ENV" OIDC_SUBNET 172.30.2.0/24)"
+N8N_SUBNET="$(lab_env_get "$LAB_ENV" N8N_SUBNET 172.30.3.0/24)"
 ETC_DIR=/etc/home-lab
 
 TMP="$(mktemp -d)"
@@ -183,7 +184,12 @@ ensure_network authentik-internal --internal
 ensure_network oidc --subnet "$OIDC_SUBNET"
 ensure_network linkwarden-internal --internal
 # R19: n8n has its own (not internal) network, joined only by Traefik and n8n: no path to the other apps, but internet egress.
-ensure_network n8n
+ensure_network n8n --subnet "$N8N_SUBNET"
+have_n8n="$(docker network inspect -f "{{range .IPAM.Config}}{{.Subnet}} {{end}}" n8n)"
+case " $have_n8n " in
+  *" $N8N_SUBNET "*) ;;
+  *) warn "network n8n exists with subnet(s) $have_n8n, not $N8N_SUBNET (config/lab.env)" ;;
+esac
 
 step "5/7 tun kernel module and Tailscale sysctl"
 if modprobe tun 2> /dev/null; then
