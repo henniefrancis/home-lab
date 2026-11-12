@@ -1,0 +1,15 @@
+---
+# Traefik dynamic configuration: TLS options (plan 6.3). TLS 1.2 or newer with Traefik's default (secure) cipher
+# suites; sniStrict rejects any handshake whose server name is not covered by a configured certificate, so the apex
+# (reserved for the public website) and unknown names never get an answer from the Pi.
+#
+# ONE option set only: Traefik picks TLS options per SNI, and the option named "default" applies to every router and to every
+# name no router matches. A second named set ("modern", used before) made an HTTP/2 connection that a browser had coalesced
+# across two hosts (same wildcard certificate) answer 421 Misdirected Request when the hosts mapped to differently named
+# options; a router added after the browser opened its connection triggered it (M5). Do not add a second option set unless
+# every host really needs it. https://doc.traefik.io/traefik/https/tls/#tls-options
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: true

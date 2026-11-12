@@ -195,7 +195,7 @@ check "the admin account exists as admin@<domain> and the password from the FILE
 echo "--- the schedule and no real test"
 cs="$(docker exec sttest-app sh -c 'cd /app/www && s6-setuidgid abc php artisan config:show speedtest --no-ansi 2>/dev/null' | tr -d '\r' || true)"
 check "the application's configured schedule is the lab.env value [$sched]" bash -c 'grep -E "^ *schedule " <<< "$1" | grep -qF -- "$2"' _ "$cs" "$sched"
-check "the application's prune period is 90 days and the public dashboard is OFF" bash -c 'grep -Eq "^ *prune_results_older_than \.+ 90 *$" <<< "$1" && grep -Eq "^ *public_dashboard \.+ true *$" <<< "$1"' _ "$cs"
+check "the application's prune period is 90 days and the public dashboard is OFF" bash -c 'grep -Eq "^ *prune_results_older_than \.+ 90 *$" <<< "$1" && grep -Eq "^ *public_dashboard \.+ false *$" <<< "$1"' _ "$cs"
 check "the environment value reaches the container unchanged (no quotes, no escaping): [$sched]" test "$(docker inspect sttest-app -f '{{range .Config.Env}}{{println .}}{{end}}' | tr -d '\r' | grep '^SPEEDTEST_SCHEDULE=' | cut -d= -f2-)" = "$sched"
 check "no real speed test ran: no completed result in the database, no Ookla process" bash -c '[ "$(docker exec sttest-app php -r "\$d = new PDO(\"sqlite:/config/database.sqlite\"); echo \$d->query(\"select count(*) from results where status = \x27completed\x27\")->fetchColumn();" | tr -d "\r")" = 0 ] && ! docker exec sttest-app sh -c "ps -eo args | grep -i \"[s]peedtest --\""'
 

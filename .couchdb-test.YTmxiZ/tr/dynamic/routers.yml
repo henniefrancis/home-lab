@@ -1,0 +1,313 @@
+---
+# Traefik dynamic configuration: every router and service of the lab (SEC-H2: this replaces the Docker provider and its
+# socket proxy; nothing is discovered from containers any more). Watched by the file provider, no restart needed for edits.
+#
+# {{ env "DOMAIN" }} is a Go template expression that Traefik fills from the DOMAIN environment variable of the Traefik
+# container (set from runtime.env in traefik/compose.yaml), so the real domain is never committed. The templates are evaluated
+# at load time; a change of DOMAIN needs a Traefik restart.
+#
+# Pattern for a protected app host (see middlewares.yml for the two middlewares):
+#   <app>          Host(`<sub>.DOMAIN`)                                         lan-allowlist, authentik  -> the app service
+#   <app>-outpost  Host(`<sub>.DOMAIN`) && PathPrefix(`/outpost.goauthentik.io/`), priority 100, lan-allowlist only
+#                  -> service `authentik`: the login redirect finishes ON the app host, so the session cookie is host-only.
+# The apex and unknown hosts match no router and get Traefik's bare 404; nothing is served for them.
+http:
+  routers:
+    # Traefik dashboard (M4): LAN/tailnet allowlist, then Authentik forward auth (SSO, enforced MFA, group homelab-admins).
+    # The Basic-auth break-glass router is NOT here: it exists only while scripts/breakglass.sh is on (traefik/breakglass/).
+    dashboard:
+      rule: Host(`traefik.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: api@internal
+      middlewares:
+        - lan-allowlist
+        - authentik
+    dashboard-outpost:
+      rule: Host(`traefik.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # Authentik login UI and OAuth endpoints. Reachable from the LAN and the tailnet only, like every lab host. No forward
+    # auth on this host (it would loop).
+    authentik:
+      rule: Host(`auth.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: authentik
+      middlewares:
+        # The LAN and tailnet like every host, plus the OIDC back-channel network (Linkwarden's server-side token exchange).
+        - oidc-allowlist
+
+    # Homepage dashboard (M5), same pattern as the Traefik dashboard.
+    homepage:
+      rule: Host(`dashboard.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: homepage
+      middlewares:
+        - lan-allowlist
+        - authentik
+    homepage-outpost:
+      rule: Host(`dashboard.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # IT Tools (M7, R17), same pattern as the Traefik dashboard.
+    it-tools:
+      rule: Host(`tools.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: it-tools
+      middlewares:
+        - lan-allowlist
+        - authentik
+    it-tools-outpost:
+      rule: Host(`tools.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # Pi-hole web UI and API (M8), same pattern; Pi-hole asks for its own password after the Authentik login.
+    pihole:
+      rule: Host(`pihole.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: pihole
+      middlewares:
+        - lan-allowlist
+        - authentik
+    pihole-outpost:
+      rule: Host(`pihole.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # Linkwarden (M9): its own Authentik OIDC login, so the allowlist only (no forward auth: the app and the browser extension use
+    # Linkwarden's API tokens).
+    linkwarden:
+      rule: Host(`links.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: linkwarden
+      middlewares:
+        - lan-allowlist
+
+    # Netdata (M10): forward auth like the dashboard. Netdata uses the host network and listens only on the proxy network's gateway.
+    netdata:
+      rule: Host(`netdata.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: netdata
+      middlewares:
+        - lan-allowlist
+        - authentik
+    netdata-outpost:
+      rule: Host(`netdata.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # Portainer (M11): forward auth like the dashboard, then Portainer's own login.
+    portainer:
+      rule: Host(`portainer.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: portainer
+      middlewares:
+        - lan-allowlist
+        - authentik
+    portainer-outpost:
+      rule: Host(`portainer.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # Home Assistant (M12): the allowlist only. Its own login (with TOTP) because the Companion app cannot do forward auth. It runs with the
+    # host network and listens only on the proxy network's gateway (homeassistant/seed/.storage/http).
+    homeassistant:
+      rule: Host(`ha.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: homeassistant
+      middlewares:
+        - lan-allowlist
+
+    # Koffan (R19, M14): forward auth like the dashboard (Koffan's own login is off), plus koffan-pwa: the few STATIC files a browser fetches
+    # without cookies (the web app manifest and its icons, which a forward-auth redirect would break: "install app" fails) and the service
+    # worker script. Exact paths only (read from Koffan's page and manifest at build time); no data, API or page path may ever be added here.
+    # scripts/test-koffan-config.sh proves that "/" and the API paths still go to Authentik. The explicit priority 10 keeps the main router below
+    # koffan-pwa (50) and koffan-outpost (100) whatever the length of the domain is (Traefik's default priority is the rule length).
+    koffan:
+      rule: Host(`shopping.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      priority: 10
+      service: koffan
+      middlewares:
+        - lan-allowlist
+        - authentik
+    koffan-outpost:
+      rule: Host(`shopping.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+    koffan-pwa:
+      rule: >-
+        Host(`shopping.{{ env "DOMAIN" }}`) && (Path(`/static/manifest.json`) || Path(`/static/sw.js`) ||
+        Path(`/static/icon-192.png`) || Path(`/static/icon-512.png`) || Path(`/static/apple-touch-icon.png`) ||
+        Path(`/static/favicon.ico`) || Path(`/static/favicon-96.png`))
+      entryPoints:
+        - websecure
+      priority: 50
+      service: koffan
+      middlewares:
+        - lan-allowlist
+
+    # Speedtest Tracker (R19, M15): forward auth for the admins like the dashboard, then the app's own admin login for its settings.
+    speedtest:
+      rule: Host(`speedtest.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      priority: 10
+      service: speedtest
+      middlewares:
+        - lan-allowlist
+        - authentik
+    speedtest-outpost:
+      rule: Host(`speedtest.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # CouchDB for Obsidian LiveSync (R19, M16): the allowlist ONLY. The plugin cannot do forward auth; CouchDB requires a valid user for every
+    # request and sets its own CORS headers (Traefik adds none). Fauxton (/_utils) is blocked by couchdb-admin-ui (deny-all: 403).
+    couchdb:
+      rule: Host(`couchdb.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      priority: 10
+      service: couchdb
+      middlewares:
+        - lan-allowlist
+    couchdb-admin-ui:
+      rule: Host(`couchdb.{{ env "DOMAIN" }}`) && PathPrefix(`/_utils`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: couchdb
+      middlewares:
+        - lan-allowlist
+        - deny-all
+
+    # n8n (R19, M17): forward auth for the admins, then n8n's own owner login. n8n-hooks (priority 50, the allowlist ONLY) carries the webhook and
+    # form entry points, which senders cannot log in to; they are therefore reachable from the LAN and the tailnet only (ADR-003), and every
+    # production Webhook node must use Header Auth or Basic Auth. The trailing slashes are deliberate: /webhooks and /formx never match. Only
+    # these exact prefixes may be listed; /rest/ and the editor never. The main router's explicit priority 10 keeps it below n8n-hooks (50) and
+    # n8n-outpost (100) whatever the length of the domain is.
+    n8n:
+      rule: Host(`n8n.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      priority: 10
+      service: n8n
+      middlewares:
+        - lan-allowlist
+        - authentik
+    n8n-outpost:
+      rule: Host(`n8n.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+    n8n-hooks:
+      rule: >-
+        Host(`n8n.{{ env "DOMAIN" }}`) && (PathPrefix(`/webhook/`) || PathPrefix(`/webhook-test/`) || PathPrefix(`/webhook-waiting/`) ||
+        PathPrefix(`/form/`) || PathPrefix(`/form-test/`) || PathPrefix(`/form-waiting/`))
+      entryPoints:
+        - websecure
+      priority: 50
+      service: n8n
+      middlewares:
+        - lan-allowlist
+
+  services:
+    # authentik-server on the dedicated authentik-auth network (shared with Traefik only). Also the target of the forward-auth
+    # middleware in middlewares.yml.
+    authentik:
+      loadBalancer:
+        servers:
+          - url: http://authentik-server:9000
+    homepage:
+      loadBalancer:
+        servers:
+          - url: http://homepage:3000
+    it-tools:
+      loadBalancer:
+        servers:
+          - url: http://it-tools:8080
+    pihole:
+      loadBalancer:
+        servers:
+          - url: http://pihole:80
+    linkwarden:
+      loadBalancer:
+        servers:
+          - url: http://linkwarden:3000
+    # Netdata runs with the host network and binds only to the proxy network's gateway (PROXY_SUBNET .1, netdata/netdata.conf).
+    netdata:
+      loadBalancer:
+        servers:
+          - url: http://172.30.0.1:19999
+    portainer:
+      loadBalancer:
+        servers:
+          - url: http://portainer:9000
+    homeassistant:
+      loadBalancer:
+        servers:
+          - url: http://172.30.0.1:8123
+    koffan:
+      loadBalancer:
+        servers:
+          - url: http://koffan:8080
+    speedtest:
+      loadBalancer:
+        servers:
+          - url: http://speedtest-tracker:80
+    couchdb:
+      loadBalancer:
+        servers:
+          - url: http://couchdb:5984
+    n8n:
+      loadBalancer:
+        servers:
+          - url: http://n8n:5678
