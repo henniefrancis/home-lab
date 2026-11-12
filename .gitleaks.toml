@@ -26,7 +26,8 @@ keywords = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
 [[rules.allowlists]]
 description = "documented placeholder account IDs"
 # 403403403403 is three HTTP status codes printed back to back in an old test (history, scripts/test-homepage-config.sh); not an account ID.
-regexes = ['''^(111111111111|123456789012|0{12}|0{11}[0-9]|222222222222|999999999999|403403403403)$''']
+# 100000000000 is 1e11 bytes (100 GB) of free staging space in a backup test (scripts/test-backup-apps.sh, R19 B1 case); not an account ID.
+regexes = ['''^(111111111111|123456789012|0{12}|0{11}[0-9]|222222222222|999999999999|403403403403|100000000000)$''']
 
 [[rules]]
 id = "route53-hosted-zone-id"
