@@ -14,7 +14,7 @@ and the updated `test-authentik-config.sh` (a real Authentik applies all ten app
 |-----|---------|-------|-------|
 | Home Assistant 2026.11.1, Linkwarden v2.17.0 | `ha.`, `links.` | unchanged | Version bumps only. HA 2026.11 refuses a non-local login whose client id does not match scheme, host and port ("Invalid client id"); CI proves it through Traefik. nginx-unprivileged stays on the even 1.30 line (Dependabot ignore) |
 | Koffan | `https://shopping.<domain>` | Authentik forward auth (admins and users); Koffan's own login is off | One shared household list. A phone PWA: the manifest, icons and service worker are served without login by a static-only router |
-| Speedtest Tracker | `https://speedtest.<domain>` | Authentik forward auth (admins); the app's admin login only for settings | Root start, ADR-018. Measures at `17 */6 * * *` (about 20 GB a month at 100/50 Mbps). Not backed up |
+| Speedtest Tracker | `https://speedtest.<domain>` | Authentik forward auth (admins); the app's own login to see results (public dashboard off) | Root start, ADR-018. Measures at `17 */6 * * *` (about 20 GB a month at 100/50 Mbps). Not backed up |
 | CouchDB (LiveSync) | `https://couchdb.<domain>` | CouchDB user `livesync` (the plugin). Allowlist only, NO forward auth | No web UI (Fauxton is blocked), no Homepage tile. Phones sync over Tailscale. End-to-end encryption passphrase never reaches the Pi |
 | n8n | `https://n8n.<domain>` | Authentik forward auth (admins), then n8n's own owner login | Webhooks and forms: LAN and tailnet only, no Authentik. Rule: every production Webhook node uses Header Auth or Basic Auth |
 | App backups | `s3://<bucket>/apps/<job>/` | - | New nightly jobs: `koffan-db`, `n8n-db` (SQLite, consistent copy as the app uid in a tmpfs), `n8n-files`, `couchdb`. Speedtest: none |
@@ -30,7 +30,7 @@ No Terraform in R19.
    The n8n key encrypts every credential n8n stores: SSM is its only copy (it is deliberately NOT in the backup). Never overwrite it later.
 2. **Two human passwords** (use your password manager; each is created, then set at the prompt):
    ```bash
-   scripts/set-secret.sh --create couchdb/sync-password && scripts/set-secret.sh couchdb/sync-password
+   scripts/set-secret.sh --create couchdb/sync-password && scripts/set-secret.sh couchdb/sync-password   # at least 20 characters (enforced)
    scripts/set-secret.sh --create speedtest/admin-password && scripts/set-secret.sh speedtest/admin-password   # 64 characters or fewer
    ```
 3. `scripts/set-secret.sh --check` must end with `check OK` (18 SecureStrings).
@@ -65,12 +65,15 @@ Wait up to about 35 minutes for the Authentik blueprint (ten applications). Do n
 3. **Linkwarden.** Sign in again in the browser extension if it asks.
 4. **Koffan as a phone PWA.** `https://shopping.<domain>`, Authentik login, "Add to Home Screen" / "Install". It must open standalone, add an item, show it on a
    second device in real time, and work offline then sync. Recheck the next day after the 12-hour Authentik session has expired. (CI cannot test this.)
+   **Logout check:** log out of Authentik (on the phone), then open the installed Koffan app: it must NOT show the cached list. If it still does, the service
+   worker (`/static/sw.js`, scope `/`) is serving its offline cache past the logout: use the app's "Clear cache" / remove and re-add the PWA, and tell the developer
+   (the fallback is to stop caching list pages in the worker, not to widen the bypass router).
 5. **LiveSync from a phone over Tailscale.** Install the plugin, remote type CouchDB, URI `https://couchdb.<domain>`, user `livesync`, the sync password,
    database `obsidian`, end-to-end encryption ON with a NEW passphrase (password manager). Skip the plugin's "fix database configuration": the server is
    already configured and the sync user is not a server admin. Sync on Wi-Fi without Tailscale, then on mobile data with Tailscale, then confirm it pauses with
    Tailscale off.
-6. **Speedtest.** `https://speedtest.<domain>` shows the dashboard. The first result appears after the next `:17` of a 6-hour slot (or "Run speedtest" in the admin
-   panel, signed in with `admin@<domain>` and the password from step 1). To pin a server later, set `SPEEDTEST_SERVERS` in `config/lab.env` in a later release.
+6. **Speedtest.** `https://speedtest.<domain>`: the public dashboard is OFF, so sign in to the app with `admin@<domain>` and the password from step 1 to see
+   results. The first result appears after the next `:17` of a 6-hour slot (or "Run speedtest" in the admin panel). To pin a server later, set `SPEEDTEST_SERVERS` in `config/lab.env` in a later release.
 7. **Homepage.** Three new tiles (Shopping list, n8n, Speedtest Tracker).
 
 ## 6. Rules
@@ -80,6 +83,10 @@ Wait up to about 35 minutes for the Authentik blueprint (ten applications). Do n
 - A Form Trigger page may load static files that forward auth blocks. If a form renders without styling, record the asset path it requests and ask for a test
   before adding ONLY that static path to the `n8n-hooks` router (never `/rest/`).
 - Change the speed test schedule only in `config/lab.env` (`SPEEDTEST_SCHEDULE`): signed release, then `sudo scripts/deploy.sh --recreate speedtest`.
+- n8n sits on its OWN network (`n8n`, joined by Traefik and n8n only, with internet egress), so a compromised workflow cannot reach `koffan:8080`, `couchdb:5984` or the other
+  apps. Webhook nodes WITHOUT Header Auth or Basic Auth are forbidden. HTTP Request nodes must never take a URL derived from an incoming request (that is server-side request
+  forgery from a host on your LAN). The Execute Command and Local File Trigger nodes are removed (`NODES_EXCLUDE`) and file access is limited to `/tmp/n8n-files`.
+- CouchDB CORS keeps `http://localhost` (the Obsidian Android app needs that origin). Residual: any web page served from `localhost` on a device with the sync credentials could talk to CouchDB.
 - Accepted: anything on the `proxy` network can reach `koffan:8080` without a login (like IT Tools); the data is a shopping list.
 
 ## 7. Rollback
@@ -107,7 +114,12 @@ Objects are age-encrypted: `age -d -i <your identity> <object>`. Stop the app fi
 - **n8n: "Invalid origin" or login loops:** the host, protocol and proxy hops are set in `n8n/compose.yaml` (`N8N_HOST`, `N8N_PROTOCOL`, `N8N_PROXY_HOPS=1`); check `docker logs n8n`.
 - **A webhook returns the Authentik login page:** the URL does not start with an exact prefix of the `n8n-hooks` router (`/webhook/`, `/webhook-test/`, `/webhook-waiting/`, `/form/`, `/form-test/`, `/form-waiting/`).
 - **CouchDB: the plugin says CORS or 401:** check `docker logs couchdb-init` (exit 0) and that the URL is `https://couchdb.<domain>` with user `livesync`. Traefik must add no CORS header; CouchDB's own comes from `couchdb/livesync.ini`.
-- **Rotating the CouchDB admin password:** after `set-secret.sh`, stop CouchDB, delete the `[admins]` section from `/apps/couchdb/etc/docker.ini` (the entrypoint adds it only once), deploy, then `docker compose -p home-lab up -d couchdb-init`.
+- **Rotating the CouchDB admin password or cookie secret:** `/apps/couchdb/etc/docker.ini` holds the hashed admin password and the cookie secret, and the entrypoint adds each only once. A
+  restored `docker.ini` therefore carries the OLD ones too. After `set-secret.sh`, stop CouchDB, delete the `[admins]` section (admin rotation) and/or the `secret =` line under
+  `[chttpd_auth]` (cookie rotation) from `/apps/couchdb/etc/docker.ini`, deploy, then `docker compose -p home-lab up -d couchdb-init`. After restoring a backup, do the same if either secret was rotated since.
+- **Rotating the Speedtest Tracker admin password:** `set-secret.sh speedtest/admin-password` alone does nothing after the first start: the image's `ADMIN_PASSWORD` only seeds the
+  admin account on the very first migration (Speedtest Tracker docs: "only effective during initial setup"). Change the password in the app (user menu, profile) and store the same value
+  with `set-secret.sh` so the two agree. To force a re-seed instead, stop the container and delete `/apps/speedtest/config/database.sqlite` (the history is lost), then deploy.
 - **Changing the sync password:** set `couchdb/sync-password`, deploy; `couchdb-init` finds the old password no longer works and rewrites the user.
 - **Speedtest never produces a result:** see `docker logs speedtest-tracker`; the first test waits for the next `:17` in a 6-hour slot. If the container sits at "An application key is missing", `speedtest/app-key` is not 64 hex characters.
 - **Backup job says "is not a tmpfs":** the unit's sandbox did not keep `/dev/shm` as a tmpfs. Do not weaken the check; report it (the SQLite copy must never touch the SD card).

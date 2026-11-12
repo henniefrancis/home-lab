@@ -6,7 +6,7 @@
 #
 # Start (Pi):  sudo scripts/deploy.sh --only n8n      (or the whole lab: sudo scripts/deploy.sh)
 # Needs:       config/lab.env (N8N_UID/GID), runtime.env (DOMAIN), the secret file n8n/encryption-key (SSM SecureString, machine-only:
-#              scripts/set-secret.sh --generate), the proxy network and APPS_ROOT/n8n/data (10010, 0700) from scripts/bootstrap.sh,
+#              scripts/set-secret.sh --generate), the n8n network and APPS_ROOT/n8n/data (10010, 0700) from scripts/bootstrap.sh,
 #              Traefik (routers n8n, n8n-outpost, n8n-hooks) and Authentik (provider homelab-n8n).
 # Runbook:     docs/runbooks/r19-apps.md        Self-test: scripts/test-n8n-config.sh
 #
@@ -33,8 +33,10 @@ services:
       - no-new-privileges:true
     mem_limit: 1g
     pids_limit: 512
+    # Its OWN network, joined only by Traefik and n8n (NOT the shared proxy network), so a compromised workflow cannot reach koffan, couchdb or the
+    # other apps directly. Not internal: n8n keeps internet egress for its integrations.
     networks:
-      - proxy
+      - n8n
     environment:
       HOME: /tmp
       N8N_USER_FOLDER: /home/node
@@ -57,6 +59,10 @@ services:
       EXECUTIONS_DATA_MAX_AGE: "168"
       EXECUTIONS_DATA_PRUNE_MAX_COUNT: "5000"
       NODE_OPTIONS: --max-old-space-size=768
+      # No shell commands and no local file trigger in workflows; file access limited to a scratch directory on the tmpfs (never the data
+      # volume, which n8n protects by default).
+      NODES_EXCLUDE: '["n8n-nodes-base.executeCommand","n8n-nodes-base.localFileTrigger"]'
+      N8N_RESTRICT_FILE_ACCESS_TO: /tmp/n8n-files
     secrets:
       - n8n_encryption_key
     volumes:
@@ -74,7 +80,7 @@ services:
         max-file: "3"
 
 networks:
-  proxy:
+  n8n:
     external: true
 
 secrets:

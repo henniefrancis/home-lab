@@ -396,7 +396,7 @@ check_layout() {
   for d in traefik authentik homepage tailscale pihole linkwarden netdata portainer homeassistant koffan speedtest couchdb n8n; do
     if [ -d "$APPS_ROOT/$d" ]; then pass "apps-$d" "$APPS_ROOT/$d"; else fail "apps-$d" "$APPS_ROOT/$d missing (run bootstrap.sh)"; fi
   done
-  for d in proxy authentik-internal authentik-auth oidc linkwarden-internal; do
+  for d in proxy authentik-internal authentik-auth oidc linkwarden-internal n8n; do
     if docker network inspect "$d" > /dev/null 2>&1; then pass "net-$d" "docker network exists"; else fail "net-$d" "docker network missing (run bootstrap.sh)"; fi
   done
   # F02: the service uids must not be real host users (a file owned by the login user is readable by whoever logs in).

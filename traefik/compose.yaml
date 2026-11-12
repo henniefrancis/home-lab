@@ -47,6 +47,8 @@ services:
     networks:
       proxy: {}
       authentik-auth: {}
+      # R19: n8n has its own network (not proxy); Traefik is the only other member.
+      n8n: {}
       # M9: OIDC clients (Linkwarden) reach https://auth.<domain> through this alias; only the Authentik router allows the subnet.
       oidc:
         aliases:
@@ -172,6 +174,8 @@ networks:
   authentik-auth:
     external: true
   oidc:
+    external: true
+  n8n:
     external: true
 
 secrets:

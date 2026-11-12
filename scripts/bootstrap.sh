@@ -182,6 +182,8 @@ ensure_network authentik-internal --internal
 # own internal network (the app, its PostgreSQL and Meilisearch; no route out).
 ensure_network oidc --subnet "$OIDC_SUBNET"
 ensure_network linkwarden-internal --internal
+# R19: n8n has its own (not internal) network, joined only by Traefik and n8n: no path to the other apps, but internet egress.
+ensure_network n8n
 
 step "5/7 tun kernel module and Tailscale sysctl"
 if modprobe tun 2> /dev/null; then
