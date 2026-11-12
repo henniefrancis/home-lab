@@ -1,0 +1,82 @@
+---
+# n8n (R19, milestone M17): workflow automation at https://n8n.${DOMAIN}, for the admins. Two logins: Authentik forward auth (homelab-admins,
+# MFA) and then n8n's own owner login (Community edition, no SSO). Reachable from the LAN and the tailnet only (ADR-003): the webhook and form
+# paths skip forward auth (router n8n-hooks) but keep the allowlist, so every PRODUCTION Webhook node must use n8n's Header Auth or Basic Auth
+# credential. Licence: Sustainable Use Licence, internal personal use.
+#
+# Start (Pi):  sudo scripts/deploy.sh --only n8n      (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       config/lab.env (N8N_UID/GID), runtime.env (DOMAIN), the secret file n8n/encryption-key (SSM SecureString, machine-only:
+#              scripts/set-secret.sh --generate), the proxy network and APPS_ROOT/n8n/data (10010, 0700) from scripts/bootstrap.sh,
+#              Traefik (routers n8n, n8n-outpost, n8n-hooks) and Authentik (provider homelab-n8n).
+# Runbook:     docs/runbooks/r19-apps.md        Self-test: scripts/test-n8n-config.sh
+#
+# Hardening: non-root N8N_UID (10010, overriding the image's node = 1000), read-only root, no capability, no-new-privileges. Writable: /tmp
+# (tmpfs, HOME) and the data directory (n8n's user folder: SQLite database, its config file, binary data). The encryption key comes from the
+# secret file (N8N_ENCRYPTION_KEY_FILE); n8n also copies it into its 0600 config file in the data directory, which is why the backup of that
+# directory leaves the config file out: the key's only other copy is SSM. Community packages, the public API and environment access from
+# Code nodes are off; telemetry, update notices and personalisation are off; executions are pruned (7 days, 5000) to spare the SD card.
+# Task runners stay internal (the 2.x default, JavaScript only).
+services:
+  n8n:
+    image: n8nio/n8n:2.47.4@sha256:56a3f0d56c2888b53ca7d89de4aa3de702888f33667c96a1f1d7118548f979e9
+    container_name: n8n
+    restart: unless-stopped
+    user: "${N8N_UID:?set N8N_UID in config/lab.env}:${N8N_GID:?set N8N_GID in config/lab.env}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,uid=${N8N_UID},gid=${N8N_GID},mode=0700
+      # n8n writes its generated static editor assets to HOME/.cache (the image's HOME is /home/node) on every start; without this it exits.
+      - /home/node/.cache:size=64m,uid=${N8N_UID},gid=${N8N_GID},mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 512
+    networks:
+      - proxy
+    environment:
+      HOME: /tmp
+      N8N_USER_FOLDER: /home/node
+      N8N_HOST: n8n.${DOMAIN:?set DOMAIN (runtime.env)}
+      N8N_PROTOCOL: https
+      N8N_EDITOR_BASE_URL: https://n8n.${DOMAIN}/
+      N8N_WEBHOOK_URL: https://n8n.${DOMAIN}/
+      N8N_PROXY_HOPS: "1"
+      GENERIC_TIMEZONE: ${TZ:-UTC}
+      TZ: ${TZ:-UTC}
+      DB_TYPE: sqlite
+      N8N_ENCRYPTION_KEY_FILE: /run/secrets/n8n_encryption_key
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_COMMUNITY_PACKAGES_ENABLED: "false"
+      N8N_PUBLIC_API_DISABLED: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "168"
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: "5000"
+      NODE_OPTIONS: --max-old-space-size=768
+    secrets:
+      - n8n_encryption_key
+    volumes:
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/n8n/data:/home/node/.n8n
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5678/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  proxy:
+    external: true
+
+secrets:
+  n8n_encryption_key:
+    file: ${APPS_ROOT}/secrets/n8n/encryption-key
