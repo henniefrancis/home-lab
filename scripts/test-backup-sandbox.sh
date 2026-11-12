@@ -119,6 +119,14 @@ run_unit /dev/shm rootowned data/x.db > /dev/null 2> "$W/err5.txt"
 rc5=$?
 check "a database owned by root is refused (sqlite3 is never run as root next to a live database) [rc=$rc5]" bash -c '[ "$1" -ne 0 ] && grep -q "refusing to run sqlite3 as root" "$2"' _ "$rc5" "$W/err5.txt"
 
+mkdir -p /apps/linked/data
+printf 'ROOT-ONLY-SECRET' > "$W/secret.txt"
+ln -s "$W/secret.txt" /apps/linked/data/x.db
+chown -h "$APP_UID:$APP_GID" /apps/linked/data/x.db
+run_unit /dev/shm linked data/x.db > "$W/out6.bin" 2> "$W/err6.txt"
+rc6=$?
+check "N-1: a database replaced by a symlink (owned by the app uid) is refused under the sandbox and its target is not read [rc=$rc6]" bash -c '[ "$1" -ne 0 ] && grep -q "symbolic link" "$2" && ! grep -q ROOT-ONLY-SECRET "$3"' _ "$rc6" "$W/err6.txt" "$W/out6.bin"
+rm -f "$W/secret.txt"
 if [ "$fails" -gt 0 ]; then
   printf '\n%s check(s) FAILED\n' "$fails"
   exit 1

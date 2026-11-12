@@ -360,6 +360,19 @@ SHIM
   check "R19 sqlite: a file that is not a database fails that job (exit 1, no marker, ONE alert naming koffan-db); the other jobs still upload" bash -c '[ "$1" = 1 ] && grep -q "koffan-db (the source (sqlite) failed" "$2" && [ -n "$(find "$3/apps/couchdb" -name "*.ok" | head -1)" ]' _ "$(published)" "$T/o" "$UPLOADS" && job_refused koffan-db "not a database"
 fi
 
+
+# N-1: a symlink swapped in by a compromised app is refused (sqlite database, couch data directory, tar source directory)
+fresh
+mk_r19_apps
+ln -s "$T/outside.db" "$APPS/koffan/data/shopping.db"
+printf 'OUTSIDE-SECRET' > "$T/outside.db"
+mv "$APPS/couchdb/data" "$APPS/couchdb/realdata"
+ln -s realdata "$APPS/couchdb/data"
+mv "$APPS/n8n/data" "$APPS/n8n/realdata"
+ln -s realdata "$APPS/n8n/data"
+backup MOCK_PG_ABSENT=1 HOME_LAB_STAGE_BASE=/nonexistent-stage
+check "N-1: a symlinked database, couchdb data directory and n8n tar source are all refused (exit 1, no marker for koffan-db, couchdb, n8n-files), the error says symbolic link" bash -c 'test "$1" -eq 1 && [ "$(grep -c "symbolic link" "$2")" -ge 3 ] && [ -z "$(find "$3/apps/koffan-db" "$3/apps/couchdb" "$3/apps/n8n-files" -name "*.ok" 2>/dev/null | head -1)" ]' _ "$rc" "$T/o" "$UPLOADS"
+check "N-1: the file the link pointed at is in no upload" bash -c '! grep -raq "OUTSIDE-SECRET" "$1"' _ "$UPLOADS"
 # n8n-files and couchdb need no sqlite3. Here the SQLite jobs cannot run (no staging base); that failure must not stop the others.
 fresh
 mk_r19_apps

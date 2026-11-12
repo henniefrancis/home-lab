@@ -156,6 +156,7 @@ source_of() {
         IFS=',' read -r -a pats <<< "$4"
         for p in "${pats[@]}"; do ex+=(--exclude="$3/$p"); done
       fi
+      refuse_symlink "$APPS_ROOT/$2/$3" || return 1
       tar -C "$APPS_ROOT/$2" --anchored "${ex[@]}" -cf - "$3"
       ;;
   esac

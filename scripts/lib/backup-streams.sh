@@ -2,6 +2,25 @@
 # shellcheck shell=bash
 # Source streams of the app backups that need real privilege handling (R19). Sourced by scripts/backup-apps.sh and by
 # scripts/test-backup-sandbox.sh (the integration test that runs them as root under the unit's own sandbox properties). Needs APPS_ROOT and STAGE_BASE.
+# refuse_symlink <path under APPS_ROOT>: fail closed when the path, or any part of it below APPS_ROOT, is a symlink. A compromised app owns its
+# data directory and could swap a database or directory for a link; stat would then report the link's owner (the app uid) while the privileged
+# read follows it to the target (QA/security N-1).
+refuse_symlink() {
+  local p="$1" root real
+  root="$(realpath -e "$APPS_ROOT" 2> /dev/null)" || {
+    echo "cannot resolve $APPS_ROOT" >&2
+    return 1
+  }
+  real="$(realpath -e "$p" 2> /dev/null)" || {
+    echo "cannot resolve $p" >&2
+    return 1
+  }
+  if [ -L "$p" ] || [ "$real" != "$root${p#"$APPS_ROOT"}" ]; then
+    echo "$p is or passes through a symbolic link (resolves to $real): refusing to back it up" >&2
+    return 1
+  fi
+}
+
 # sqlite_stream <directory under APPS_ROOT> <database path relative to it>: a consistent copy of a live SQLite database on stdout (R19).
 # Runs in the pipeline's subshell, so its EXIT trap removes the copy on every path. Everything that touches the database runs as the owner
 # of its file through setpriv, never as root: root would create root-owned -wal and -shm files and lock the app out. The private staging
@@ -24,6 +43,7 @@ sqlite_stream() {
     echo "setpriv is not installed (util-linux)" >&2
     return 1
   }
+  refuse_symlink "$db" || return 1
   owner="$(stat -c '%u:%g' "$db")" || return 1
   uid="${owner%%:*}"
   gid="${owner##*:}"
@@ -71,6 +91,7 @@ sqlite_stream() {
 # The files are append-only; tar's exit 1 ("file changed as we read it") is therefore tolerated, anything above 1 is a failure.
 couch_stream() {
   local base="$APPS_ROOT/$1" p rc=0
+  refuse_symlink "$base/data" || return 1
   local paths=()
   for p in data/.shards data/shards; do [ -d "$base/$p" ] && paths+=("$p"); done
   for p in "$base"/data/*.couch; do [ -f "$p" ] && paths+=("data/$(basename "$p")"); done
