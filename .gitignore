@@ -56,3 +56,7 @@ Thumbs.db
 
 # Owner private denylist for scripts/check-private-denylist.sh (N12): real domain, addresses, e-mails. Never commit.
 .gitleaks-private.toml
+
+# scratch directories of the self-tests (scripts/test-*.sh create them inside the repo and remove them on exit)
+.*-test.*/
+.backup-test-*/
