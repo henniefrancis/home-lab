@@ -1,0 +1,113 @@
+---
+# CouchDB for Obsidian LiveSync (R19, milestone M16): the sync server at https://couchdb.${DOMAIN}, for the owner's phones and laptops.
+# Behind the LAN/tailnet allowlist ONLY (no forward auth: the plugin cannot do it). CouchDB itself requires a valid user for every request;
+# Fauxton (/_utils) is blocked at Traefik; CORS is CouchDB's own (couchdb/livesync.ini), never Traefik's. Phones sync over Tailscale (or on
+# the LAN). The end-to-end encryption passphrase lives only in the owner's password manager and the Obsidian devices.
+#
+# Start (Pi):  sudo scripts/deploy.sh --only couchdb      (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       config/lab.env (COUCHDB_UID/GID, COUCHDB_SYNC_USER, COUCHDB_SYNC_DB), the secret files couchdb/admin-password,
+#              couchdb/cookie-secret (machine-only, --generate) and couchdb/sync-password (typed by the owner), the proxy network and
+#              APPS_ROOT/couchdb/data and APPS_ROOT/couchdb/etc (10011, 0700) from scripts/bootstrap.sh, Traefik (routers couchdb and
+#              couchdb-admin-ui, middleware deny-all).
+# Runbook:     docs/runbooks/r19-apps.md        Self-test: scripts/test-couchdb-config.sh
+#
+# Identity: the official image starts as root and drops to couchdb ONLY when it is root; with `user:` 10011 its entrypoint skips the chown and
+# setpriv steps, so the container never is root. Read-only root; HOME and /tmp are a tmpfs (Erlang may write its cookie to HOME). Never set
+# COUCHDB_ERLANG_COOKIE: that path runs chown, which fails as non-root. The admin account is machine-only: the wrapper exports it from the
+# secret files, the entrypoint appends it to docker.ini once and CouchDB hashes it in place. Rotating the admin password therefore means
+# removing the [admins] line from /apps/couchdb/etc/docker.ini first (docs/runbooks/r19-apps.md).
+# couchdb-init is a one-shot (exits 0): it creates the sync user and database. `docker compose ps` shows it as Exited (0): expected.
+services:
+  couchdb:
+    image: couchdb:3.5.3@sha256:907eab5b7e55ab7cfd241d39b90b2a335ea40bef82acee5a37388c08bf201dda
+    container_name: couchdb
+    restart: unless-stopped
+    user: "${COUCHDB_UID:?set COUCHDB_UID in config/lab.env}:${COUCHDB_GID:?set COUCHDB_GID in config/lab.env}"
+    read_only: true
+    tmpfs:
+      - /tmp:uid=${COUCHDB_UID},gid=${COUCHDB_GID},mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
+    networks:
+      - proxy
+    # The secrets from their files into the environment the image's entrypoint reads, then its own entrypoint and command (unchanged).
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        COUCHDB_USER=admin
+        COUCHDB_PASSWORD="$$(cat /run/secrets/couchdb_admin_password)"
+        COUCHDB_SECRET="$$(cat /run/secrets/couchdb_cookie_secret)"
+        export COUCHDB_USER COUCHDB_PASSWORD COUCHDB_SECRET
+        exec tini -- /docker-entrypoint.sh /opt/couchdb/bin/couchdb
+    environment:
+      HOME: /tmp
+    secrets:
+      - couchdb_admin_password
+      - couchdb_cookie_secret
+    volumes:
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/couchdb/data:/opt/couchdb/data
+      - ${APPS_ROOT}/couchdb/etc:/opt/couchdb/etc/local.d
+      - ./livesync.ini:/opt/couchdb/etc/local.d/10-livesync.ini:ro
+    # require_valid_user answers 401 to everyone else, so the check logs in as admin; curl reads the credentials from stdin, not argv.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - printf 'user = "admin:%s"\n' "$$(cat /run/secrets/couchdb_admin_password)" | curl -sf -K - -o /dev/null http://127.0.0.1:5984/_up
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  couchdb-init:
+    image: couchdb:3.5.3@sha256:907eab5b7e55ab7cfd241d39b90b2a335ea40bef82acee5a37388c08bf201dda
+    container_name: couchdb-init
+    restart: "no"
+    user: "${COUCHDB_UID}:${COUCHDB_GID}"
+    read_only: true
+    tmpfs:
+      - /tmp:uid=${COUCHDB_UID},gid=${COUCHDB_GID},mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    pids_limit: 64
+    depends_on:
+      couchdb:
+        condition: service_healthy
+    networks:
+      - proxy
+    entrypoint:
+      - /bin/sh
+      - /init.sh
+    environment:
+      COUCHDB_SYNC_USER: ${COUCHDB_SYNC_USER:?set COUCHDB_SYNC_USER in config/lab.env}
+      COUCHDB_SYNC_DB: ${COUCHDB_SYNC_DB:?set COUCHDB_SYNC_DB in config/lab.env}
+    secrets:
+      - couchdb_admin_password
+      - couchdb_sync_password
+    volumes:
+      - ./init.sh:/init.sh:ro
+    logging: *logging
+
+networks:
+  proxy:
+    external: true
+
+secrets:
+  couchdb_admin_password:
+    file: ${APPS_ROOT}/secrets/couchdb/admin-password
+  couchdb_cookie_secret:
+    file: ${APPS_ROOT}/secrets/couchdb/cookie-secret
+  couchdb_sync_password:
+    file: ${APPS_ROOT}/secrets/couchdb/sync-password
