@@ -54,6 +54,9 @@ updates:
       - /portainer
       - /homeassistant
       - /koffan
+      - /speedtest
+      - /couchdb
+      - /n8n
     schedule:
       interval: weekly
     cooldown:

@@ -45,3 +45,11 @@
         icon: home-assistant.png
         href: https://ha.{{HOMEPAGE_VAR_DOMAIN}}/
         description: Home automation
+    - Speedtest Tracker:
+        icon: speedtest-tracker.png
+        href: https://speedtest.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Internet speed history
+    - n8n:
+        icon: n8n.png
+        href: https://n8n.{{HOMEPAGE_VAR_DOMAIN}}/
+        description: Workflow automation

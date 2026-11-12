@@ -187,6 +187,77 @@ http:
       middlewares:
         - lan-allowlist
 
+    # Speedtest Tracker (R19, M15): forward auth for the admins like the dashboard, then the app's own admin login for its settings.
+    speedtest:
+      rule: Host(`speedtest.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      service: speedtest
+      middlewares:
+        - lan-allowlist
+        - authentik
+    speedtest-outpost:
+      rule: Host(`speedtest.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+
+    # CouchDB for Obsidian LiveSync (R19, M16): the allowlist ONLY. The plugin cannot do forward auth; CouchDB requires a valid user for every
+    # request and sets its own CORS headers (Traefik adds none). Fauxton (/_utils) is blocked by couchdb-admin-ui (deny-all: 403).
+    couchdb:
+      rule: Host(`couchdb.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      priority: 10
+      service: couchdb
+      middlewares:
+        - lan-allowlist
+    couchdb-admin-ui:
+      rule: Host(`couchdb.{{ env "DOMAIN" }}`) && PathPrefix(`/_utils`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: couchdb
+      middlewares:
+        - lan-allowlist
+        - deny-all
+
+    # n8n (R19, M17): forward auth for the admins, then n8n's own owner login. n8n-hooks (priority 50, the allowlist ONLY) carries the webhook and
+    # form entry points, which senders cannot log in to; they are therefore reachable from the LAN and the tailnet only (ADR-003), and every
+    # production Webhook node must use Header Auth or Basic Auth. The trailing slashes are deliberate: /webhooks and /formx never match. Only
+    # these exact prefixes may be listed; /rest/ and the editor never. The main router's explicit priority 10 keeps it below n8n-hooks (50) and
+    # n8n-outpost (100) whatever the length of the domain is.
+    n8n:
+      rule: Host(`n8n.{{ env "DOMAIN" }}`)
+      entryPoints:
+        - websecure
+      priority: 10
+      service: n8n
+      middlewares:
+        - lan-allowlist
+        - authentik
+    n8n-outpost:
+      rule: Host(`n8n.{{ env "DOMAIN" }}`) && PathPrefix(`/outpost.goauthentik.io/`)
+      entryPoints:
+        - websecure
+      priority: 100
+      service: authentik
+      middlewares:
+        - lan-allowlist
+    n8n-hooks:
+      rule: >-
+        Host(`n8n.{{ env "DOMAIN" }}`) && (PathPrefix(`/webhook/`) || PathPrefix(`/webhook-test/`) || PathPrefix(`/webhook-waiting/`) ||
+        PathPrefix(`/form/`) || PathPrefix(`/form-test/`) || PathPrefix(`/form-waiting/`))
+      entryPoints:
+        - websecure
+      priority: 50
+      service: n8n
+      middlewares:
+        - lan-allowlist
+
   services:
     # authentik-server on the dedicated authentik-auth network (shared with Traefik only). Also the target of the forward-auth
     # middleware in middlewares.yml.
@@ -227,3 +298,15 @@ http:
       loadBalancer:
         servers:
           - url: http://koffan:8080
+    speedtest:
+      loadBalancer:
+        servers:
+          - url: http://speedtest-tracker:80
+    couchdb:
+      loadBalancer:
+        servers:
+          - url: http://couchdb:5984
+    n8n:
+      loadBalancer:
+        servers:
+          - url: http://n8n:5678

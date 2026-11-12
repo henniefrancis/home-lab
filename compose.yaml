@@ -16,3 +16,6 @@ include:
   - path: portainer/compose.yaml
   - path: homeassistant/compose.yaml
   - path: koffan/compose.yaml
+  - path: speedtest/compose.yaml
+  - path: couchdb/compose.yaml
+  - path: n8n/compose.yaml

@@ -27,8 +27,9 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    # R17: about 11 minutes before Home Assistant, whose test watches the 5-minute settings window (about 6 minutes); room to spare.
-    timeout-minutes: 25
+    # R17: about 17 minutes with Home Assistant (its test watches the 5-minute settings window). R19 adds roughly 12 to 14 minutes (Speedtest Tracker with
+    # the capability loop, CouchDB with a 65 s feed, n8n, Koffan, the backup test), so the limit is 40; the repo is public (no cap). Keep new steps lean.
+    timeout-minutes: 40
     steps:
       - name: Checkout (full history for gitleaks)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -206,7 +207,7 @@ jobs:
           set -eu
           sock_re='docker[.]sock|providers[.]docker|docker-socket-proxy|tecnativa'
           # ADR-017: only netdata/ and portainer/ may mount the socket (and nothing anywhere may use a Docker provider or a socket proxy).
-          no_sock='traefik authentik homepage tailscale it-tools pihole linkwarden homeassistant koffan compose.yaml'
+          no_sock='traefik authentik homepage tailscale it-tools pihole linkwarden homeassistant koffan speedtest couchdb n8n compose.yaml'
           # shellcheck disable=SC2086
           if git grep -nE "$sock_re" -- $no_sock | grep -v ':[0-9]*:[[:space:]]*#'; then
             echo "No Docker socket or Docker provider outside the stacks ADR-017 names."; exit 1
@@ -215,7 +216,8 @@ jobs:
             echo "No Docker provider or socket proxy, even in the ADR-017 stacks."; exit 1
           fi
           files='traefik/compose.yaml authentik/compose.yaml homepage/compose.yaml tailscale/compose.yaml it-tools/compose.yaml
-            pihole/compose.yaml linkwarden/compose.yaml netdata/compose.yaml portainer/compose.yaml homeassistant/compose.yaml koffan/compose.yaml'
+            pihole/compose.yaml linkwarden/compose.yaml netdata/compose.yaml portainer/compose.yaml homeassistant/compose.yaml
+            koffan/compose.yaml speedtest/compose.yaml couchdb/compose.yaml n8n/compose.yaml'
           # shellcheck disable=SC2086
           bad="$(git grep -hE '^[[:space:]]+image:[[:space:]]' -- $files | grep -Ev 'home-lab/(ra-helper|it-tools)' | grep -Ev '@sha256:[0-9a-f]{64}' || true)"
           if [ -n "$bad" ]; then echo "Images must be pinned tag@sha256:"; echo "$bad"; exit 1; fi
@@ -240,6 +242,7 @@ jobs:
           set -eu
           d="$(mktemp -d)"
           mkdir -p "$d/secrets/tailscale" "$d/secrets/authentik" "$d/secrets/pihole" "$d/secrets/linkwarden" "$d/secrets/portainer"
+          mkdir -p "$d/secrets/n8n" "$d/secrets/couchdb" "$d/secrets/speedtest"
           : > "$d/secrets/tailscale/tailscale.env"
           {
             echo "APPS_ROOT=$d"
@@ -281,6 +284,15 @@ jobs:
 
       - name: Self-test - Koffan stack (static checks; the real image, the PWA bypass router and forward auth through the real Traefik routers)
         run: bash scripts/test-koffan-config.sh
+
+      - name: Self-test - Speedtest Tracker stack (static checks; the real image, APP_KEY wrapper, https behind Traefik, minimal capabilities; no speed test)
+        run: bash scripts/test-speedtest-config.sh
+
+      - name: Self-test - CouchDB for LiveSync (static checks; the real image, the sync-user init twice, CORS, Fauxton blocked, a 65 s feed through Traefik)
+        run: bash scripts/test-couchdb-config.sh
+
+      - name: Self-test - n8n stack (static checks; the real image non-root and read-only, the key file, forward auth, the webhook prefixes)
+        run: bash scripts/test-n8n-config.sh
 
       - name: Self-test - Portainer stack (static checks; the real image without capabilities, the password file, the local environment, forward auth)
         run: bash scripts/test-portainer-config.sh

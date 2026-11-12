@@ -326,6 +326,58 @@ entries:
       group: !KeyOf group-users
       order: 1
 
+  # Speedtest Tracker (M15, R19): forward auth, admins only (then the app's own admin login for its settings).
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-speedtest
+    identifiers:
+      name: homelab-speedtest
+    attrs:
+      mode: forward_single
+      external_host: !Format ["https://speedtest.%s", !Env DOMAIN]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      access_token_validity: hours=12
+  - model: authentik_core.application
+    id: app-speedtest
+    identifiers:
+      slug: speedtest
+    attrs:
+      name: Speedtest Tracker
+      provider: !KeyOf provider-speedtest
+      policy_engine_mode: any
+      meta_launch_url: !Format ["https://speedtest.%s/", !Env DOMAIN]
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-speedtest
+      group: !KeyOf group-admins
+      order: 0
+
+  # n8n (M17, R19): forward auth, admins only (then n8n's own owner login). Webhook and form paths bypass this at the router (n8n-hooks).
+  - model: authentik_providers_proxy.proxyprovider
+    id: provider-n8n
+    identifiers:
+      name: homelab-n8n
+    attrs:
+      mode: forward_single
+      external_host: !Format ["https://n8n.%s", !Env DOMAIN]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      access_token_validity: hours=12
+  - model: authentik_core.application
+    id: app-n8n
+    identifiers:
+      slug: n8n
+    attrs:
+      name: n8n
+      provider: !KeyOf provider-n8n
+      policy_engine_mode: any
+      meta_launch_url: !Format ["https://n8n.%s/", !Env DOMAIN]
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-n8n
+      group: !KeyOf group-admins
+      order: 0
+
   # --- 4. Embedded outpost ---------------------------------------------------------------------------------------------
   - model: authentik_outposts.outpost
     id: embedded-outpost
@@ -342,5 +394,7 @@ entries:
         - !KeyOf provider-netdata
         - !KeyOf provider-portainer
         - !KeyOf provider-koffan
+        - !KeyOf provider-speedtest
+        - !KeyOf provider-n8n
       config:
         authentik_host: !Format ["https://auth.%s", !Env DOMAIN]

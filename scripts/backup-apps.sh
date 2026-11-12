@@ -12,7 +12,8 @@
 #   portainer         tar of APPS_ROOT/portainer/data                              <UTC>.tar.age
 #   koffan-db         sqlite3 .backup of APPS_ROOT/koffan/data/shopping.db         <UTC>.sqlite.age
 #   n8n-db            sqlite3 .backup of APPS_ROOT/n8n/data/database.sqlite        <UTC>.sqlite.age
-#   n8n-files         tar of APPS_ROOT/n8n/data without the database (config, binary data); the encryption key is in SSM, NOT here
+#   n8n-files         tar of APPS_ROOT/n8n/data without the database and without n8n's config file (binary data; the config file holds a copy of
+#                     the encryption key, whose only copy is SSM)
 #   couchdb           tar of APPS_ROOT/couchdb in the order CouchDB documents: data/.shards, data/shards, data/*.couch, then etc
 #                     (the files are append-only, so a live copy is safe; tar's "file changed" exit 1 is tolerated)  <UTC>.tar.age
 #   (Speedtest Tracker is deliberately not backed up: the history is disposable.)
@@ -65,7 +66,7 @@ JOBS=(
   "portainer|tar|portainer|data|"
   "koffan-db|sqlite|koffan|data/shopping.db|"
   "n8n-db|sqlite|n8n|data/database.sqlite|"
-  "n8n-files|tar|n8n|data|database.sqlite*"
+  "n8n-files|tar|n8n|data|database.sqlite*,config"
   "couchdb|couch|couchdb||"
 )
 
@@ -222,11 +223,13 @@ source_of() {
       docker exec "$2" sh -c 'PGPASSWORD="$(cat "/run/secrets/'"$3"'")" exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc'
       ;;
     tar)
+      # $4 may hold several exclude patterns, comma separated (relative to the item)
+      local ex=() p
       if [ -n "$4" ]; then
-        tar -C "$APPS_ROOT/$2" --exclude="$3/$4" -cf - "$3"
-      else
-        tar -C "$APPS_ROOT/$2" -cf - "$3"
+        IFS=',' read -r -a pats <<< "$4"
+        for p in "${pats[@]}"; do ex+=(--exclude="$3/$p"); done
       fi
+      tar -C "$APPS_ROOT/$2" "${ex[@]}" -cf - "$3"
       ;;
   esac
 }

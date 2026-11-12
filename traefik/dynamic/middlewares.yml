@@ -39,6 +39,12 @@ http:
           - 100.64.0.0/10
           - 172.30.2.0/24
 
+    # deny-all (R19): nobody is in this range, so the allowlist answers 403 to everyone. Used to block CouchDB's admin UI (Fauxton).
+    deny-all:
+      ipAllowList:
+        sourceRange:
+          - 127.0.0.2/32
+
     security-headers:
       headers:
         stsSeconds: 86400

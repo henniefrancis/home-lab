@@ -237,10 +237,11 @@ check "the sync user reads its document through Traefik over HTTPS (200) [$c]" t
 h="$(viah "couchdb.$DOMAIN_T" / -u "admin:$ADMINPW")"
 check "the shared security headers are on the CouchDB response (HSTS, nosniff, frame deny)" bash -c 'grep -qi "^strict-transport-security: max-age=" <<< "$1" && grep -qi "^x-content-type-options: nosniff" <<< "$1" && grep -qi "^x-frame-options: deny" <<< "$1"' _ "$h"
 check "www and an unknown host are NOT served (404)" test "$(via "www.$DOMAIN_T" / | cut -d' ' -f1)$(via "unknown.$DOMAIN_T" / | cut -d' ' -f1)" = 404404
+useq="$(curl -sk --connect-to "couchdb.$DOMAIN_T:443:127.0.0.1:$APP_TEST_HOSTPORT" -u "$SU:$SYNCPW" "https://couchdb.$DOMAIN_T/$SD" | jq -r .update_seq | tr -d '\r' || true)"
 t0="$(date +%s)"
-lp="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 90 --connect-to "couchdb.$DOMAIN_T:443:127.0.0.1:$APP_TEST_HOSTPORT" -u "$SU:$SYNCPW" "https://couchdb.$DOMAIN_T/$SD/_changes?feed=continuous&since=now&heartbeat=20000&timeout=65000" || true)"
+lp="$(curl -sk -o "$stage/lp.out" -w '%{http_code}' --max-time 90 --connect-to "couchdb.$DOMAIN_T:443:127.0.0.1:$APP_TEST_HOSTPORT" -u "$SU:$SYNCPW" "https://couchdb.$DOMAIN_T/$SD/_changes?feed=longpoll&since=$useq&timeout=65000" || true)"
 t1="$(date +%s)"
-check "a _changes continuous feed (heartbeat 20 s, as the plugin uses) held open through Traefik survives 65 seconds and answers 200 (the plugin's continuous feed is not cut by a timeout) [$lp after $((t1 - t0)) s]" bash -c '[ "$1" = 200 ] && [ "$2" -ge 60 ]' _ "$lp" "$((t1 - t0))"
+check "a _changes long-poll (from the current sequence) held open through Traefik survives 65 seconds and answers 200 (the plugin's continuous feed is not cut by a timeout) [$lp after $((t1 - t0)) s]" bash -c '[ "$1" = 200 ] && [ "$2" -ge 60 ]' _ "$lp" "$((t1 - t0))"
 
 if [ "$fails" -gt 0 ]; then
   printf '\n%s check(s) FAILED\n' "$fails"
