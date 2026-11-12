@@ -11,3 +11,4 @@ pihole	CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID,SETFCAP,NET_BIND_SERVICE	exempt	R
 netdata	SYS_PTRACE,SYS_ADMIN,SETUID,SETGID,CHOWN,DAC_OVERRIDE,DAC_READ_SEARCH,FOWNER	exempt	Host network and process monitoring (ADR-017)
 portainer	-	required	Root inside the container to use the Docker socket (ADR-017); no capability is added back
 homeassistant	NET_ADMIN,NET_RAW	exempt	Host network, discovery and Bluetooth
+speedtest-tracker	CHOWN,DAC_OVERRIDE,SETUID,SETGID	required	LinuxServer s6-overlay image: root init, then drops to SPEEDTEST_UID (ADR-018); the set is what scripts/test-speedtest-config.sh proves necessary

@@ -1,0 +1,93 @@
+---
+# Speedtest Tracker (R19, milestone M15): internet speed history at https://speedtest.${DOMAIN}, for the admins. Behind the LAN/tailnet
+# allowlist and Authentik forward auth (homelab-admins); the app's public dashboard is on (so anyone past forward auth sees the results),
+# while its settings still need the app's own admin login.
+#
+# ROOT START (ADR-018): the only root-start container of this batch, and the sixth entry of the ADR-018 register. The LinuxServer.io image is
+# s6-overlay based: its init starts as root, prepares /run, /var and /config, and then runs nginx workers, php-fpm and the queue worker as
+# PUID/PGID (SPEEDTEST_UID/GID, 10009). So there is NO `user:` and the root file system is not read-only. What stays: `cap_drop: [ALL]` with
+# only the capabilities the full test (scripts/test-speedtest-config.sh) proves necessary (it removes each in turn), no-new-privileges, a
+# memory and pid limit, only the proxy network, no Docker socket. Residual risk (accepted in ADR-018): an escape from the init phase is root.
+#
+# Start (Pi):  sudo scripts/deploy.sh --only speedtest   (or the whole lab: sudo scripts/deploy.sh)
+# Needs:       config/lab.env (SPEEDTEST_UID/GID, SPEEDTEST_SCHEDULE, SPEEDTEST_SERVERS), runtime.env (DOMAIN), the secret files
+#              speedtest/app-key and speedtest/admin-password (SSM SecureStrings: scripts/set-secret.sh), the proxy network and
+#              APPS_ROOT/speedtest/config (10009, 0700) from scripts/bootstrap.sh, Traefik (routers speedtest, speedtest-outpost) and
+#              Authentik (provider homelab-speedtest).
+# Runbook:     docs/runbooks/r19-apps.md        Self-test: scripts/test-speedtest-config.sh
+#
+# APP_KEY: Laravel needs "base64:" plus 32 random bytes, and scripts/set-secret.sh --generate stores 64 hex characters. The entrypoint below
+# converts the secret with the image's own PHP before it starts the image's /init, so the key never appears in this file, in argv or in the
+# logs. (The LinuxServer /custom-cont-init.d hook was tried first and does NOT work: it runs after the init step that halts when APP_KEY is
+# empty, 6 of 6 runs; the test pins the wrapper instead.) Likewise an empty SPEEDTEST_SERVERS is unset, so the app sees "no pinned server"
+# rather than a list holding an empty id: Ookla then picks the nearest server.
+# The schedule is ONE value, SPEEDTEST_SCHEDULE in config/lab.env (a cron expression); each test moves roughly 150 to 200 MB at 100/50 Mbps.
+# Not backed up (owner decision): the history is disposable.
+services:
+  speedtest-tracker:
+    image: ghcr.io/linuxserver/speedtest-tracker:v1.15.1-ls180@sha256:3851956ddff5b230a096c5414bfdf005e91aff3af48da9bcb4327dc41eff49e4
+    container_name: speedtest-tracker
+    restart: unless-stopped
+    # ADR-018 register entry: cap_add is exactly what the full test proves necessary. NET_BIND_SERVICE and FOWNER are NOT needed (Docker lets a
+    # container bind port 80; the test removes each capability in turn and the container starts without those two).
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
+    networks:
+      - proxy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        APP_KEY="base64:$$(php -r 'echo base64_encode(hex2bin(trim(file_get_contents("/run/secrets/speedtest_app_key"))));')"
+        [ "$${#APP_KEY}" -eq 51 ] || { echo "speedtest/app-key must be 64 hex characters" >&2; exit 1; }
+        export APP_KEY
+        [ -n "$${SPEEDTEST_SERVERS:-}" ] || unset SPEEDTEST_SERVERS
+        exec /init
+    environment:
+      PUID: ${SPEEDTEST_UID:?set SPEEDTEST_UID in config/lab.env}
+      PGID: ${SPEEDTEST_GID:?set SPEEDTEST_GID in config/lab.env}
+      TZ: ${TZ:-UTC}
+      DISPLAY_TIMEZONE: ${TZ:-UTC}
+      APP_URL: https://speedtest.${DOMAIN:?set DOMAIN (runtime.env)}
+      DB_CONNECTION: sqlite
+      SPEEDTEST_SCHEDULE: ${SPEEDTEST_SCHEDULE:?set SPEEDTEST_SCHEDULE in config/lab.env}
+      SPEEDTEST_SERVERS: ${SPEEDTEST_SERVERS:-}
+      PRUNE_RESULTS_OLDER_THAN: "90"
+      PUBLIC_DASHBOARD: "true"
+      ADMIN_EMAIL: admin@${DOMAIN}
+      FILE__ADMIN_PASSWORD: /run/secrets/speedtest_admin_password
+    secrets:
+      - speedtest_app_key
+      - speedtest_admin_password
+    volumes:
+      - ${APPS_ROOT:?set APPS_ROOT in config/lab.env}/speedtest/config:/config
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "-o", "/dev/null", "http://127.0.0.1:80/api/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  proxy:
+    external: true
+
+secrets:
+  speedtest_app_key:
+    file: ${APPS_ROOT}/secrets/speedtest/app-key
+  speedtest_admin_password:
+    file: ${APPS_ROOT}/secrets/speedtest/admin-password
