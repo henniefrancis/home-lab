@@ -172,6 +172,9 @@ jobs:
           REQUIRE_SQLITE: "1"
         run: bash scripts/test-backup-apps.sh
 
+      - name: Integration - SQLite backup as root under the unit's own systemd sandbox (real setpriv, 0700 /apps, WAL database)
+        run: sudo env REQUIRE_SANDBOX=1 bash scripts/test-backup-sandbox.sh
+
       - name: Self-test - Authentik restore from the laptop (real age, a throwaway PostgreSQL with no network, mock aws; the mock is proven before use)
         run: bash scripts/test-authentik-restore-laptop.sh
 

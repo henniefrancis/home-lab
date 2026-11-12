@@ -21,7 +21,7 @@
 # SQLite jobs (R19): the HOST sqlite3 runs AS THE APP'S UID (setpriv), never as root: root would create root-owned -wal/-shm files next to a
 # live WAL database and lock the app out. The consistent copy goes to a private directory on a tmpfs (/dev/shm, mode 0700, owned by that
 # uid) and the job FAILS if that is not a tmpfs, so no plaintext database ever touches the SD card (ADR-015). The copy must pass
-# PRAGMA integrity_check, must be smaller than half of the available memory, and is removed on every exit path.
+# PRAGMA integrity_check, must be smaller than half of the free space of the staging tmpfs (measured with stat; the unit hides /proc/meminfo), and is removed on every exit path.
 #
 # Usage: sudo scripts/backup-apps.sh        (run nightly by scripts/systemd/home-lab-backup-apps.timer; also safe to run by hand)
 #
@@ -33,7 +33,7 @@
 # Keys and identity: exactly as backup-authentik.sh (the Pi holds only the owner's age PUBLIC recipient; role home-lab-pi-host may only
 # s3:PutObject under authentik/ and apps/). Configuration: BACKUP_S3_BUCKET and BACKUP_AGE_RECIPIENT in /etc/home-lab/aws.env.
 # Overrides for tests: HOME_LAB_ETC_DIR, HOME_LAB_STATE_DIR, HOME_LAB_APPS_ROOT, HOME_LAB_BACKUP_MIN_BYTES (default 1024),
-# HOME_LAB_STAGE_BASE (the tmpfs base for SQLite copies, default /dev/shm) and HOME_LAB_MEMINFO (default /proc/meminfo).
+# HOME_LAB_STAGE_BASE (the tmpfs base for SQLite copies, default /dev/shm) and HOME_LAB_STAGE_FREE_BYTES (test hook for the free-space check).
 # Runbooks: docs/runbooks/r17-apps.md, docs/runbooks/r19-apps.md (restore of the SQLite and CouchDB jobs).
 set -euo pipefail
 set +x
@@ -51,7 +51,6 @@ ENV_FILE="$ALERT_ETC_DIR/aws.env"
 STATE_FILE="$ALERT_STATE_DIR/backup-apps.last"
 MIN_BYTES="${HOME_LAB_BACKUP_MIN_BYTES:-1024}"
 STAGE_BASE="${HOME_LAB_STAGE_BASE:-/dev/shm}"
-MEMINFO="${HOME_LAB_MEMINFO:-/proc/meminfo}"
 PREFIX="apps"
 UNIT="home-lab-backup-apps.service"
 ALERT_KEY="backup-apps-failed"
@@ -137,80 +136,8 @@ aws_put() { # aws_put <s3 url>: stdin to the object, as the host role, from the 
     aws s3 cp - "$1" --no-progress --only-show-errors --region "$region" --no-cli-pager
 }
 
-# sqlite_stream <directory under APPS_ROOT> <database path relative to it>: a consistent copy of a live SQLite database on stdout (R19).
-# Runs in the pipeline's subshell, so its EXIT trap removes the copy on every path. Everything that touches the database runs as the owner
-# of its file through setpriv, never as root: root would create root-owned -wal and -shm files and lock the app out. The private staging
-# directory is created BY that uid (mode 0700) on a tmpfs, so root needs no chown and the copy never reaches the SD card.
-sqlite_stream() {
-  local db="$APPS_ROOT/$1/$2" owner uid gid stage size kb ic
-  [[ "$db" =~ ^/[A-Za-z0-9/._-]+$ ]] || {
-    echo "unsafe database path" >&2
-    return 1
-  }
-  [[ "$STAGE_BASE" =~ ^/[A-Za-z0-9/._-]+$ ]] || {
-    echo "unsafe staging directory $STAGE_BASE" >&2
-    return 1
-  }
-  command -v sqlite3 > /dev/null 2>&1 || {
-    echo "sqlite3 is not installed (sudo scripts/bootstrap.sh)" >&2
-    return 1
-  }
-  command -v setpriv > /dev/null 2>&1 || {
-    echo "setpriv is not installed (util-linux)" >&2
-    return 1
-  }
-  owner="$(stat -c '%u:%g' "$db")" || return 1
-  uid="${owner%%:*}"
-  gid="${owner##*:}"
-  [[ "$uid" =~ ^[0-9]+$ ]] && [[ "$gid" =~ ^[0-9]+$ ]] && [ "$uid" -ne 0 ] || {
-    echo "$db is owned by $owner: refusing to run sqlite3 as root next to a live database" >&2
-    return 1
-  }
-  [ "$(stat -f -c %T "$STAGE_BASE" 2> /dev/null || true)" = tmpfs ] || {
-    echo "$STAGE_BASE is not a tmpfs: refusing to write a plaintext database copy to disk" >&2
-    return 1
-  }
-  as_app() { setpriv --reuid="$uid" --regid="$gid" --clear-groups "$@"; }
-  stage="$(as_app mktemp -d "$STAGE_BASE/home-lab-backup.XXXXXX")" || {
-    echo "cannot create a staging directory in $STAGE_BASE as uid $uid" >&2
-    return 1
-  }
-  # shellcheck disable=SC2064 # expanded now, on purpose: the function's locals are gone when the trap fires
-  trap "setpriv --reuid=$uid --regid=$gid --clear-groups rm -rf '$stage'" EXIT
-  as_app sqlite3 -cmd '.timeout 10000' "$db" ".backup '$stage/copy.db'" || {
-    echo "sqlite3 .backup failed" >&2
-    return 1
-  }
-  ic="$(as_app sqlite3 "$stage/copy.db" 'PRAGMA integrity_check;' 2>&1 | head -n 1)" || true
-  [ "$ic" = ok ] || {
-    echo "integrity_check on the copy failed: ${ic:0:120}" >&2
-    return 1
-  }
-  size="$(as_app stat -c %s "$stage/copy.db")" || return 1
-  kb="$(awk '/^MemAvailable:/ {print $2}' "$MEMINFO" 2> /dev/null || true)"
-  [[ "$size" =~ ^[0-9]+$ ]] && [[ "$kb" =~ ^[0-9]+$ ]] && [ "$size" -lt $((kb * 1024 / 2)) ] || {
-    echo "the copy ($size bytes) is not smaller than half of the available memory ($kb kB)" >&2
-    return 1
-  }
-  as_app cat "$stage/copy.db"
-}
-
-# couch_stream <directory under APPS_ROOT>: tar in the order the CouchDB documentation requires for a live copy: the .shards directory
-# first, then shards, then the top-level *.couch files (_dbs, _nodes), then etc (runtime configuration and the hashed admin password).
-# The files are append-only; tar's exit 1 ("file changed as we read it") is therefore tolerated, anything above 1 is a failure.
-couch_stream() {
-  local base="$APPS_ROOT/$1" p rc=0
-  local paths=()
-  for p in data/.shards data/shards; do [ -d "$base/$p" ] && paths+=("$p"); done
-  for p in "$base"/data/*.couch; do [ -f "$p" ] && paths+=("data/$(basename "$p")"); done
-  [ -d "$base/etc" ] && paths+=(etc)
-  [ "${#paths[@]}" -gt 0 ] || {
-    echo "nothing to archive below $base" >&2
-    return 1
-  }
-  tar -C "$base" -cf - "${paths[@]}" || rc=$?
-  [ "$rc" -le 1 ] || return "$rc"
-}
+# shellcheck source=lib/backup-streams.sh
+. "$SCRIPT_DIR/lib/backup-streams.sh"
 
 # source_of <kind> <where> <item> <exclude>: the plaintext stream of one job on stdout.
 source_of() {
@@ -229,7 +156,7 @@ source_of() {
         IFS=',' read -r -a pats <<< "$4"
         for p in "${pats[@]}"; do ex+=(--exclude="$3/$p"); done
       fi
-      tar -C "$APPS_ROOT/$2" "${ex[@]}" -cf - "$3"
+      tar -C "$APPS_ROOT/$2" --anchored "${ex[@]}" -cf - "$3"
       ;;
   esac
 }

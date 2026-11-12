@@ -213,7 +213,7 @@ cat > "$T/mockbin/setpriv" << 'MOCK'
 if [ "$*" = "--mock-marker" ]; then echo MOCK-SETPRIV-MARKER; exit 0; fi
 printf 'SETPRIV %s\n' "$*" >> "$MOCK_LOG"
 while [ $# -gt 0 ]; do
-  case "$1" in --reuid=* | --regid=* | --clear-groups) shift ;; *) break ;; esac
+  case "$1" in --reuid=* | --regid=* | --clear-groups | --inh-caps=* | --ambient-caps=*) shift ;; *) break ;; esac
 done
 exec "$@"
 MOCK
@@ -234,15 +234,16 @@ else
   SQLITE_OK=1
 fi
 check "the R19 jobs are in the job list; Speedtest Tracker has no job" bash -c 'j="$(sed -n "/^JOBS=(/,/^)/p" scripts/backup-apps.sh)"; for n in koffan-db n8n-db n8n-files couchdb; do grep -q "\"$n|" <<< "$j" || exit 1; done; ! grep -qi speedtest <<< "$j"'
-check "the script refuses to run sqlite3 as root (owner uid 0) and only ever as the owner through setpriv" bash -c 'grep -q "refusing to run sqlite3 as root next to a live database" scripts/backup-apps.sh && grep -q "setpriv --reuid=\"\$uid\" --regid=\"\$gid\" --clear-groups" scripts/backup-apps.sh'
+check "the script refuses to run sqlite3 as root (owner uid 0) and only ever as the owner through setpriv" bash -c 'grep -q "refusing to run sqlite3 as root next to a live database" scripts/lib/backup-streams.sh && grep -q "setpriv --reuid=\"\$uid\" --regid=\"\$gid\" --clear-groups" scripts/lib/backup-streams.sh'
 
 mk_r19_apps() {
   rm -rf "$APPS"
-  mkdir -p "$APPS/koffan/data" "$APPS/n8n/data/binaryData" "$APPS/speedtest/config" "$APPS/couchdb/data/.shards/00000000-7fffffff/obsidian" \
+  mkdir -p "$APPS/koffan/data" "$APPS/n8n/data/binaryData/nested" "$APPS/speedtest/config" "$APPS/couchdb/data/.shards/00000000-7fffffff/obsidian" \
     "$APPS/couchdb/data/shards/00000000-7fffffff" "$APPS/couchdb/etc"
   printf 'N8N-FILES-PLAINTEXT-CANARY ' > "$APPS/n8n/data/config"
   head -c 3000 /dev/zero | tr '\0' z >> "$APPS/n8n/data/config"
   printf 'x' > "$APPS/n8n/data/binaryData/file1"
+  printf "NESTED-CONFIG" > "$APPS/n8n/data/binaryData/nested/config"
   printf 'SPEEDTEST-CANARY' > "$APPS/speedtest/config/database.sqlite"
   for f in data/.shards/00000000-7fffffff/obsidian/db.1.couch data/shards/00000000-7fffffff/obsidian.1.couch data/_dbs.couch data/_nodes.couch etc/docker.ini; do
     { printf 'COUCH-PLAINTEXT-CANARY-%s ' "$f"; head -c 3000 /dev/zero | tr '\0' c; } > "$APPS/couchdb/$f"
@@ -305,7 +306,7 @@ if [ "$SQLITE_OK" = 1 ]; then
     unmask_obj "$o" > "$T/restored-$j.db"
     check "R19 $j: the stored copy is a valid database with every row of the live WAL database, and passes integrity_check" bash -c '[ "$("$1" "$2" "SELECT count(*) FROM items;")" = 400 ] && [ "$("$1" "$2" "PRAGMA integrity_check;")" = ok ]' _ "$REAL_SQLITE3" "$T/restored-$j.db"
   done
-  check "R19 sqlite: setpriv was asked to run sqlite3 as the owner of the database ($(id -u):$(id -g)) with --clear-groups, for the copy and for the integrity check, in both jobs" bash -c '[ "$(grep -c "^SETPRIV --reuid=$1 --regid=$2 --clear-groups sqlite3 " "$3")" -ge 4 ]' _ "$(id -u)" "$(id -g)" "$MOCK_LOG"
+  check "R19 sqlite: setpriv was asked to run sqlite3 as the owner of the database ($(id -u):$(id -g)) with --clear-groups, for the copy and for the integrity check, in both jobs" bash -c '[ "$(grep -cE "^SETPRIV --reuid=$1 --regid=$2 --clear-groups .*sqlite3 " "$3")" -ge 4 ]' _ "$(id -u)" "$(id -g)" "$MOCK_LOG"
   check "R19 sqlite: the staging directory is created and removed as the app uid too (no chown, no root-owned copy)" bash -c 'grep -q "^SETPRIV --reuid=$1 --regid=$2 --clear-groups mktemp -d $3/home-lab-backup\." "$4" && grep -q "^SETPRIV --reuid=$1 --regid=$2 --clear-groups rm -rf $3/home-lab-backup\." "$4"' _ "$(id -u)" "$(id -g)" "$STAGE" "$MOCK_LOG"
   check "R19 sqlite: the app directories are unchanged by the backup (same files, owners, modes, sizes: no new -wal or -shm)" test "$before" = "$after"
   check "R19 sqlite: nothing is left in the staging tmpfs, and no plaintext database copy exists anywhere else" bash -c '[ -z "$(ls -A "$1")" ] && ! grep -raq "SQLITE-PLAINTEXT-CANARY" "$2" --exclude-dir=apps --exclude-dir=mockbin --exclude="restored-*.db"' _ "$STAGE" "$T"
@@ -347,9 +348,9 @@ SHIM
   mk_r19_apps
   hold_wal "$APPS/koffan/data/shopping.db"
   printf 'MemAvailable:         100 kB\n' > "$T/meminfo"
-  backup MOCK_PG_ABSENT=1 HOME_LAB_STAGE_BASE="$STAGE" HOME_LAB_MEMINFO="$T/meminfo"
+  backup MOCK_PG_ABSENT=1 HOME_LAB_STAGE_BASE="$STAGE" HOME_LAB_STAGE_FREE_BYTES=100
   unhold
-  check "R19 sqlite: a copy larger than half of the available memory fails the job, and nothing is left in the staging tmpfs" job_refused koffan-db "half of the available memory" "$STAGE"
+  check "R19 sqlite: a database larger than half of the free staging space fails the job, and nothing is left in the staging tmpfs" job_refused koffan-db "half of the free space" "$STAGE"
 
   # a file that is not a database
   fresh
@@ -367,7 +368,7 @@ printf 'x' > "$APPS/n8n/data/database.sqlite-wal"
 backup MOCK_PG_ABSENT=1 HOME_LAB_STAGE_BASE=/nonexistent-stage
 check "R19: a failing SQLite job (no staging tmpfs) exits 1 with one alert, and n8n-files and couchdb are still uploaded" bash -c 'test "$1" -eq 1 && [ "$2" = 1 ] && grep -q "n8n-db (the source (sqlite) failed" "$3" && [ -n "$(find "$4/apps/n8n-files" -name "*.ok" | head -1)" ] && [ -n "$(find "$4/apps/couchdb" -name "*.ok" | head -1)" ]' _ "$rc" "$(published)" "$T/o" "$UPLOADS"
 o="$(obj n8n-files tar)"
-check "R19 n8n-files: the data directory is archived WITHOUT database.sqlite* and WITHOUT n8n's config file (it holds a copy of the encryption key, whose only copy is SSM), with binaryData" bash -c 'test -n "$1" && l="$(unmask_tar "$1")" && ! grep -qx "data/config" <<< "$l" && grep -qx "data/binaryData/file1" <<< "$l" && ! grep -q "database.sqlite" <<< "$l"' _ "$o"
+check "R19 n8n-files: the data directory is archived WITHOUT database.sqlite* and WITHOUT n8n's config file (it holds a copy of the encryption key, whose only copy is SSM), with binaryData" bash -c 'test -n "$1" && l="$(unmask_tar "$1")" && ! grep -qx "data/config" <<< "$l" && grep -qx "data/binaryData/file1" <<< "$l" && grep -qx "data/binaryData/nested/config" <<< "$l" && ! grep -q "database.sqlite" <<< "$l"' _ "$o"
 o="$(obj couchdb tar)"
 check "R19 couchdb: apps/couchdb/<UTC>.tar.age with its marker" bash -c 'test -n "$1" && test -f "$1.ok"' _ "$o"
 check "R19 couchdb: the archive order is .shards, then shards, then the top-level *.couch files, then etc (CouchDB's documented order for a live copy)" bash -c 'l="$(unmask_tar "$1" | grep -v "/$")"; a="$(grep -n "^data/\.shards/" <<< "$l" | head -1 | cut -d: -f1)"; b="$(grep -n "^data/shards/" <<< "$l" | head -1 | cut -d: -f1)"; c="$(grep -n "^data/_dbs.couch$" <<< "$l" | cut -d: -f1)"; d="$(grep -n "^etc/docker.ini$" <<< "$l" | cut -d: -f1)"; [ -n "$a" ] && [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ] && [ "$c" -lt "$d" ] && grep -qx "data/_nodes.couch" <<< "$l"' _ "$o"
@@ -375,8 +376,11 @@ check "R19: no plaintext canary in any upload, no plaintext copy outside the app
 
 # ---------------------------------------------------------------- units
 svc=scripts/systemd/home-lab-backup-apps.service
-check "the service has the Authentik backup's hardening block (same sandbox) except for CapabilityBoundingSet" bash -c 'diff <(sed -n "/^ProtectSystem=/,/^Nice=/p" "$1" | grep -v "^CapabilityBoundingSet=") <(sed -n "/^ProtectSystem=/,/^Nice=/p" scripts/systemd/home-lab-backup-authentik.service | grep -v "^CapabilityBoundingSet=")' _ "$svc"
+check "the service has the Authentik backup's hardening block (same sandbox) except for CapabilityBoundingSet and ReadWritePaths" bash -c 'diff <(sed -n "/^ProtectSystem=/,/^Nice=/p" "$1" | grep -vE "^(CapabilityBoundingSet|ReadWritePaths)=|^#") <(sed -n "/^ProtectSystem=/,/^Nice=/p" scripts/systemd/home-lab-backup-authentik.service | grep -vE "^(CapabilityBoundingSet|ReadWritePaths)=|^#")' _ "$svc"
 check "R19: the bounding set adds exactly CAP_SETUID and CAP_SETGID to the Authentik backup's (setpriv for the SQLite jobs), nothing else" bash -c 'a="$(grep "^CapabilityBoundingSet=" scripts/systemd/home-lab-backup-authentik.service | cut -d= -f2)"; [ "$(grep "^CapabilityBoundingSet=" "$1" | cut -d= -f2)" = "$a CAP_SETUID CAP_SETGID" ]' _ "$svc"
+check "R19: the only extra writable paths are the Koffan and n8n data directories (WAL files), and only those" bash -c 'grep -qxF "ReadWritePaths=-/apps/koffan/data -/apps/n8n/data" "$1" && [ "$(grep -c "^ReadWritePaths=" "$1")" = 1 ]' _ "$svc"
+check "R19: ProcSubset=pid and ProtectProc=invisible are kept (the script must not read /proc/meminfo)" bash -c 'grep -q "^ProcSubset=pid$" "$1" && grep -q "^ProtectProc=invisible$" "$1" && ! grep -q "/proc/meminfo" scripts/lib/backup-streams.sh' _ "$svc"
+check "R19: only the sqlite3 .backup call gets CAP_DAC_READ_SEARCH (ambient), nothing else in the library" bash -c '[ "$(grep -c "ambient-caps=+dac_read_search" scripts/lib/backup-streams.sh)" = 1 ] && grep -q "as_app_db sqlite3 -init" scripts/lib/backup-streams.sh && ! grep -q "as_app_db" <(grep -v "as_app_db()" scripts/lib/backup-streams.sh | grep -v "as_app_db sqlite3 -init /dev/null -cmd")' _
 check "the service runs scripts/backup-apps.sh with OnFailure alerting, after the Authentik backup" bash -c 'grep -q "^ExecStart=@REPO_DIR@/scripts/backup-apps.sh$" "$1" && grep -q "^OnFailure=home-lab-alert-failure@%n.service$" "$1" && grep -q "^After=.*home-lab-backup-authentik.service" "$1"' _ "$svc"
 check "the timer runs nightly at 03:15 (after the Authentik window), persistent" bash -c 'grep -q "^OnCalendar=\*-\*-\* 03:15:00$" "$1" && grep -q "^Persistent=true$" "$1"' _ scripts/systemd/home-lab-backup-apps.timer
 check "units.sh, bootstrap.sh and preflight.sh know the new units" bash -c 'grep -q "home-lab-backup-apps.timer" scripts/lib/units.sh && grep -q "home-lab-backup-apps.timer" scripts/bootstrap.sh && grep -q "home-lab-backup-apps.timer" scripts/preflight.sh'
