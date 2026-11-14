@@ -9,7 +9,7 @@
 # Debian mirrors (a mutable input on the Pi). The CA bundle now comes from a digest-pinned Alpine image (Mozilla bundle, Go reads
 # /etc/ssl/certs/ca-certificates.crt), and the final stage is a digest-pinned Debian slim (it only supplies bash for the healthcheck).
 # Both FROM lines are multi-arch index digests that Dependabot bumps together; CI fails if a FROM is not pinned or if apt or apk appear here.
-FROM alpine:3.22@sha256:bfe7ceb9f09ec0566c48fb93356e45a47a00be5a1dd14fa5b909e7709c66b034 AS certs
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS certs
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 ARG HELPER_VERSION=1.8.6
